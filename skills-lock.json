@@ -18,6 +18,12 @@
       "sourceType": "github",
       "skillPath": "swiftui-pro/SKILL.md",
       "computedHash": "07033426e384295a4b49cf0b2ffdefd4098cae4af53fef16bc1f2d9281118c41"
+    },
+    "xcodebuildmcp-cli": {
+      "source": "getsentry/xcodebuildmcp",
+      "sourceType": "local",
+      "skillPath": "xcodebuildmcp-cli/SKILL.md",
+      "computedHash": "afeaf4d088fd79760bb6c80ccf9b5e23e1587587d0c8a135d4b4427fc869a0b1"
     }
   }
 }
