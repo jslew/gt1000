@@ -11,8 +11,11 @@ public class MIDIManager: NSObject {
     public var isConnected = false
     public var connectedDeviceName: String? = nil
     public private(set) var lastReceivedMessage: [UInt8] = []
+    public let diagnostics: GT1000Diagnostics
+    private var pendingSysExMessage: [UInt8] = []
     
-    public override init() {
+    public init(diagnostics: GT1000Diagnostics = .shared) {
+        self.diagnostics = diagnostics
         super.init()
         setupMIDI()
     }
@@ -25,12 +28,21 @@ public class MIDIManager: NSObject {
             Self.makeNotificationHandler(for: self)
         )
         
-        guard clientStatus == noErr else { return }
+        guard clientStatus == noErr else {
+            diagnostics.error("Failed to create CoreMIDI client: \(Self.describe(status: clientStatus))")
+            return
+        }
         self.client = clientRef
+        diagnostics.info("Created CoreMIDI client")
         
         var outPort = MIDIPortRef()
-        MIDIOutputPortCreate(clientRef, "GT1000OutputPort" as CFString, &outPort)
-        self.outputPort = outPort
+        let outputStatus = MIDIOutputPortCreate(clientRef, "GT1000OutputPort" as CFString, &outPort)
+        if outputStatus == noErr {
+            self.outputPort = outPort
+            diagnostics.info("Created CoreMIDI output port")
+        } else {
+            diagnostics.error("Failed to create CoreMIDI output port: \(Self.describe(status: outputStatus))")
+        }
         
         var inPort = MIDIPortRef()
         let inStatus = MIDIInputPortCreateWithBlock(
@@ -41,26 +53,76 @@ public class MIDIManager: NSObject {
         )
         if inStatus == noErr {
             self.inputPort = inPort
+            diagnostics.info("Created CoreMIDI input port")
+        } else {
+            diagnostics.error("Failed to create CoreMIDI input port: \(Self.describe(status: inStatus))")
         }
         
         updateConnectionStatus()
     }
     
     private func handleMIDINotification(_ notification: MIDINotification) {
+        diagnostics.info("Received CoreMIDI notification \(notification.messageID.rawValue)")
         updateConnectionStatus()
     }
 
     private func handleIncomingMessages(_ messages: [[UInt8]]) {
-        for message in messages {
-            lastReceivedMessage = message
-            print("MIDI: Received \(Self.hexString(message))")
+        for packet in messages {
+            diagnostics.debug("Received MIDI packet \(Self.hexString(packet))")
         }
+
+        for message in assembleIncomingMessages(from: messages) {
+            lastReceivedMessage = message
+            diagnostics.info("Received MIDI \(Self.hexString(message))")
+        }
+    }
+
+    private func assembleIncomingMessages(from packets: [[UInt8]]) -> [[UInt8]] {
+        var completeMessages: [[UInt8]] = []
+
+        for packet in packets where !packet.isEmpty {
+            let startsSysEx = packet.first == 0xF0
+            let endsSysEx = packet.last == 0xF7
+
+            if startsSysEx {
+                pendingSysExMessage = packet
+
+                if endsSysEx {
+                    completeMessages.append(pendingSysExMessage)
+                    pendingSysExMessage.removeAll()
+                } else {
+                    diagnostics.debug("Started fragmented SysEx message with \(packet.count) bytes")
+                }
+
+                continue
+            }
+
+            if !pendingSysExMessage.isEmpty {
+                pendingSysExMessage.append(contentsOf: packet)
+
+                if endsSysEx {
+                    completeMessages.append(pendingSysExMessage)
+                    diagnostics.debug("Completed fragmented SysEx message with \(pendingSysExMessage.count) bytes")
+                    pendingSysExMessage.removeAll()
+                } else {
+                    diagnostics.debug("Appended SysEx fragment; buffered \(pendingSysExMessage.count) bytes")
+                }
+
+                continue
+            }
+
+            completeMessages.append(packet)
+        }
+
+        return completeMessages
     }
     
     public func updateConnectionStatus() {
         let destinationCount = MIDIGetNumberOfDestinations()
         var foundDevice = false
         var foundName: String? = nil
+
+        diagnostics.debug("Scanning \(destinationCount) MIDI destinations")
 
         for i in 0..<destinationCount {
             let destination = MIDIGetDestination(i)
@@ -78,6 +140,14 @@ public class MIDIManager: NSObject {
             }
         }
         
+        if foundDevice != isConnected || foundName != connectedDeviceName {
+            if let foundName {
+                diagnostics.info("Connected to MIDI destination \(foundName)")
+            } else {
+                diagnostics.warning("GT-1000 MIDI destination not found")
+            }
+        }
+
         self.isConnected = foundDevice
         self.connectedDeviceName = foundName
     }
@@ -89,9 +159,17 @@ public class MIDIManager: NSObject {
             var name: Unmanaged<CFString>?
             MIDIObjectGetStringProperty(source, kMIDIPropertyName, &name)
             if let sourceName = name?.takeRetainedValue() as String?, sourceName == deviceName {
-                MIDIPortConnectSource(inputPort, source, nil)
+                let status = MIDIPortConnectSource(inputPort, source, nil)
+                if status == noErr {
+                    diagnostics.info("Connected MIDI source \(sourceName)")
+                } else {
+                    diagnostics.error("Failed to connect MIDI source \(sourceName): \(Self.describe(status: status))")
+                }
+                return
             }
         }
+
+        diagnostics.warning("No matching MIDI source found for destination \(deviceName)")
     }
     
     public func sendSysEx(_ message: [UInt8]) {
@@ -113,9 +191,18 @@ public class MIDIManager: NSObject {
     }
 
     private func sendMIDIMessage(_ message: [UInt8], logLabel: String) {
-        guard client != 0, outputPort != 0, !message.isEmpty else { return }
+        guard !message.isEmpty else {
+            diagnostics.warning("Skipped empty \(logLabel) message")
+            return
+        }
+
+        guard client != 0, outputPort != 0 else {
+            diagnostics.error("Cannot send \(logLabel); CoreMIDI is not initialized")
+            return
+        }
 
         let destinationCount = MIDIGetNumberOfDestinations()
+        var didSend = false
         for i in 0..<destinationCount {
             let destination = MIDIGetDestination(i)
             var name: Unmanaged<CFString>?
@@ -126,7 +213,7 @@ public class MIDIManager: NSObject {
                !deviceName.localizedCaseInsensitiveContains("DAW"),
                !deviceName.localizedCaseInsensitiveContains("CTRL") {
                 
-                print("MIDI: Sending \(logLabel) \(Self.hexString(message)) to \(deviceName)")
+                diagnostics.info("Sending \(logLabel) \(Self.hexString(message)) to \(deviceName)")
 
                 let packetListSize = max(1024, message.count + 256)
                 var packetList = [UInt8](repeating: 0, count: packetListSize)
@@ -134,30 +221,53 @@ public class MIDIManager: NSObject {
                     message.withUnsafeBufferPointer { messageBuffer in
                         guard let packetListBaseAddress = packetListBuffer.baseAddress,
                               let messageBaseAddress = messageBuffer.baseAddress else {
+                            diagnostics.error("Failed to prepare \(logLabel) packet buffers")
                             return
                         }
 
                         let packetListPointer = packetListBaseAddress.assumingMemoryBound(to: MIDIPacketList.self)
                         let currentPacket = MIDIPacketListInit(packetListPointer)
                         _ = MIDIPacketListAdd(packetListPointer, packetListSize, currentPacket, 0, message.count, messageBaseAddress)
-                        MIDISend(outputPort, destination, packetListPointer)
+                        let status = MIDISend(outputPort, destination, packetListPointer)
+                        if status == noErr {
+                            didSend = true
+                        } else {
+                            diagnostics.error("Failed to send \(logLabel) to \(deviceName): \(Self.describe(status: status))")
+                        }
                     }
                 }
             }
+        }
+
+        if !didSend {
+            diagnostics.warning("No GT-1000 destination accepted \(logLabel)")
         }
     }
     
     public func listAllPorts() {
         let destinationCount = MIDIGetNumberOfDestinations()
-        print("--- Available MIDI Destinations (\(destinationCount)) ---")
+        diagnostics.info("Available MIDI destinations: \(destinationCount)")
         for i in 0..<destinationCount {
             let destination = MIDIGetDestination(i)
             var name: Unmanaged<CFString>?
             MIDIObjectGetStringProperty(destination, kMIDIPropertyName, &name)
             if let deviceName = name?.takeRetainedValue() as String? {
-                print("Port [\(i)]: \(deviceName)")
+                diagnostics.info("Destination [\(i)]: \(deviceName)")
             }
         }
+
+        let sourceCount = MIDIGetNumberOfSources()
+        diagnostics.info("Available MIDI sources: \(sourceCount)")
+        for i in 0..<sourceCount {
+            let source = MIDIGetSource(i)
+            var name: Unmanaged<CFString>?
+            MIDIObjectGetStringProperty(source, kMIDIPropertyName, &name)
+            if let deviceName = name?.takeRetainedValue() as String? {
+                diagnostics.info("Source [\(i)]: \(deviceName)")
+            }
+        }
+
+        diagnostics.info("MIDI port inventory complete")
     }
 
     nonisolated private static func makeNotificationHandler(for manager: MIDIManager) -> (UnsafePointer<MIDINotification>) -> Void {
@@ -211,6 +321,10 @@ public class MIDIManager: NSObject {
 
     nonisolated private static func hexString(_ message: [UInt8]) -> String {
         message.map { String(format: "%02X", $0) }.joined(separator: " ")
+    }
+
+    nonisolated private static func describe(status: OSStatus) -> String {
+        status == noErr ? "noErr" : "OSStatus \(status)"
     }
 }
 

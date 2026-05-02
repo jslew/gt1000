@@ -36,6 +36,10 @@ struct GT1000SysExTests {
         #expect(GT1000SysEx.bpmData(for: 120.0) == [0x00, 0x04, 0x0B, 0x00])
         #expect(GT1000SysEx.bpmData(for: 250.0) == [0x00, 0x09, 0x0C, 0x04])
         #expect(GT1000SysEx.bpmData(for: 20.0) == [0x00, 0x01, 0x09, 0x00])
+        #expect(GT1000SysEx.bpm(fromData: [0x00, 0x04, 0x0B, 0x00]) == 120.0)
+        #expect(GT1000SysEx.bpm(fromData: [0x00, 0x09, 0x0C, 0x04]) == 250.0)
+        #expect(GT1000SysEx.bpm(fromData: [0x00, 0x01, 0x09, 0x00]) == 40.0)
+        #expect(GT1000SysEx.bpm(fromData: [0x10, 0x00, 0x00, 0x00]) == nil)
     }
     
     @Test("Verify Master BPM Message Structure")
@@ -77,5 +81,57 @@ struct GT1000SysExTests {
         #expect(Array(data[20..<24]) == [0x00, 0x00, 0x00, 0x00])
         #expect(Array(data[24..<28]) == [0x00, 0x00, 0x07, 0x0F])
         #expect(data[29] == 0x50)
+    }
+
+    @Test("Verify Initial Patch Read Requests")
+    func testInitialPatchReadRequests() {
+        let requests = GT1000SysEx.PatchReadPlan.initialSnapshotReads
+
+        #expect(requests.map(\.label) == ["Patch Name", "Master BPM"])
+        #expect(requests[0].message == [
+            0xF0, 0x41, 0x10,
+            0x00, 0x00, 0x00, 0x4F,
+            0x11,
+            0x10, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x10,
+            0x60,
+            0xF7
+        ])
+        #expect(requests[1].message == [
+            0xF0, 0x41, 0x10,
+            0x00, 0x00, 0x00, 0x4F,
+            0x11,
+            0x10, 0x00, 0x10, 0x61,
+            0x00, 0x00, 0x00, 0x04,
+            0x7B,
+            0xF7
+        ])
+    }
+
+    @Test("Parse DT1 Reply")
+    func testParseDataSetReply() throws {
+        let message = GT1000SysEx.buildDataSet(
+            address: GT1000SysEx.Address.temporaryPatchMasterBPM,
+            data: GT1000SysEx.bpmData(for: 121.5)
+        )
+
+        let dataSet = try GT1000SysEx.parseDataSet(message)
+
+        #expect(dataSet.deviceID == 0x10)
+        #expect(dataSet.address == GT1000SysEx.Address.temporaryPatchMasterBPM)
+        #expect(dataSet.data == [0x00, 0x04, 0x0B, 0x0F])
+    }
+
+    @Test("Reject DT1 Reply With Bad Checksum")
+    func testParseDataSetRejectsBadChecksum() throws {
+        var message = GT1000SysEx.buildDataSet(
+            address: GT1000SysEx.Address.temporaryPatchMasterBPM,
+            data: GT1000SysEx.bpmData(for: 120)
+        )
+        message[message.count - 2] = 0x00
+
+        #expect(throws: GT1000SysEx.ParseError.invalidChecksum(expected: 0x70, actual: 0x00)) {
+            _ = try GT1000SysEx.parseDataSet(message)
+        }
     }
 }

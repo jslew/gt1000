@@ -100,6 +100,22 @@ public struct GT1000SysEx {
         let value = min(max(Int((bpm * 10).rounded()), 400), 2500)
         return nibbles(for: value)
     }
+
+    public static func integer(fromNibbles nibbles: [UInt8]) -> Int? {
+        guard !nibbles.isEmpty, nibbles.allSatisfy({ $0 <= 0x0F }) else { return nil }
+
+        return nibbles.reduce(0) { result, nibble in
+            (result << 4) | Int(nibble)
+        }
+    }
+
+    public static func bpm(fromData data: [UInt8]) -> Double? {
+        guard let value = integer(fromNibbles: data), value >= 400, value <= 2500 else {
+            return nil
+        }
+
+        return Double(value) / 10.0
+    }
 }
 
 // MARK: - Common Addresses (Firmware 4.x)
@@ -254,5 +270,86 @@ extension GT1000SysEx {
                 }
             }
         }
+    }
+}
+
+// MARK: - Patch Inspection
+extension GT1000SysEx {
+    public struct PatchReadRequest: Sendable, Equatable {
+        public let label: String
+        public let address: [UInt8]
+        public let size: [UInt8]
+
+        public init(label: String, address: [UInt8], size: [UInt8]) {
+            self.label = label
+            self.address = address
+            self.size = size
+        }
+
+        public var message: [UInt8] {
+            GT1000SysEx.buildRequestData(address: address, size: size)
+        }
+    }
+
+    public enum PatchReadPlan {
+        public static let patchName = PatchReadRequest(
+            label: "Patch Name",
+            address: Address.temporaryPatchName,
+            size: [0x00, 0x00, 0x00, 0x10]
+        )
+
+        public static let masterBPM = PatchReadRequest(
+            label: "Master BPM",
+            address: Address.temporaryPatchMasterBPM,
+            size: [0x00, 0x00, 0x00, 0x04]
+        )
+
+        public static let initialSnapshotReads: [PatchReadRequest] = [
+            patchName,
+            masterBPM
+        ]
+    }
+
+    public struct DataSetMessage: Sendable, Equatable {
+        public let deviceID: UInt8
+        public let address: [UInt8]
+        public let data: [UInt8]
+    }
+
+    public enum ParseError: Error, Equatable {
+        case invalidEnvelope
+        case unsupportedManufacturer(UInt8)
+        case unsupportedModelID([UInt8])
+        case unsupportedCommand(UInt8)
+        case invalidChecksum(expected: UInt8, actual: UInt8)
+    }
+
+    public static func parseDataSet(_ message: [UInt8]) throws -> DataSetMessage {
+        guard message.count >= 14, message.first == 0xF0, message.last == 0xF7 else {
+            throw ParseError.invalidEnvelope
+        }
+
+        guard message[1] == rolandID else {
+            throw ParseError.unsupportedManufacturer(message[1])
+        }
+
+        let modelID = Array(message[3..<7])
+        guard modelID == ModelID.gt1000 else {
+            throw ParseError.unsupportedModelID(modelID)
+        }
+
+        guard message[7] == Command.dt1 else {
+            throw ParseError.unsupportedCommand(message[7])
+        }
+
+        let address = Array(message[8..<12])
+        let data = Array(message[12..<(message.count - 2)])
+        let expectedChecksum = calculateChecksum(address: address, data: data)
+        let actualChecksum = message[message.count - 2]
+        guard expectedChecksum == actualChecksum else {
+            throw ParseError.invalidChecksum(expected: expectedChecksum, actual: actualChecksum)
+        }
+
+        return DataSetMessage(deviceID: message[2], address: address, data: data)
     }
 }
