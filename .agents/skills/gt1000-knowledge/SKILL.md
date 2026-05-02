@@ -31,12 +31,20 @@ Load only the reference needed for the task:
 Use progressive disclosure:
 
 ```sh
-scripts/gt1000-cli.sh read current-patch --view overview --format json --pretty --timeout 8
-scripts/gt1000-cli.sh read current-patch --view chain --format json --pretty --timeout 8
-scripts/gt1000-cli.sh read current-patch --view block --block preamp1 --format json --pretty --timeout 8
+scripts/gt1000-agent --pretty patch overview --live --timeout 8
+scripts/gt1000-agent --pretty patch chain --live --timeout 8
+scripts/gt1000-agent --pretty patch block preamp1 --live --timeout 8
 ```
 
-Use `--view full` only for diagnostics. Avoid showing users the full JSON unless they ask for raw details.
+Use `patch dump` only for diagnostics. Avoid showing users the full JSON unless they ask for raw details.
+
+Inspect saved full patch dumps offline with:
+
+```sh
+scripts/gt1000-agent --pretty patch overview --file patch.json
+scripts/gt1000-agent --pretty patch chain --file patch.json
+scripts/gt1000-agent --pretty patch block preamp1 --file patch.json
+```
 
 ## Common Workflows
 
@@ -60,10 +68,11 @@ For wiki updates:
 3. Add concise paraphrased entries to `docs/gt1000-wiki` or `docs/midi-reference`.
 4. Do not commit downloaded PDFs or full extracted manual text.
 
+For wiki/documentation search, use `rg` over the local wiki/manual extracts from this skill. Do not route documentation search through the device CLI.
+
 ## Safety Rules
 
 - The normal endpoint is `GT-1000`; avoid `GT-1000 DAW CTRL`.
 - Channel Voice messages depend on RX channel; SysEx reads/writes do not behave the same way.
 - Ask before persistent operations such as patch write, exchange, initialize, or insert.
 - Preserve tests that assert exact SysEx byte output.
-

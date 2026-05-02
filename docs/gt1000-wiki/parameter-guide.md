@@ -14,8 +14,8 @@ The GT-1000 has a movable effect chain containing effect blocks, output blocks, 
 
 Agent mapping:
 
-- Chain layout: `scripts/gt1000-cli.sh read current-patch --view chain`
-- One block detail: `scripts/gt1000-cli.sh read current-patch --view block --block <id>`
+- Chain layout: `scripts/gt1000-agent patch chain --live`
+- One block detail: `scripts/gt1000-agent patch block <id> --live`
 - Low-level chain table: [Patch Effect](../midi-reference/patch-effect.md)
 
 ## Core Effect Blocks
@@ -138,4 +138,3 @@ Agent caution:
 ## Write Operations
 
 Patch write/exchange/initialize/insert are persistent operations. The agent should not perform these without explicit user confirmation.
-

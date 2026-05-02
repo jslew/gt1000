@@ -1,0 +1,57 @@
+{
+  "ampControl1Enabled": false,
+  "ampControl2Enabled": false,
+  "blocks": [
+    {
+      "address": ["10", "00", "15", "00"],
+      "chainElementValue": 3,
+      "displayName": "AIRD PREAMP 1",
+      "id": "preamp1",
+      "isEnabled": true,
+      "isInSignalChain": true,
+      "parameters": [
+        {
+          "displayName": "SW",
+          "displayValue": "ON",
+          "id": "sw",
+          "rawValue": 1
+        },
+        {
+          "displayName": "TYPE",
+          "displayValue": "DIAMOND AMP",
+          "id": "type",
+          "rawValue": 13
+        }
+      ],
+      "rawDataHex": "01 0D",
+      "typeName": "DIAMOND AMP"
+    }
+  ],
+  "masterBPM": 120,
+  "masterKey": "C(Am)",
+  "masterPatchLevel": 4,
+  "patchName": "TEST PATCH",
+  "rawSections": [],
+  "signalChainElements": [
+    {
+      "address": ["10", "00", "10", "68"],
+      "displayName": "AIRD PREAMP 1",
+      "id": "chain-1",
+      "isOutput": false,
+      "isReserved": false,
+      "position": 1,
+      "rawValue": 3
+    },
+    {
+      "address": ["10", "00", "10", "69"],
+      "displayName": "MAIN OUT L",
+      "id": "chain-2",
+      "isOutput": true,
+      "isReserved": false,
+      "position": 2,
+      "rawValue": 47
+    }
+  ],
+  "signalChainSummary": "Patch: TEST PATCH\nMaster BPM: 120.0\nPatch Level: 4\nSignal chain: AIRD PREAMP 1 -> MAIN OUT L"
+}
+

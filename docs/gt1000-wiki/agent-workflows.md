@@ -7,19 +7,19 @@ Use this page when answering user questions about a connected GT-1000 v4+ unit.
 1. Read overview:
 
    ```sh
-   scripts/gt1000-cli.sh read current-patch --view overview --format json --pretty --timeout 8
+   scripts/gt1000-agent --pretty patch overview --live --timeout 8
    ```
 
 2. Read chain:
 
    ```sh
-   scripts/gt1000-cli.sh read current-patch --view chain --format json --pretty --timeout 8
+   scripts/gt1000-agent --pretty patch chain --live --timeout 8
    ```
 
 3. Read details only for blocks that matter to the question:
 
    ```sh
-   scripts/gt1000-cli.sh read current-patch --view block --block delay1 --format json --pretty --timeout 8
+   scripts/gt1000-agent --pretty patch block delay1 --live --timeout 8
    ```
 
 4. Explain in human terms. Avoid listing every parameter unless asked.
@@ -62,3 +62,4 @@ For now:
 4. Link user-facing concepts to MIDI/CLI implementation paths.
 5. Do not commit downloaded PDFs or full extracted manual text.
 
+Keep wiki/documentation search in this skill workflow. The CLI should report connected-device state and validated operations, not duplicate documentation retrieval.

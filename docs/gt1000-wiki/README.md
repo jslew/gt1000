@@ -24,10 +24,11 @@ Do not treat this as a complete copy of the manuals. It is a navigable working i
 For live patch inspection, start with:
 
 ```sh
-scripts/gt1000-cli.sh read current-patch --view overview --format json --pretty --timeout 8
-scripts/gt1000-cli.sh read current-patch --view chain --format json --pretty --timeout 8
-scripts/gt1000-cli.sh read current-patch --view block --block preamp1 --format json --pretty --timeout 8
+scripts/gt1000-agent --pretty patch overview --live --timeout 8
+scripts/gt1000-agent --pretty patch chain --live --timeout 8
+scripts/gt1000-agent --pretty patch block preamp1 --live --timeout 8
 ```
 
-The next planned CLI view is `--view controls`, which should expose PatchCommon/SystemControl/Assign-derived switch mappings.
+The Python agent CLI delegates live MIDI work to the Swift backend and can inspect saved full patch JSON dumps offline. Search this wiki directly with `rg`; wiki search belongs to the skill/docs layer, not to the device CLI.
 
+The next planned CLI view is `patch controls`, which should expose PatchCommon/SystemControl/Assign-derived switch mappings.

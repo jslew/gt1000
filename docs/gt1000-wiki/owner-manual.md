@@ -64,8 +64,8 @@ The GT-1000 shows all effects, output, and send/return as a chain. Basic editing
 Important for agent behavior:
 
 - The visual chain is user-facing truth for routing.
-- The CLI `--view chain` mirrors the chain concept without exposing every parameter.
-- The CLI `--view block` mirrors selecting one block for detailed edit.
+- The CLI `patch chain` mirrors the chain concept without exposing every parameter.
+- The CLI `patch block` mirrors selecting one block for detailed edit.
 
 ## STOMPBOX
 
@@ -113,4 +113,3 @@ Agent mapping:
 - Chain element: `LOOPER`
 - PatchEfct looper play level offset: see [Patch Effect](../midi-reference/patch-effect.md)
 - Control functions include looper, looper stop, and looper clear.
-

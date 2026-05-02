@@ -22,7 +22,9 @@ Use these project references with the `gt1000-knowledge` skill.
 
 ## Source Code Entry Points
 
-- CLI: `GT1000AppPackage/Sources/GT1000PatchDump/main.swift`
+- Agent CLI wrapper: `scripts/gt1000-agent`
+- Agent CLI implementation: `tools/gt1000/agent_cli.py`
+- Swift live CLI backend: `GT1000AppPackage/Sources/GT1000PatchDump/main.swift`
 - SysEx helpers: `GT1000AppPackage/Sources/GT1000AppFeature/GT1000SysEx.swift`
 - Snapshot decoder/reports: `GT1000AppPackage/Sources/GT1000AppFeature/GT1000PatchSnapshot.swift`
 - MIDI manager: `GT1000AppPackage/Sources/GT1000AppFeature/MIDIManager.swift`
@@ -31,7 +33,7 @@ Use these project references with the `gt1000-knowledge` skill.
 
 ```sh
 xcodebuildmcp swift-package test --package-path GT1000AppPackage
-scripts/gt1000-cli.sh list-ports --format json --pretty
-scripts/gt1000-cli.sh read current-patch --view overview --format json --pretty --timeout 8
+python3 -m unittest discover -s tests
+scripts/gt1000-agent --pretty ports --live
+scripts/gt1000-agent --pretty patch overview --live --timeout 8
 ```
-
