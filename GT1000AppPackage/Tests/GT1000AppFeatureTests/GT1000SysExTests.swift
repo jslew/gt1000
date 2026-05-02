@@ -87,7 +87,10 @@ struct GT1000SysExTests {
     func testInitialPatchReadRequests() {
         let requests = GT1000SysEx.PatchReadPlan.initialSnapshotReads
 
-        #expect(requests.map(\.label) == ["Patch Name", "Master BPM"])
+        #expect(requests.prefix(3).map(\.label) == ["Patch Name", "Master BPM", "Patch Effect"])
+        #expect(requests.contains { $0.label == "AIRD PREAMP 1" })
+        #expect(requests.contains { $0.label == "MASTER DELAY" })
+        #expect(requests.contains { $0.label == "REVERB" })
         #expect(requests[0].message == [
             0xF0, 0x41, 0x10,
             0x00, 0x00, 0x00, 0x4F,
@@ -104,6 +107,15 @@ struct GT1000SysExTests {
             0x10, 0x00, 0x10, 0x61,
             0x00, 0x00, 0x00, 0x04,
             0x7B,
+            0xF7
+        ])
+        #expect(requests[2].message == [
+            0xF0, 0x41, 0x10,
+            0x00, 0x00, 0x00, 0x4F,
+            0x11,
+            0x10, 0x00, 0x10, 0x00,
+            0x00, 0x00, 0x01, 0x1C,
+            0x43,
             0xF7
         ])
     }

@@ -116,6 +116,30 @@ public struct GT1000SysEx {
 
         return Double(value) / 10.0
     }
+
+    public static func sevenBitAddressValue(_ address: [UInt8]) -> Int? {
+        guard address.count == 4, address.allSatisfy({ $0 <= 0x7F }) else { return nil }
+
+        return address.reduce(0) { result, byte in
+            (result << 7) | Int(byte)
+        }
+    }
+
+    public static func sevenBitAddress(from value: Int) -> [UInt8] {
+        precondition(value >= 0)
+
+        return stride(from: 21, through: 0, by: -7).map {
+            UInt8((value >> $0) & 0x7F)
+        }
+    }
+
+    public static func address(_ address: [UInt8], adding offset: Int) -> [UInt8] {
+        guard let value = sevenBitAddressValue(address) else {
+            preconditionFailure("Invalid Roland address")
+        }
+
+        return sevenBitAddress(from: value + offset)
+    }
 }
 
 // MARK: - Common Addresses (Firmware 4.x)
@@ -129,6 +153,9 @@ extension GT1000SysEx {
 
         /// Temporary patch PatchEfct MASTER:BPM starts at 10 00 10 61.
         public static let temporaryPatchMasterBPM: [UInt8] = [0x10, 0x00, 0x10, 0x61]
+
+        /// Temporary patch PatchEfct starts at 10 00 10 00.
+        public static let temporaryPatchEffect: [UInt8] = [0x10, 0x00, 0x10, 0x00]
 
         /// Temporary patch assign 16 starts at 10 00 0A 40.
         public static let temporaryAssign16: [UInt8] = [0x10, 0x00, 0x0A, 0x40]
@@ -304,10 +331,25 @@ extension GT1000SysEx {
             size: [0x00, 0x00, 0x00, 0x04]
         )
 
+        public static let patchEffect = PatchReadRequest(
+            label: "Patch Effect",
+            address: Address.temporaryPatchEffect,
+            size: [0x00, 0x00, 0x01, 0x1C]
+        )
+
+        public static let blockSummaries: [PatchReadRequest] = PatchBlockDefinition.summaryBlocks.map {
+            PatchReadRequest(
+                label: $0.displayName,
+                address: $0.address,
+                size: GT1000SysEx.sevenBitAddress(from: $0.size)
+            )
+        }
+
         public static let initialSnapshotReads: [PatchReadRequest] = [
             patchName,
-            masterBPM
-        ]
+            masterBPM,
+            patchEffect
+        ] + blockSummaries
     }
 
     public struct DataSetMessage: Sendable, Equatable {
@@ -351,5 +393,174 @@ extension GT1000SysEx {
         }
 
         return DataSetMessage(deviceID: message[2], address: address, data: data)
+    }
+}
+
+public struct PatchBlockDefinition: Sendable, Equatable {
+    public let id: String
+    public let displayName: String
+    public let chainElementValue: UInt8
+    public let address: [UInt8]
+    public let size: Int
+    public let parameters: [PatchParameterDefinition]
+
+    public init(
+        id: String,
+        displayName: String,
+        chainElementValue: UInt8,
+        address: [UInt8],
+        size: Int,
+        parameters: [PatchParameterDefinition]
+    ) {
+        self.id = id
+        self.displayName = displayName
+        self.chainElementValue = chainElementValue
+        self.address = address
+        self.size = size
+        self.parameters = parameters
+    }
+
+    public static let summaryBlocks: [PatchBlockDefinition] = [
+        .init(id: "comp", displayName: "COMPRESSOR", chainElementValue: 0, address: [0x10, 0x00, 0x12, 0x00], size: 8, parameters: [
+            .switch("sw", "SW", 0), .type("type", "TYPE", 1, values: ["BOSS COMP", "X-COMP", "D-COMP", "ORANGE", "STEREO COMP"]),
+            .byte("sustain", "SUSTAIN", 2), .byte("attack", "ATTACK", 3), .byte("level", "LEVEL", 4), .byte("tone", "TONE", 5)
+        ]),
+        .init(id: "dist1", displayName: "DISTORTION 1", chainElementValue: 1, address: [0x10, 0x00, 0x13, 0x00], size: 9, parameters: distortionParameters),
+        .init(id: "dist2", displayName: "DISTORTION 2", chainElementValue: 2, address: [0x10, 0x00, 0x14, 0x00], size: 9, parameters: distortionParameters),
+        .init(id: "preamp1", displayName: "AIRD PREAMP 1", chainElementValue: 3, address: [0x10, 0x00, 0x15, 0x00], size: 14, parameters: preampParameters),
+        .init(id: "preamp2", displayName: "AIRD PREAMP 2", chainElementValue: 4, address: [0x10, 0x00, 0x16, 0x00], size: 14, parameters: preampParameters),
+        .init(id: "ns1", displayName: "NOISE SUPPRESSOR 1", chainElementValue: 5, address: [0x10, 0x00, 0x17, 0x00], size: 4, parameters: [
+            .switch("sw", "SW", 0), .byte("threshold", "THRESHOLD", 1), .byte("release", "RELEASE", 2), .byte("detect", "DETECT", 3)
+        ]),
+        .init(id: "ns2", displayName: "NOISE SUPPRESSOR 2", chainElementValue: 6, address: [0x10, 0x00, 0x18, 0x00], size: 4, parameters: [
+            .switch("sw", "SW", 0), .byte("threshold", "THRESHOLD", 1), .byte("release", "RELEASE", 2), .byte("detect", "DETECT", 3)
+        ]),
+        .init(id: "eq1", displayName: "EQUALIZER 1", chainElementValue: 10, address: [0x10, 0x00, 0x19, 0x00], size: 24, parameters: eqParameters),
+        .init(id: "eq2", displayName: "EQUALIZER 2", chainElementValue: 11, address: [0x10, 0x00, 0x1A, 0x00], size: 24, parameters: eqParameters),
+        .init(id: "eq3", displayName: "EQUALIZER 3", chainElementValue: 12, address: [0x10, 0x00, 0x1B, 0x00], size: 24, parameters: eqParameters),
+        .init(id: "eq4", displayName: "EQUALIZER 4", chainElementValue: 13, address: [0x10, 0x00, 0x1C, 0x00], size: 24, parameters: eqParameters),
+        .init(id: "delay1", displayName: "DELAY 1", chainElementValue: 15, address: [0x10, 0x00, 0x1D, 0x00], size: 9, parameters: delayParameters),
+        .init(id: "delay2", displayName: "DELAY 2", chainElementValue: 16, address: [0x10, 0x00, 0x1E, 0x00], size: 9, parameters: delayParameters),
+        .init(id: "delay3", displayName: "DELAY 3", chainElementValue: 17, address: [0x10, 0x00, 0x1F, 0x00], size: 9, parameters: delayParameters),
+        .init(id: "delay4", displayName: "DELAY 4", chainElementValue: 18, address: [0x10, 0x00, 0x20, 0x00], size: 9, parameters: delayParameters),
+        .init(id: "masterDelay", displayName: "MASTER DELAY", chainElementValue: 19, address: [0x10, 0x00, 0x21, 0x00], size: 31, parameters: masterDelayParameters),
+        .init(id: "chorus", displayName: "CHORUS", chainElementValue: 14, address: [0x10, 0x00, 0x22, 0x00], size: 24, parameters: chorusParameters),
+        .init(id: "fx1", displayName: "FX 1", chainElementValue: 7, address: [0x10, 0x00, 0x23, 0x00], size: 2, parameters: fxParameters),
+        .init(id: "fx2", displayName: "FX 2", chainElementValue: 8, address: [0x10, 0x00, 0x3E, 0x00], size: 2, parameters: fxParameters),
+        .init(id: "fx3", displayName: "FX 3", chainElementValue: 9, address: [0x10, 0x00, 0x59, 0x00], size: 2, parameters: fxParameters),
+        .init(id: "reverb", displayName: "REVERB", chainElementValue: 21, address: [0x10, 0x00, 0x74, 0x00], size: 42, parameters: reverbParameters),
+        .init(id: "pedalFx", displayName: "PEDAL FX", chainElementValue: 23, address: [0x10, 0x00, 0x75, 0x00], size: 5, parameters: [
+            .switch("sw", "SW", 0), .byte("type", "TYPE", 1), .byte("effectLevel", "EFFECT LEVEL", 3), .byte("directMix", "DIRECT MIX", 4)
+        ])
+    ]
+
+    public static func definition(address: [UInt8]) -> PatchBlockDefinition? {
+        summaryBlocks.first { $0.address == address }
+    }
+
+    public static func definition(chainElementValue: UInt8) -> PatchBlockDefinition? {
+        summaryBlocks.first { $0.chainElementValue == chainElementValue }
+    }
+
+    private static let distortionTypeNames = [
+        "MID BOOST", "CLEAN BOOST", "TREBLE BOOST", "CRUNCH", "NATURAL OD", "WARM OD",
+        "FAT DS", "LEAD DS", "METAL DS", "OCT FUZZ", "A-DIST", "X-OD", "X-DIST",
+        "BLUES OD", "OD-1", "T-SCREAM", "TURBO OD", "DIST", "RAT", "GUV DS",
+        "DIST+", "METAL ZONE", "'60S FUZZ", "MUFF FUZZ"
+    ]
+
+    private static let preampTypeNames = [
+        "TRANSPARENT", "NATURAL", "BOUTIQUE", "SUPREME", "MAXIMUM", "JUGGERNAUT",
+        "X-CRUNCH", "X-HI GAIN", "X-MODDED", "JC-120", "TWIN COMBO", "DELUXE COMBO",
+        "TWEED COMBO", "DIAMOND AMP", "BRIT STACK", "RECTI STACK"
+    ]
+
+    private static let masterDelayTypeNames = [
+        "MONO", "PAN", "STEREO1", "STEREO2", "ANALOG", "ANALOG ST", "TAPE",
+        "REVERSE", "SHIMMER", "DUAL", "WARP", "TWIST"
+    ]
+
+    private static let chorusTypeNames = ["MONO", "STEREO 1", "STEREO 2", "DUAL"]
+
+    private static let distortionParameters: [PatchParameterDefinition] = [
+        .switch("sw", "SW", 0), .type("type", "TYPE", 1, values: distortionTypeNames),
+        .byte("drive", "DRIVE", 2), .byte("tone", "TONE", 3), .byte("level", "LEVEL", 4),
+        .byte("bottom", "BOTTOM", 5), .byte("directMix", "DIRECT MIX", 6),
+        .switch("soloSw", "SOLO SW", 7), .byte("soloLevel", "SOLO LEVEL", 8)
+    ]
+
+    private static let preampParameters: [PatchParameterDefinition] = [
+        .switch("sw", "SW", 0), .type("type", "TYPE", 1, values: preampTypeNames),
+        .byte("gain", "GAIN", 2), .byte("sag", "SAG", 3), .byte("resonance", "RESONANCE", 4),
+        .byte("level", "LEVEL", 5), .byte("bass", "BASS", 6), .byte("middle", "MIDDLE", 7),
+        .byte("treble", "TREBLE", 8), .byte("presence", "PRESENCE", 9), .switch("bright", "BRIGHT", 10),
+        .byte("gainSw", "GAIN SW", 11), .switch("soloSw", "SOLO SW", 12), .byte("soloLevel", "SOLO LEVEL", 13)
+    ]
+
+    private static let eqParameters: [PatchParameterDefinition] = [
+        .switch("sw", "SW", 0), .byte("type", "TYPE", 1), .byte("lowGain", "LOW GAIN", 2),
+        .byte("highGain", "HIGH GAIN", 3), .byte("level", "LEVEL", 13)
+    ]
+
+    private static let delayParameters: [PatchParameterDefinition] = [
+        .switch("sw", "SW", 0), .nibbles("time", "TIME", 1, byteCount: 4),
+        .byte("feedback", "FEEDBACK", 5), .byte("highCut", "HIGH CUT", 6),
+        .byte("effectLevel", "EFFECT LEVEL", 7), .byte("directLevel", "DIRECT LEVEL", 8)
+    ]
+
+    private static let masterDelayParameters: [PatchParameterDefinition] = [
+        .switch("sw", "SW", 0), .type("type", "TYPE", 1, values: masterDelayTypeNames),
+        .nibbles("time", "TIME", 2, byteCount: 4), .byte("feedback", "FEEDBACK", 6),
+        .byte("highCut", "HIGH CUT", 7), .byte("effectLevel", "EFFECT LEVEL", 8),
+        .byte("modRate", "MOD RATE", 9), .byte("modDepth", "MOD DEPTH", 10),
+        .byte("directLevel", "DIRECT LEVEL", 14)
+    ]
+
+    private static let chorusParameters: [PatchParameterDefinition] = [
+        .switch("sw", "SW", 0), .type("type", "TYPE", 1, values: chorusTypeNames),
+        .byte("rate", "RATE", 2), .byte("depth", "DEPTH", 3), .byte("preDelay", "PRE-DELAY", 4),
+        .byte("effectLevel", "EFFECT LEVEL", 5), .byte("waveform", "WAVEFORM", 6),
+        .byte("lowCut", "LOW CUT", 7), .byte("highCut", "HIGH CUT", 8)
+    ]
+
+    private static let fxParameters: [PatchParameterDefinition] = [
+        .switch("sw", "SW", 0), .byte("type", "TYPE", 1)
+    ]
+
+    private static let reverbParameters: [PatchParameterDefinition] = [
+        .switch("sw", "SW", 0), .byte("type", "TYPE", 1), .byte("time", "TIME", 2),
+        .byte("tone", "TONE", 3), .byte("density", "DENSITY", 4), .byte("effectLevel", "EFFECT LEVEL", 5),
+        .byte("preDelay", "PRE-DELAY", 6), .byte("lowCut", "LOW CUT", 7), .byte("highCut", "HIGH CUT", 8),
+        .byte("directLevel", "DIRECT LEVEL", 16)
+    ]
+}
+
+public struct PatchParameterDefinition: Sendable, Equatable {
+    public enum ValueKind: Sendable, Equatable {
+        case byte
+        case bool
+        case type([String])
+        case nibbles(Int)
+    }
+
+    public let id: String
+    public let displayName: String
+    public let offset: Int
+    public let kind: ValueKind
+
+    public static func byte(_ id: String, _ displayName: String, _ offset: Int) -> Self {
+        Self(id: id, displayName: displayName, offset: offset, kind: .byte)
+    }
+
+    public static func `switch`(_ id: String, _ displayName: String, _ offset: Int) -> Self {
+        Self(id: id, displayName: displayName, offset: offset, kind: .bool)
+    }
+
+    public static func type(_ id: String, _ displayName: String, _ offset: Int, values: [String]) -> Self {
+        Self(id: id, displayName: displayName, offset: offset, kind: .type(values))
+    }
+
+    public static func nibbles(_ id: String, _ displayName: String, _ offset: Int, byteCount: Int) -> Self {
+        Self(id: id, displayName: displayName, offset: offset, kind: .nibbles(byteCount))
     }
 }

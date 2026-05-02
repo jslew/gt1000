@@ -276,14 +276,17 @@ private final class PatchDumpTool {
             throw Error.coreMIDI("MIDIPortConnectSource", connectStatus)
         }
 
-        for request in GT1000SysEx.PatchReadPlan.initialSnapshotReads {
+        let requests = GT1000SysEx.PatchReadPlan.initialSnapshotReads
+        state.expectResponses(addresses: requests.map(\.address))
+
+        for request in requests {
             try send(request.message, to: destination)
-            Thread.sleep(forTimeInterval: 0.05)
+            Thread.sleep(forTimeInterval: 0.02)
         }
 
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if state.snapshotHasInitialReadFields {
+            if state.hasReceivedExpectedResponses {
                 return state.snapshot
             }
 
@@ -450,14 +453,21 @@ private final class PatchDumpState: @unchecked Sendable {
     private var assembler = MIDISysExMessageAssembler()
     private var decoder = GT1000PatchSnapshotDecoder()
     private var mutableSnapshot = GT1000PatchSnapshot()
+    private var expectedAddressKeys = Set<String>()
+    private var receivedAddressKeys = Set<String>()
 
     var snapshot: GT1000PatchSnapshot {
         lock.withLock { mutableSnapshot }
     }
 
-    var snapshotHasInitialReadFields: Bool {
+    var hasReceivedExpectedResponses: Bool {
+        lock.withLock { expectedAddressKeys.isSubset(of: receivedAddressKeys) }
+    }
+
+    func expectResponses(addresses: [[UInt8]]) {
         lock.withLock {
-            mutableSnapshot.patchName != nil && mutableSnapshot.masterBPM != nil
+            expectedAddressKeys = Set(addresses.map(Self.key))
+            receivedAddressKeys.removeAll()
         }
     }
 
@@ -468,8 +478,13 @@ private final class PatchDumpState: @unchecked Sendable {
                     continue
                 }
 
+                receivedAddressKeys.insert(Self.key(dataSet.address))
                 mutableSnapshot = decoder.applying(dataSet, to: mutableSnapshot)
             }
         }
+    }
+
+    private static func key(_ address: [UInt8]) -> String {
+        address.map { String(format: "%02X", $0) }.joined(separator: " ")
     }
 }
