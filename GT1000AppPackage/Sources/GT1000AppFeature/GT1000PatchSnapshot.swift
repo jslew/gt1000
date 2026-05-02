@@ -56,6 +56,32 @@ public struct GT1000PatchSnapshot: Sendable, Equatable {
     }
 }
 
+public struct GT1000PatchSnapshotReport: Codable, Sendable, Equatable {
+    public let patchName: String?
+    public let masterBPM: Double?
+    public let signalChainSummary: String
+    public let signalChainElements: [SignalChainElement]
+
+    public init(snapshot: GT1000PatchSnapshot) {
+        self.patchName = snapshot.patchName
+        self.masterBPM = snapshot.masterBPM
+        self.signalChainSummary = snapshot.signalChainSummary
+        self.signalChainElements = snapshot.chainElements.map(SignalChainElement.init)
+    }
+
+    public struct SignalChainElement: Codable, Sendable, Equatable {
+        public let id: Int
+        public let rawValue: UInt8
+        public let displayName: String
+
+        public init(_ element: GT1000PatchSnapshot.ChainElement) {
+            self.id = element.id
+            self.rawValue = element.rawValue
+            self.displayName = element.displayName
+        }
+    }
+}
+
 public struct GT1000PatchSnapshotDecoder: Sendable {
     public init() {}
 

@@ -4,22 +4,150 @@ import GT1000AppFeature
 
 @main
 struct GT1000PatchDump {
-    static func main() throws {
-        let timeout = timeoutArgument() ?? 5.0
-        let tool = PatchDumpTool(timeout: timeout)
-        let snapshot = try tool.readCurrentPatch()
-        print(snapshot.signalChainSummary)
+    static func main() {
+        do {
+            let options = try Options.parse(CommandLine.arguments)
+
+            if options.showsHelp {
+                Swift.print(Options.usage)
+                return
+            }
+
+            let tool = PatchDumpTool(timeout: options.timeout)
+            let snapshot = try tool.readCurrentPatch()
+            try print(snapshot, format: options.format, pretty: options.pretty)
+        } catch let error as CLIError {
+            fputs("error: \(error.description)\n", stderr)
+            exit(Int32(error.exitCode))
+        } catch {
+            fputs("error: \(error)\n", stderr)
+            exit(1)
+        }
     }
 
-    private static func timeoutArgument() -> TimeInterval? {
-        let arguments = CommandLine.arguments
-        guard let index = arguments.firstIndex(of: "--timeout"),
-              arguments.indices.contains(arguments.index(after: index)),
-              let timeout = TimeInterval(arguments[arguments.index(after: index)]) else {
-            return nil
+    private static func print(
+        _ snapshot: GT1000PatchSnapshot,
+        format: Options.OutputFormat,
+        pretty: Bool
+    ) throws {
+        switch format {
+        case .text:
+            Swift.print(snapshot.signalChainSummary)
+        case .json:
+            let encoder = JSONEncoder()
+            if pretty {
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            } else {
+                encoder.outputFormatting = [.sortedKeys]
+            }
+
+            let data = try encoder.encode(GT1000PatchSnapshotReport(snapshot: snapshot))
+            guard let json = String(data: data, encoding: .utf8) else {
+                throw CLIError.outputEncodingFailed
+            }
+
+            Swift.print(json)
+        }
+    }
+}
+
+private struct Options: Sendable, Equatable {
+    enum OutputFormat: String, Sendable {
+        case text
+        case json
+    }
+
+    var timeout: TimeInterval = 5.0
+    var format: OutputFormat = .text
+    var pretty = false
+    var showsHelp = false
+
+    static let usage = """
+    Usage: GT1000PatchDump [options]
+
+    Reads the connected GT-1000 temporary patch and prints a decoded snapshot.
+
+    Options:
+      --format text|json   Output format. Defaults to text.
+      --pretty             Pretty-print JSON output.
+      --timeout seconds    Seconds to wait for patch replies. Defaults to 5.
+      --help               Show this help.
+    """
+
+    static func parse(_ arguments: [String]) throws -> Self {
+        var options = Self()
+        var index = arguments.index(after: arguments.startIndex)
+
+        while index < arguments.endIndex {
+            let argument = arguments[index]
+
+            switch argument {
+            case "--help", "-h":
+                options.showsHelp = true
+                index = arguments.index(after: index)
+            case "--pretty":
+                options.pretty = true
+                index = arguments.index(after: index)
+            case "--format":
+                let value = try value(after: index, in: arguments, option: argument)
+                guard let format = OutputFormat(rawValue: value) else {
+                    throw CLIError.invalidOptionValue(argument, value)
+                }
+
+                options.format = format
+                index = arguments.index(index, offsetBy: 2)
+            case "--timeout":
+                let value = try value(after: index, in: arguments, option: argument)
+                guard let timeout = TimeInterval(value), timeout > 0 else {
+                    throw CLIError.invalidOptionValue(argument, value)
+                }
+
+                options.timeout = timeout
+                index = arguments.index(index, offsetBy: 2)
+            default:
+                throw CLIError.unknownOption(argument)
+            }
         }
 
-        return timeout
+        return options
+    }
+
+    private static func value(after index: Array<String>.Index, in arguments: [String], option: String) throws -> String {
+        let valueIndex = arguments.index(after: index)
+        guard arguments.indices.contains(valueIndex) else {
+            throw CLIError.missingOptionValue(option)
+        }
+
+        return arguments[valueIndex]
+    }
+}
+
+private enum CLIError: Swift.Error, CustomStringConvertible {
+    case unknownOption(String)
+    case missingOptionValue(String)
+    case invalidOptionValue(String, String)
+    case outputEncodingFailed
+
+    var exitCode: Int {
+        switch self {
+        case .unknownOption, .missingOptionValue, .invalidOptionValue:
+            64
+        case .outputEncodingFailed:
+            1
+        }
+    }
+
+    var description: String {
+        switch self {
+        case let .unknownOption(option):
+            "unknown option \(option)\n\n\(Options.usage)"
+        case let .missingOptionValue(option):
+            "missing value for \(option)\n\n\(Options.usage)"
+        case let .invalidOptionValue(option, value):
+            "invalid value \(value) for \(option)\n\n\(Options.usage)"
+        case .outputEncodingFailed:
+            "failed to encode output"
+        }
     }
 }
 
