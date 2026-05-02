@@ -13,9 +13,14 @@ struct GT1000PatchDump {
                 return
             }
 
-            let tool = PatchDumpTool(timeout: options.timeout)
-            let snapshot = try tool.readCurrentPatch()
-            try print(snapshot, format: options.format, pretty: options.pretty)
+            switch options.command {
+            case .listPorts:
+                try print(PatchDumpTool.listPorts(), format: options.format, pretty: options.pretty)
+            case .readCurrentPatch:
+                let tool = PatchDumpTool(timeout: options.timeout)
+                let snapshot = try tool.readCurrentPatch()
+                try print(snapshot, format: options.format, pretty: options.pretty)
+            }
         } catch let error as CLIError {
             fputs("error: \(error.description)\n", stderr)
             exit(Int32(error.exitCode))
@@ -34,49 +39,102 @@ struct GT1000PatchDump {
         case .text:
             Swift.print(snapshot.signalChainSummary)
         case .json:
-            let encoder = JSONEncoder()
-            if pretty {
-                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            } else {
-                encoder.outputFormatting = [.sortedKeys]
-            }
-
-            let data = try encoder.encode(GT1000PatchSnapshotReport(snapshot: snapshot))
-            guard let json = String(data: data, encoding: .utf8) else {
-                throw CLIError.outputEncodingFailed
-            }
-
-            Swift.print(json)
+            try printJSON(GT1000PatchSnapshotReport(snapshot: snapshot), pretty: pretty)
         }
+    }
+
+    private static func print(
+        _ inventory: MIDIPortInventoryReport,
+        format: Options.OutputFormat,
+        pretty: Bool
+    ) throws {
+        switch format {
+        case .text:
+            Swift.print(inventory.textSummary)
+        case .json:
+            try printJSON(inventory, pretty: pretty)
+        }
+    }
+
+    private static func printJSON<T: Encodable>(_ value: T, pretty: Bool) throws {
+        let encoder = JSONEncoder()
+        if pretty {
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        } else {
+            encoder.outputFormatting = [.sortedKeys]
+        }
+
+        let data = try encoder.encode(value)
+        guard let json = String(data: data, encoding: .utf8) else {
+            throw CLIError.outputEncodingFailed
+        }
+
+        Swift.print(json)
     }
 }
 
 private struct Options: Sendable, Equatable {
+    enum Command: Sendable, Equatable {
+        case listPorts
+        case readCurrentPatch
+    }
+
     enum OutputFormat: String, Sendable {
         case text
         case json
     }
 
+    var command: Command = .readCurrentPatch
     var timeout: TimeInterval = 5.0
     var format: OutputFormat = .text
     var pretty = false
     var showsHelp = false
 
     static let usage = """
-    Usage: GT1000PatchDump [options]
+    Usage:
+      GT1000PatchDump list-ports [options]
+      GT1000PatchDump read current-patch [options]
+      GT1000PatchDump [options]
 
-    Reads the connected GT-1000 temporary patch and prints a decoded snapshot.
+    Agent-facing read-only CLI for connected GT-1000 devices.
+
+    Commands:
+      list-ports          List MIDI sources and destinations.
+      read current-patch  Read the connected GT-1000 temporary patch. Default.
 
     Options:
-      --format text|json   Output format. Defaults to text.
-      --pretty             Pretty-print JSON output.
-      --timeout seconds    Seconds to wait for patch replies. Defaults to 5.
-      --help               Show this help.
+      --format text|json  Output format. Defaults to text.
+      --pretty            Pretty-print JSON output.
+      --timeout seconds   Seconds to wait for patch replies. Defaults to 5.
+      --help              Show this help.
     """
 
     static func parse(_ arguments: [String]) throws -> Self {
         var options = Self()
         var index = arguments.index(after: arguments.startIndex)
+
+        if index < arguments.endIndex {
+            switch arguments[index] {
+            case "list-ports":
+                options.command = .listPorts
+                index = arguments.index(after: index)
+            case "read":
+                let targetIndex = arguments.index(after: index)
+                guard arguments.indices.contains(targetIndex) else {
+                    throw CLIError.missingCommandTarget("read")
+                }
+                guard arguments[targetIndex] == "current-patch" else {
+                    throw CLIError.unknownCommand("read \(arguments[targetIndex])")
+                }
+                options.command = .readCurrentPatch
+                index = arguments.index(after: targetIndex)
+            case "current-patch":
+                options.command = .readCurrentPatch
+                index = arguments.index(after: index)
+            default:
+                break
+            }
+        }
 
         while index < arguments.endIndex {
             let argument = arguments[index]
@@ -105,7 +163,11 @@ private struct Options: Sendable, Equatable {
                 options.timeout = timeout
                 index = arguments.index(index, offsetBy: 2)
             default:
-                throw CLIError.unknownOption(argument)
+                if argument.hasPrefix("-") {
+                    throw CLIError.unknownOption(argument)
+                } else {
+                    throw CLIError.unknownCommand(argument)
+                }
             }
         }
 
@@ -123,6 +185,8 @@ private struct Options: Sendable, Equatable {
 }
 
 private enum CLIError: Swift.Error, CustomStringConvertible {
+    case unknownCommand(String)
+    case missingCommandTarget(String)
     case unknownOption(String)
     case missingOptionValue(String)
     case invalidOptionValue(String, String)
@@ -130,7 +194,7 @@ private enum CLIError: Swift.Error, CustomStringConvertible {
 
     var exitCode: Int {
         switch self {
-        case .unknownOption, .missingOptionValue, .invalidOptionValue:
+        case .unknownCommand, .missingCommandTarget, .unknownOption, .missingOptionValue, .invalidOptionValue:
             64
         case .outputEncodingFailed:
             1
@@ -139,6 +203,10 @@ private enum CLIError: Swift.Error, CustomStringConvertible {
 
     var description: String {
         switch self {
+        case let .unknownCommand(command):
+            "unknown command \(command)\n\n\(Options.usage)"
+        case let .missingCommandTarget(command):
+            "missing target for \(command)\n\n\(Options.usage)"
         case let .unknownOption(option):
             "unknown option \(option)\n\n\(Options.usage)"
         case let .missingOptionValue(option):
@@ -180,6 +248,13 @@ private final class PatchDumpTool {
 
     init(timeout: TimeInterval) {
         self.timeout = timeout
+    }
+
+    static func listPorts() -> MIDIPortInventoryReport {
+        MIDIPortInventoryReport(
+            destinations: endpoints(count: MIDIGetNumberOfDestinations, endpoint: MIDIGetDestination),
+            sources: endpoints(count: MIDIGetNumberOfSources, endpoint: MIDIGetSource)
+        )
     }
 
     func readCurrentPatch() throws -> GT1000PatchSnapshot {
@@ -257,9 +332,7 @@ private final class PatchDumpTool {
         for index in 0..<count() {
             let candidate = endpoint(index)
             guard let name = Self.name(of: candidate),
-                  name.localizedCaseInsensitiveContains("GT-1000"),
-                  !name.localizedCaseInsensitiveContains("DAW"),
-                  !name.localizedCaseInsensitiveContains("CTRL") else {
+                  Self.isDefaultGT1000EndpointName(name) else {
                 continue
             }
 
@@ -294,6 +367,27 @@ private final class PatchDumpTool {
         }
     }
 
+    private static func endpoints(
+        count: () -> Int,
+        endpoint: (Int) -> MIDIEndpointRef
+    ) -> [MIDIPortInventoryReport.Endpoint] {
+        (0..<count()).map { index in
+            let name = Self.name(of: endpoint(index)) ?? "Unnamed MIDI Endpoint"
+            return MIDIPortInventoryReport.Endpoint(
+                index: index,
+                name: name,
+                isGT1000: name.localizedCaseInsensitiveContains("GT-1000"),
+                isDefaultGT1000Endpoint: Self.isDefaultGT1000EndpointName(name)
+            )
+        }
+    }
+
+    private static func isDefaultGT1000EndpointName(_ name: String) -> Bool {
+        name.localizedCaseInsensitiveContains("GT-1000")
+            && !name.localizedCaseInsensitiveContains("DAW")
+            && !name.localizedCaseInsensitiveContains("CTRL")
+    }
+
     private static func name(of endpoint: MIDIEndpointRef) -> String? {
         var name: Unmanaged<CFString>?
         MIDIObjectGetStringProperty(endpoint, kMIDIPropertyName, &name)
@@ -322,6 +416,32 @@ private final class PatchDumpTool {
         }
 
         return messages
+    }
+}
+
+private struct MIDIPortInventoryReport: Codable, Sendable, Equatable {
+    let destinations: [Endpoint]
+    let sources: [Endpoint]
+
+    var textSummary: String {
+        var lines: [String] = []
+        lines.append("MIDI Destinations (\(destinations.count))")
+        lines.append(contentsOf: destinations.map(\.textSummary))
+        lines.append("MIDI Sources (\(sources.count))")
+        lines.append(contentsOf: sources.map(\.textSummary))
+        return lines.joined(separator: "\n")
+    }
+
+    struct Endpoint: Codable, Sendable, Equatable {
+        let index: Int
+        let name: String
+        let isGT1000: Bool
+        let isDefaultGT1000Endpoint: Bool
+
+        var textSummary: String {
+            let marker = isDefaultGT1000Endpoint ? " default-gt1000" : (isGT1000 ? " gt1000" : "")
+            return "[\(index)] \(name)\(marker)"
+        }
     }
 }
 
