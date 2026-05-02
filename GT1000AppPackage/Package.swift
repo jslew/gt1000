@@ -12,12 +12,22 @@ let package = Package(
             name: "GT1000AppFeature",
             targets: ["GT1000AppFeature"]
         ),
+        .executable(
+            name: "GT1000PatchDump",
+            targets: ["GT1000PatchDump"]
+        ),
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
         // Targets can depend on other targets in this package and products from dependencies.
         .target(
             name: "GT1000AppFeature"
+        ),
+        .executableTarget(
+            name: "GT1000PatchDump",
+            dependencies: [
+                "GT1000AppFeature"
+            ]
         ),
         .testTarget(
             name: "GT1000AppFeatureTests",

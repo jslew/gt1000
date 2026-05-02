@@ -12,7 +12,7 @@ public class MIDIManager: NSObject {
     public var connectedDeviceName: String? = nil
     public private(set) var lastReceivedMessage: [UInt8] = []
     public let diagnostics: GT1000Diagnostics
-    private var pendingSysExMessage: [UInt8] = []
+    private var messageAssembler = MIDISysExMessageAssembler()
     
     public init(diagnostics: GT1000Diagnostics = .shared) {
         self.diagnostics = diagnostics
@@ -71,50 +71,10 @@ public class MIDIManager: NSObject {
             diagnostics.debug("Received MIDI packet \(Self.hexString(packet))")
         }
 
-        for message in assembleIncomingMessages(from: messages) {
+        for message in messageAssembler.assemble(from: messages) {
             lastReceivedMessage = message
             diagnostics.info("Received MIDI \(Self.hexString(message))")
         }
-    }
-
-    private func assembleIncomingMessages(from packets: [[UInt8]]) -> [[UInt8]] {
-        var completeMessages: [[UInt8]] = []
-
-        for packet in packets where !packet.isEmpty {
-            let startsSysEx = packet.first == 0xF0
-            let endsSysEx = packet.last == 0xF7
-
-            if startsSysEx {
-                pendingSysExMessage = packet
-
-                if endsSysEx {
-                    completeMessages.append(pendingSysExMessage)
-                    pendingSysExMessage.removeAll()
-                } else {
-                    diagnostics.debug("Started fragmented SysEx message with \(packet.count) bytes")
-                }
-
-                continue
-            }
-
-            if !pendingSysExMessage.isEmpty {
-                pendingSysExMessage.append(contentsOf: packet)
-
-                if endsSysEx {
-                    completeMessages.append(pendingSysExMessage)
-                    diagnostics.debug("Completed fragmented SysEx message with \(pendingSysExMessage.count) bytes")
-                    pendingSysExMessage.removeAll()
-                } else {
-                    diagnostics.debug("Appended SysEx fragment; buffered \(pendingSysExMessage.count) bytes")
-                }
-
-                continue
-            }
-
-            completeMessages.append(packet)
-        }
-
-        return completeMessages
     }
     
     public func updateConnectionStatus() {
