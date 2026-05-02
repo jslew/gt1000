@@ -9,6 +9,7 @@
   - `xcodebuildmcp macos build-and-run --workspace-path GT1000App.xcworkspace --scheme GT1000App --arch arm64`
 
 ## GT-1000 MIDI Details
+- Local MIDI reference wiki: start at `docs/midi-reference/README.md` before changing SysEx, control/assign decoding, or CLI patch inspection behavior.
 - The GT-1000/GT-1000CORE SysEx model ID is `00 00 00 4F`.
 - Roland/BOSS DT1/RQ1 checksums are calculated over address plus data/size only.
 - GT-1000 BPM values are encoded as four 4-bit nibbles of `BPM * 10`; for example 120.0 BPM is `00 04 0B 00`.
