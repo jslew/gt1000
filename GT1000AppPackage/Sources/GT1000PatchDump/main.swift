@@ -19,7 +19,7 @@ struct GT1000PatchDump {
             case .readCurrentPatch:
                 let tool = PatchDumpTool(timeout: options.timeout)
                 let snapshot = try tool.readCurrentPatch()
-                try print(snapshot, format: options.format, pretty: options.pretty)
+                try print(snapshot, options: options)
             }
         } catch let error as CLIError {
             fputs("error: \(error.description)\n", stderr)
@@ -32,15 +32,66 @@ struct GT1000PatchDump {
 
     private static func print(
         _ snapshot: GT1000PatchSnapshot,
-        format: Options.OutputFormat,
-        pretty: Bool
+        options: Options
     ) throws {
-        switch format {
-        case .text:
-            Swift.print(snapshot.signalChainSummary)
-        case .json:
-            try printJSON(GT1000PatchSnapshotReport(snapshot: snapshot), pretty: pretty)
+        switch options.view {
+        case .overview:
+            let report = GT1000PatchOverviewReport(snapshot: snapshot)
+            switch options.format {
+            case .text:
+                Swift.print(report.textSummary)
+            case .json:
+                try printJSON(report, pretty: options.pretty)
+            }
+        case .chain:
+            let report = GT1000PatchChainReport(snapshot: snapshot)
+            switch options.format {
+            case .text:
+                Swift.print(report.textSummary)
+            case .json:
+                try printJSON(report, pretty: options.pretty)
+            }
+        case .block:
+            let block = try resolveBlock(in: snapshot, options: options)
+            let report = GT1000PatchBlockDetailReport(snapshot: snapshot, block: block)
+            switch options.format {
+            case .text:
+                Swift.print(report.textSummary)
+            case .json:
+                try printJSON(report, pretty: options.pretty)
+            }
+        case .full:
+            switch options.format {
+            case .text:
+                Swift.print(snapshot.signalChainSummary)
+            case .json:
+                try printJSON(GT1000PatchSnapshotReport(snapshot: snapshot), pretty: options.pretty)
+            }
         }
+    }
+
+    private static func resolveBlock(
+        in snapshot: GT1000PatchSnapshot,
+        options: Options
+    ) throws -> GT1000PatchSnapshot.BlockSummary {
+        if let blockID = options.blockID {
+            guard let block = snapshot.blockSummaries.first(where: { $0.id == blockID }) else {
+                throw CLIError.unknownBlock(blockID, availableBlockIDs: snapshot.blockSummaries.map(\.id))
+            }
+            return block
+        }
+
+        if let position = options.chainPosition {
+            guard let element = snapshot.chainElements.first(where: { $0.position == position }) else {
+                throw CLIError.unknownChainPosition(position, validRange: snapshot.chainElements.indices.map { $0 + 1 })
+            }
+            guard let block = snapshot.blockSummaries.first(where: { $0.chainElementValue == element.rawValue }) else {
+                throw CLIError.missingDetailBlockForChainPosition(position, element.displayName)
+            }
+            return block
+        }
+
+        throw CLIError.missingBlockSelector
     }
 
     private static func print(
@@ -84,16 +135,26 @@ private struct Options: Sendable, Equatable {
         case json
     }
 
+    enum PatchView: String, Sendable {
+        case overview
+        case chain
+        case block
+        case full
+    }
+
     var command: Command = .readCurrentPatch
     var timeout: TimeInterval = 5.0
     var format: OutputFormat = .text
+    var view: PatchView = .overview
+    var blockID: String?
+    var chainPosition: Int?
     var pretty = false
     var showsHelp = false
 
     static let usage = """
     Usage:
       GT1000PatchDump list-ports [options]
-      GT1000PatchDump read current-patch [options]
+      GT1000PatchDump read current-patch [--view overview|chain|block|full] [options]
       GT1000PatchDump [options]
 
     Agent-facing read-only CLI for connected GT-1000 devices.
@@ -103,6 +164,9 @@ private struct Options: Sendable, Equatable {
       read current-patch  Read the connected GT-1000 temporary patch. Default.
 
     Options:
+      --view name         Patch view: overview, chain, block, or full. Defaults to overview.
+      --block id          Block id for --view block, for example delay1 or preamp1.
+      --position number   Signal-chain position for --view block.
       --format text|json  Output format. Defaults to text.
       --pretty            Pretty-print JSON output.
       --timeout seconds   Seconds to wait for patch replies. Defaults to 5.
@@ -154,6 +218,25 @@ private struct Options: Sendable, Equatable {
 
                 options.format = format
                 index = arguments.index(index, offsetBy: 2)
+            case "--view":
+                let value = try value(after: index, in: arguments, option: argument)
+                guard let view = PatchView(rawValue: value) else {
+                    throw CLIError.invalidOptionValue(argument, value)
+                }
+
+                options.view = view
+                index = arguments.index(index, offsetBy: 2)
+            case "--block":
+                options.blockID = try value(after: index, in: arguments, option: argument)
+                index = arguments.index(index, offsetBy: 2)
+            case "--position":
+                let value = try value(after: index, in: arguments, option: argument)
+                guard let position = Int(value), position > 0 else {
+                    throw CLIError.invalidOptionValue(argument, value)
+                }
+
+                options.chainPosition = position
+                index = arguments.index(index, offsetBy: 2)
             case "--timeout":
                 let value = try value(after: index, in: arguments, option: argument)
                 guard let timeout = TimeInterval(value), timeout > 0 else {
@@ -190,11 +273,16 @@ private enum CLIError: Swift.Error, CustomStringConvertible {
     case unknownOption(String)
     case missingOptionValue(String)
     case invalidOptionValue(String, String)
+    case missingBlockSelector
+    case unknownBlock(String, availableBlockIDs: [String])
+    case unknownChainPosition(Int, validRange: [Int])
+    case missingDetailBlockForChainPosition(Int, String)
     case outputEncodingFailed
 
     var exitCode: Int {
         switch self {
-        case .unknownCommand, .missingCommandTarget, .unknownOption, .missingOptionValue, .invalidOptionValue:
+        case .unknownCommand, .missingCommandTarget, .unknownOption, .missingOptionValue, .invalidOptionValue,
+             .missingBlockSelector, .unknownBlock, .unknownChainPosition, .missingDetailBlockForChainPosition:
             64
         case .outputEncodingFailed:
             1
@@ -213,6 +301,14 @@ private enum CLIError: Swift.Error, CustomStringConvertible {
             "missing value for \(option)\n\n\(Options.usage)"
         case let .invalidOptionValue(option, value):
             "invalid value \(value) for \(option)\n\n\(Options.usage)"
+        case .missingBlockSelector:
+            "missing block selector for --view block; pass --block id or --position number\n\n\(Options.usage)"
+        case let .unknownBlock(blockID, availableBlockIDs):
+            "unknown block \(blockID). Available block ids: \(availableBlockIDs.joined(separator: ", "))"
+        case let .unknownChainPosition(position, validRange):
+            "unknown chain position \(position). Valid positions: \(validRange.map(String.init).joined(separator: ", "))"
+        case let .missingDetailBlockForChainPosition(position, displayName):
+            "chain position \(position) (\(displayName)) does not have a decoded detail block"
         case .outputEncodingFailed:
             "failed to encode output"
         }

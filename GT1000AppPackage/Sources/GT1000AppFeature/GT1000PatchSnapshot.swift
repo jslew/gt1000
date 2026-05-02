@@ -253,6 +253,132 @@ public struct GT1000PatchSnapshotReport: Codable, Sendable, Equatable {
     }
 }
 
+public struct GT1000PatchOverviewReport: Codable, Sendable, Equatable {
+    public let patchName: String?
+    public let masterBPM: Double?
+    public let masterPatchLevel: Int?
+    public let masterKey: String?
+    public let ampControl1Enabled: Bool?
+    public let ampControl2Enabled: Bool?
+    public let signalChainElementCount: Int
+    public let detailBlockCount: Int
+
+    public init(snapshot: GT1000PatchSnapshot) {
+        self.patchName = snapshot.patchName
+        self.masterBPM = snapshot.masterBPM
+        self.masterPatchLevel = snapshot.masterPatchLevel
+        self.masterKey = snapshot.masterKey
+        self.ampControl1Enabled = snapshot.ampControl1Enabled
+        self.ampControl2Enabled = snapshot.ampControl2Enabled
+        self.signalChainElementCount = snapshot.chainElements.count
+        self.detailBlockCount = snapshot.blockSummaries.count
+    }
+
+    public var textSummary: String {
+        var lines: [String] = []
+        if let patchName {
+            lines.append("Patch: \(patchName)")
+        }
+        if let masterBPM {
+            lines.append(String(format: "Master BPM: %.1f", masterBPM))
+        }
+        if let masterPatchLevel {
+            lines.append("Patch Level: \(masterPatchLevel)")
+        }
+        if let masterKey {
+            lines.append("Master Key: \(masterKey)")
+        }
+        if let ampControl1Enabled {
+            lines.append("Amp CTL1: \(ampControl1Enabled ? "ON" : "OFF")")
+        }
+        if let ampControl2Enabled {
+            lines.append("Amp CTL2: \(ampControl2Enabled ? "ON" : "OFF")")
+        }
+        lines.append("Signal Chain Elements: \(signalChainElementCount)")
+        lines.append("Detail Blocks: \(detailBlockCount)")
+        return lines.joined(separator: "\n")
+    }
+}
+
+public struct GT1000PatchChainReport: Codable, Sendable, Equatable {
+    public let overview: GT1000PatchOverviewReport
+    public let signalChainSummary: String
+    public let elements: [Element]
+
+    public init(snapshot: GT1000PatchSnapshot) {
+        self.overview = GT1000PatchOverviewReport(snapshot: snapshot)
+        self.signalChainSummary = snapshot.chainElements.map(\.displayName).joined(separator: " -> ")
+        self.elements = snapshot.chainElements.map { element in
+            Element(
+                element: element,
+                detailBlockID: snapshot.blockSummaries.first { $0.chainElementValue == element.rawValue }?.id
+            )
+        }
+    }
+
+    public struct Element: Codable, Sendable, Equatable {
+        public let id: String
+        public let position: Int
+        public let displayName: String
+        public let detailBlockID: String?
+        public let isReserved: Bool
+        public let isOutput: Bool
+
+        public init(element: GT1000PatchSnapshot.ChainElement, detailBlockID: String?) {
+            self.id = element.id
+            self.position = element.position
+            self.displayName = element.displayName
+            self.detailBlockID = detailBlockID
+            self.isReserved = element.isReserved
+            self.isOutput = element.isOutput
+        }
+    }
+
+    public var textSummary: String {
+        var lines = [overview.textSummary, "Signal chain: \(signalChainSummary)"]
+        lines.append(contentsOf: elements.map { element in
+            let detail = element.detailBlockID.map { " detail=\($0)" } ?? ""
+            return "\(element.position). \(element.displayName)\(detail)"
+        })
+        return lines.joined(separator: "\n")
+    }
+}
+
+public struct GT1000PatchBlockDetailReport: Codable, Sendable, Equatable {
+    public let overview: GT1000PatchOverviewReport
+    public let chainPositions: [Int]
+    public let block: GT1000PatchSnapshotReport.Block
+
+    public init(snapshot: GT1000PatchSnapshot, block: GT1000PatchSnapshot.BlockSummary) {
+        self.overview = GT1000PatchOverviewReport(snapshot: snapshot)
+        self.chainPositions = snapshot.chainElements
+            .filter { $0.rawValue == block.chainElementValue }
+            .map(\.position)
+        self.block = GT1000PatchSnapshotReport.Block(block)
+    }
+
+    public var textSummary: String {
+        var lines = [overview.textSummary]
+        lines.append("Block: \(block.displayName) (\(block.id))")
+        if !chainPositions.isEmpty {
+            lines.append("Chain Positions: \(chainPositions.map(String.init).joined(separator: ", "))")
+        }
+        if let isEnabled = block.isEnabled {
+            lines.append("Enabled: \(isEnabled ? "ON" : "OFF")")
+        }
+        if let typeName = block.typeName {
+            lines.append("Type: \(typeName)")
+        }
+        lines.append(contentsOf: block.parameters.map { parameter in
+            if let displayValue = parameter.displayValue {
+                return "\(parameter.displayName): \(displayValue) (\(parameter.rawValue))"
+            }
+            return "\(parameter.displayName): \(parameter.rawValue)"
+        })
+        return lines.joined(separator: "\n")
+    }
+}
+
 public struct GT1000PatchSnapshotDecoder: Sendable {
     public init() {}
 
