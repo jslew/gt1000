@@ -33,10 +33,12 @@ Use progressive disclosure:
 ```sh
 scripts/gt1000-agent --pretty patch overview --live --timeout 8
 scripts/gt1000-agent --pretty patch chain --live --timeout 8
-scripts/gt1000-agent --pretty patch block preamp1 --live --timeout 8
+scripts/gt1000-agent --pretty patch block preamp1 --live --timeout 12
 ```
 
 Use `patch dump` only for diagnostics. Avoid showing users the full JSON unless they ask for raw details.
+
+Run live patch reads sequentially. Do not start multiple `patch block --live` commands in parallel; the current SwiftPM/CoreMIDI path can contend on the build directory and time out. Prefer `overview` plus `chain` first, then read at most one or two specific blocks if the chain view is not enough.
 
 Inspect saved full patch dumps offline with:
 
@@ -52,11 +54,14 @@ For a human patch description:
 
 1. Read `overview`.
 2. Read `chain`.
-3. Read only relevant block details.
-4. Use `descriptionSignalChainSummary` / `descriptionElements` as the default human-facing chain.
-5. Do not mention switched-off blocks that have no decoded hardware/control assignment unless the user asks for the raw chain or hidden/dormant blocks.
-6. Do mention switched-off blocks that are assigned to a physical control, because they are part of the patch's playable potential.
-7. Explain musically and structurally, noting split/mixer routing when it remains in the description chain.
+3. Use `descriptionSignalChainSummary` / `descriptionElements` as the default human-facing chain.
+4. Mention only the audible/playable chain in the first answer. Do not name switched-off blocks that have no decoded hardware/control assignment unless the user asks for raw chain, hidden blocks, or dormant/off blocks.
+5. Do mention switched-off blocks that are assigned to a physical control, because they are part of the patch's playable potential.
+6. Read individual block details only when needed to explain an audible/playable block's type or important settings.
+7. If a patch slot reports an unexpected name after selection, trust the live patch name and say so briefly. For example, selecting `01-1` may land on user slot `INIT PATCH`, not factory `P01-1 Premium Drive`.
+8. Explain musically and structurally, noting split/mixer routing when it remains in the description chain.
+
+For an initialized or sparse patch, keep the answer short. Example shape: "`01-1` is `INIT PATCH`. Audibly, it is a mostly blank initialized patch: input compression, send/return, noise suppression, foot volume, looper, reverb, then speaker/output routing to main and sub outs." Do not append a list of dormant off blocks.
 
 For physical switch mapping:
 

@@ -19,12 +19,18 @@ Use this page when answering user questions about a connected GT-1000 v4+ unit.
 3. Read details only for blocks that matter to the question:
 
    ```sh
-   scripts/gt1000-agent --pretty patch block delay1 --live --timeout 8
+   scripts/gt1000-agent --pretty patch block delay1 --live --timeout 12
    ```
 
 4. Explain `descriptionSignalChainSummary` in human terms. Avoid listing every parameter unless asked.
 
-For human descriptions, omit switched-off blocks that have no decoded hardware/control assignment. They are still present in `elements` for raw inspection, but they are effectively absent from the playable signal chain. Include switched-off blocks when the chain data says they have a hardware/control assignment, because the player can bring them into the live sound.
+For human descriptions, omit switched-off blocks that have no decoded hardware/control assignment. They are still present in `elements` for raw inspection, but they are effectively absent from the playable signal chain. Include switched-off blocks when the chain data says they have a hardware/control assignment, because the player can bring them into the live sound. Do not name dormant blocks in the same answer unless the user asks for raw chain contents.
+
+Run live reads sequentially. Avoid parallel `patch block --live` calls; the current SwiftPM/CoreMIDI execution path can contend on `.build` and time out. Start with `overview` and `chain`, then read only one or two block details if required.
+
+When selecting a patch slot, verify the result by reading `overview`. Trust the live `patchName` over factory sound-list expectations; user slots can contain initialized or edited patches.
+
+For an initialized/sparse patch, a good answer is concise: identify the live patch name, describe the audible/playable chain, and stop. Do not follow with a catalogue of off blocks.
 
 ## Explain Physical Switches
 

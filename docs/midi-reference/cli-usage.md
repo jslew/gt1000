@@ -24,11 +24,15 @@ scripts/gt1000-agent --pretty patch chain --live --timeout 8
 
 The chain view includes both the raw chain order in `elements` and the human-description projection in `descriptionElements` / `descriptionSignalChainSummary`. The description projection omits reserved entries and switched-off blocks unless a decoded hardware/control assignment marks them as playable from a physical control.
 
+Use `descriptionSignalChainSummary` for normal human answers. Use `elements` only for raw inspection or when the user asks about hidden/dormant/off blocks.
+
 One block detail by block id:
 
 ```sh
 scripts/gt1000-agent --pretty patch block preamp1 --live --timeout 8
 ```
+
+Run live block-detail reads sequentially. Avoid parallel block reads against the live backend; the SwiftPM/CoreMIDI path can contend and time out.
 
 One block detail by chain position:
 
