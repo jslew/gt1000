@@ -14,17 +14,22 @@ class AgentCLITests(unittest.TestCase):
         overview = agent_cli.overview_from_full(snapshot)
 
         self.assertEqual(overview["patchName"], "TEST PATCH")
-        self.assertEqual(overview["signalChainElementCount"], 2)
-        self.assertEqual(overview["detailBlockCount"], 1)
+        self.assertEqual(overview["signalChainElementCount"], 4)
+        self.assertEqual(overview["detailBlockCount"], 3)
 
     def test_offline_chain_links_detail_blocks(self):
         snapshot = agent_cli.load_json(FIXTURE)
 
         chain = agent_cli.chain_from_full(snapshot)
 
-        self.assertEqual(chain["signalChainSummary"], "AIRD PREAMP 1 -> MAIN OUT L")
+        self.assertEqual(chain["signalChainSummary"], "AIRD PREAMP 1 -> DELAY 1 -> CHORUS -> MAIN OUT L")
+        self.assertEqual(chain["descriptionSignalChainSummary"], "AIRD PREAMP 1 -> CHORUS -> MAIN OUT L")
         self.assertEqual(chain["elements"][0]["detailBlockID"], "preamp1")
-        self.assertIsNone(chain["elements"][1]["detailBlockID"])
+        self.assertEqual(chain["elements"][1]["detailBlockID"], "delay1")
+        self.assertFalse(chain["elements"][1]["includeInDescription"])
+        self.assertTrue(chain["elements"][2]["hasControlAssignment"])
+        self.assertTrue(chain["elements"][2]["includeInDescription"])
+        self.assertIsNone(chain["elements"][3]["detailBlockID"])
 
     def test_offline_block_by_position(self):
         snapshot = agent_cli.load_json(FIXTURE)

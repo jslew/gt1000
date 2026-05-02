@@ -104,6 +104,9 @@ def cmd_ports(args: argparse.Namespace) -> Any:
 
 def patch_view(args: argparse.Namespace, view: str) -> Any:
     if args.live or args.file is None:
+        if view == "chain":
+            snapshot = run_swift_json(["read", "current-patch", "--view", "full"], timeout=args.timeout)
+            return chain_from_full(snapshot)
         return run_swift_json(["read", "current-patch", "--view", view], timeout=args.timeout)
 
     snapshot = load_json(args.file)
@@ -202,28 +205,87 @@ def overview_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
 def chain_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
     blocks = snapshot.get("blocks", [])
     detail_by_value = {
-        block.get("chainElementValue"): block.get("id")
+        block.get("chainElementValue"): block
         for block in blocks
         if block.get("chainElementValue") is not None
     }
-    elements = [
-        {
+    elements = []
+    description_elements = []
+    for element in snapshot.get("signalChainElements", []):
+        block = detail_by_value.get(element.get("rawValue"))
+        is_enabled = block.get("isEnabled") if block else None
+        has_control_assignment = block_has_control_assignment(block)
+        description_candidate = include_element_in_description(
+            element,
+            block,
+            is_enabled=is_enabled,
+            has_control_assignment=has_control_assignment,
+        )
+        chain_element = {
             "id": element.get("id"),
             "position": element.get("position"),
             "displayName": element.get("displayName"),
-            "detailBlockID": detail_by_value.get(element.get("rawValue")),
+            "detailBlockID": block.get("id") if block else None,
+            "isEnabled": is_enabled,
+            "hasControlAssignment": has_control_assignment,
+            "includeInDescription": description_candidate,
             "isReserved": element.get("isReserved", False),
             "isOutput": element.get("isOutput", False),
         }
-        for element in snapshot.get("signalChainElements", [])
-    ]
+        elements.append(chain_element)
+        if description_candidate:
+            description_elements.append(chain_element)
+
     return {
         "overview": overview_from_full(snapshot),
         "signalChainSummary": " -> ".join(
             element["displayName"] for element in elements if element.get("displayName")
         ),
+        "descriptionSignalChainSummary": " -> ".join(
+            element["displayName"] for element in description_elements if element.get("displayName")
+        ),
+        "descriptionPolicy": (
+            "Omits reserved elements and switched-off blocks unless a decoded hardware/control "
+            "assignment indicates the user can bring that block into the live sound."
+        ),
         "elements": elements,
+        "descriptionElements": description_elements,
     }
+
+
+def block_has_control_assignment(block: dict[str, Any] | None) -> bool:
+    if not block:
+        return False
+
+    direct_flags = [
+        block.get("hasControlAssignment"),
+        block.get("hasHardwareAssignment"),
+        block.get("hasActiveAssign"),
+        block.get("isAssignedToControl"),
+    ]
+    if any(value is True for value in direct_flags):
+        return True
+
+    controls = block.get("assignedControls")
+    return isinstance(controls, list) and len(controls) > 0
+
+
+def include_element_in_description(
+    element: dict[str, Any],
+    block: dict[str, Any] | None,
+    *,
+    is_enabled: Any,
+    has_control_assignment: bool,
+) -> bool:
+    if element.get("isReserved", False):
+        return False
+    if element.get("isOutput", False):
+        return True
+    if block is None:
+        return True
+    if is_enabled is False and not has_control_assignment:
+        return False
+    return True
 
 
 def block_for_id(snapshot: dict[str, Any], block_id: str | None) -> dict[str, Any]:

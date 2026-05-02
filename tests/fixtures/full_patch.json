@@ -25,6 +25,41 @@
       ],
       "rawDataHex": "01 0D",
       "typeName": "DIAMOND AMP"
+    },
+    {
+      "address": ["10", "00", "16", "00"],
+      "chainElementValue": 13,
+      "displayName": "DELAY 1",
+      "id": "delay1",
+      "isEnabled": false,
+      "isInSignalChain": true,
+      "parameters": [
+        {
+          "displayName": "SW",
+          "displayValue": "OFF",
+          "id": "sw",
+          "rawValue": 0
+        }
+      ],
+      "rawDataHex": "00"
+    },
+    {
+      "address": ["10", "00", "17", "00"],
+      "assignedControls": ["CTL1"],
+      "chainElementValue": 14,
+      "displayName": "CHORUS",
+      "id": "chorus",
+      "isEnabled": false,
+      "isInSignalChain": true,
+      "parameters": [
+        {
+          "displayName": "SW",
+          "displayValue": "OFF",
+          "id": "sw",
+          "rawValue": 0
+        }
+      ],
+      "rawDataHex": "00"
     }
   ],
   "masterBPM": 120,
@@ -44,14 +79,31 @@
     },
     {
       "address": ["10", "00", "10", "69"],
-      "displayName": "MAIN OUT L",
+      "displayName": "DELAY 1",
       "id": "chain-2",
-      "isOutput": true,
+      "isOutput": false,
       "isReserved": false,
       "position": 2,
+      "rawValue": 13
+    },
+    {
+      "address": ["10", "00", "10", "6A"],
+      "displayName": "CHORUS",
+      "id": "chain-3",
+      "isOutput": false,
+      "isReserved": false,
+      "position": 3,
+      "rawValue": 14
+    },
+    {
+      "address": ["10", "00", "10", "6B"],
+      "displayName": "MAIN OUT L",
+      "id": "chain-4",
+      "isOutput": true,
+      "isReserved": false,
+      "position": 4,
       "rawValue": 47
     }
   ],
   "signalChainSummary": "Patch: TEST PATCH\nMaster BPM: 120.0\nPatch Level: 4\nSignal chain: AIRD PREAMP 1 -> MAIN OUT L"
 }
-

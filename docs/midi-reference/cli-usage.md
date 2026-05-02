@@ -22,6 +22,8 @@ Chain, no parameters:
 scripts/gt1000-agent --pretty patch chain --live --timeout 8
 ```
 
+The chain view includes both the raw chain order in `elements` and the human-description projection in `descriptionElements` / `descriptionSignalChainSummary`. The description projection omits reserved entries and switched-off blocks unless a decoded hardware/control assignment marks them as playable from a physical control.
+
 One block detail by block id:
 
 ```sh

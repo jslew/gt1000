@@ -53,7 +53,10 @@ For a human patch description:
 1. Read `overview`.
 2. Read `chain`.
 3. Read only relevant block details.
-4. Explain musically and structurally, noting enabled/off blocks and split/mixer routing.
+4. Use `descriptionSignalChainSummary` / `descriptionElements` as the default human-facing chain.
+5. Do not mention switched-off blocks that have no decoded hardware/control assignment unless the user asks for the raw chain or hidden/dormant blocks.
+6. Do mention switched-off blocks that are assigned to a physical control, because they are part of the patch's playable potential.
+7. Explain musically and structurally, noting split/mixer routing when it remains in the description chain.
 
 For physical switch mapping:
 

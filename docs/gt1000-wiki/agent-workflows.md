@@ -22,7 +22,9 @@ Use this page when answering user questions about a connected GT-1000 v4+ unit.
    scripts/gt1000-agent --pretty patch block delay1 --live --timeout 8
    ```
 
-4. Explain in human terms. Avoid listing every parameter unless asked.
+4. Explain `descriptionSignalChainSummary` in human terms. Avoid listing every parameter unless asked.
+
+For human descriptions, omit switched-off blocks that have no decoded hardware/control assignment. They are still present in `elements` for raw inspection, but they are effectively absent from the playable signal chain. Include switched-off blocks when the chain data says they have a hardware/control assignment, because the player can bring them into the live sound.
 
 ## Explain Physical Switches
 
