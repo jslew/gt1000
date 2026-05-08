@@ -29,6 +29,6 @@ scripts/gt1000-agent --pretty patch chain --live --timeout 8
 scripts/gt1000-agent --pretty patch block preamp1 --live --timeout 8
 ```
 
-The Python agent CLI delegates live MIDI work to the Swift backend and can inspect saved full patch JSON dumps offline. Search this wiki directly with `rg`; wiki search belongs to the skill/docs layer, not to the device CLI.
+The Python agent CLI performs live MIDI reads through its Python CoreMIDI backend and can inspect saved full patch JSON dumps offline. Search this wiki directly with `rg`; wiki search belongs to the skill/docs layer, not to the device CLI.
 
 The next planned CLI view is `patch controls`, which should expose PatchCommon/SystemControl/Assign-derived switch mappings.

@@ -6,7 +6,7 @@ The agent-facing CLI is wrapped by:
 scripts/gt1000-agent
 ```
 
-This is a Python command surface for agents and skills. It delegates live CoreMIDI reads to the Swift backend at `scripts/gt1000-cli.sh`, and it can also inspect saved full patch JSON dumps offline.
+This is a Python command surface for agents and skills. Live MIDI reads use the Python CoreMIDI backend in `tools/gt1000/live.py`, and saved full patch JSON dumps can be inspected offline.
 
 ## Progressive Patch Views
 
@@ -32,7 +32,7 @@ One block detail by block id:
 scripts/gt1000-agent --pretty patch block preamp1 --live --timeout 8
 ```
 
-Run live block-detail reads sequentially. Avoid parallel block reads against the live backend; the SwiftPM/CoreMIDI path can contend and time out.
+Run live block-detail reads sequentially. The Python live backend transacts one request at a time to avoid stale GT-1000 reply backlog, but parallel CLI processes can still interleave reads on the same MIDI source.
 
 One block detail by chain position:
 
@@ -46,6 +46,8 @@ Full diagnostic dump:
 scripts/gt1000-agent --pretty patch dump --live --timeout 8
 ```
 
+Full diagnostic dumps read every summary block and may need a longer timeout than overview, chain, or single-block reads.
+
 Saved dump inspection:
 
 ```sh
@@ -53,6 +55,37 @@ scripts/gt1000-agent --pretty patch overview --file patch.json
 scripts/gt1000-agent --pretty patch chain --file patch.json
 scripts/gt1000-agent --pretty patch block preamp1 --file patch.json
 ```
+
+## Validated Patch Writes
+
+Build a write plan without sending MIDI:
+
+```sh
+scripts/gt1000-agent --pretty patch plan default
+scripts/gt1000-agent --pretty patch plan 4cm-template
+```
+
+Apply and verify a temporary patch plan:
+
+```sh
+scripts/gt1000-agent --pretty patch apply default --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch apply 4cm-template --live --verify --timeout 20
+```
+
+Persistent user-slot writes are restricted to U03:
+
+```sh
+scripts/gt1000-agent --pretty patch apply default --live --user-slot U03-1 --verify --timeout 20
+scripts/gt1000-agent --pretty patch apply 4cm-template --live --user-slot U03-2 --verify --timeout 20
+```
+
+Set a single validated parameter and verify the exact bytes:
+
+```sh
+scripts/gt1000-agent --pretty patch set delay1 time 380 --live --user-slot U03-2 --verify --timeout 12
+```
+
+Do not write U01 or U02. The CLI rejects persistent slots outside `U03-1` through `U03-5`.
 
 ## MIDI Ports
 

@@ -55,7 +55,7 @@ All offsets below are relative to temporary patch base `10 00 00 00`.
 
 ## Current CLI Read Plan
 
-`GT1000PatchDump read current-patch` reads:
+`scripts/gt1000-agent patch dump --live` reads:
 
 - `PatchCommon` name range.
 - `PatchEfct` master/routing/chain range.

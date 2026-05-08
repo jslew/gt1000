@@ -1,129 +1,71 @@
-# GT1000App - macOS App
+# GT-1000 Python Agent Tools
 
-A modern macOS application using a **workspace + SPM package** architecture for clean separation between app shell and feature code.
+Python tooling for inspecting and safely editing a connected BOSS/Roland GT-1000.
 
-## Project Architecture
+The main entrypoint is:
 
-```
-GT1000App/
-├── GT1000App.xcworkspace/              # Open this file in Xcode
-├── GT1000App.xcodeproj/                # App shell project
-├── GT1000App/                          # App target (minimal)
-│   ├── Assets.xcassets/                # App-level assets (icons, colors)
-│   ├── GT1000AppApp.swift              # App entry point
-│   ├── GT1000App.entitlements          # App sandbox settings
-│   └── GT1000App.xctestplan            # Test configuration
-├── GT1000AppPackage/                   # 🚀 Primary development area
-│   ├── Package.swift                   # Package configuration
-│   ├── Sources/GT1000AppFeature/       # Your feature code
-│   └── Tests/GT1000AppFeatureTests/    # Unit tests
-└── GT1000AppUITests/                   # UI automation tests
+```sh
+scripts/gt1000-agent
 ```
 
-## Key Architecture Points
+## Project Shape
 
-### Workspace + SPM Structure
-- **App Shell**: `GT1000App/` contains minimal app lifecycle code
-- **Feature Code**: `GT1000AppPackage/Sources/GT1000AppFeature/` is where most development happens
-- **Separation**: Business logic lives in the SPM package, app target just imports and displays it
-
-### Buildable Folders (Xcode 16)
-- Files added to the filesystem automatically appear in Xcode
-- No need to manually add files to project targets
-- Reduces project file conflicts in teams
-
-### App Sandbox
-The app is sandboxed by default with basic file access permissions. Modify `GT1000App.entitlements` to add capabilities as needed.
-
-## Development Notes
-
-### Code Organization
-Most development happens in `GT1000AppPackage/Sources/GT1000AppFeature/` - organize your code as you prefer.
-
-### Public API Requirements
-Types exposed to the app target need `public` access:
-```swift
-public struct SettingsView: View {
-    public init() {}
-    
-    public var body: some View {
-        // Your view code
-    }
-}
+```text
+.
+├── tools/gt1000/              # Python CoreMIDI backend, CLI, patch plans, and validators
+├── scripts/                   # Thin command wrappers and live patch helper scripts
+├── tests/                     # Python unit tests
+├── docs/midi-reference/       # Local GT-1000 SysEx/control/address notes
+└── docs/gt1000-wiki/          # Manual-derived working notes for agents
 ```
 
-### Adding Dependencies
-Edit `GT1000AppPackage/Package.swift` to add SPM dependencies:
-```swift
-dependencies: [
-    .package(url: "https://github.com/example/SomePackage", from: "1.0.0")
-],
-targets: [
-    .target(
-        name: "GT1000AppFeature",
-        dependencies: ["SomePackage"]
-    ),
-]
+## Common Commands
+
+Inspect the connected device:
+
+```sh
+scripts/gt1000-agent --pretty ports --live
+scripts/gt1000-agent --pretty patch overview --live --timeout 8
+scripts/gt1000-agent --pretty patch chain --live --timeout 8
+scripts/gt1000-agent --pretty patch block delay1 --live --timeout 8
 ```
 
-### Test Structure
-- **Unit Tests**: `GT1000AppPackage/Tests/GT1000AppFeatureTests/` (Swift Testing framework)
-- **UI Tests**: `GT1000AppUITests/` (XCUITest framework)
-- **Test Plan**: `GT1000App.xctestplan` coordinates all tests
+Build validated write plans without sending MIDI:
 
-## Configuration
-
-### XCConfig Build Settings
-Build settings are managed through **XCConfig files** in `Config/`:
-- `Config/Shared.xcconfig` - Common settings (bundle ID, versions, deployment target)
-- `Config/Debug.xcconfig` - Debug-specific settings  
-- `Config/Release.xcconfig` - Release-specific settings
-- `Config/Tests.xcconfig` - Test-specific settings
-
-### App Sandbox & Entitlements
-The app is sandboxed by default with basic file access. Edit `GT1000App/GT1000App.entitlements` to add capabilities:
-```xml
-<key>com.apple.security.files.user-selected.read-write</key>
-<true/>
-<key>com.apple.security.network.client</key>
-<true/>
-<!-- Add other entitlements as needed -->
+```sh
+scripts/gt1000-agent --pretty patch plan default
+scripts/gt1000-agent --pretty patch plan 4cm-template
 ```
 
-## macOS-Specific Features
+Apply and verify temporary-patch writes:
 
-### Window Management
-Add multiple windows and settings panels:
-```swift
-@main
-struct GT1000AppApp: App {
-    var body: some Scene {
-        WindowGroup {
-            ContentView()
-        }
-        
-        Settings {
-            SettingsView()
-        }
-    }
-}
+```sh
+scripts/gt1000-agent --pretty patch apply default --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch apply 4cm-template --live --verify --timeout 20
 ```
 
-### Asset Management
-- **App-Level Assets**: `GT1000App/Assets.xcassets/` (app icon with multiple sizes, accent color)
-- **Feature Assets**: Add `Resources/` folder to SPM package if needed
+Persistent writes are intentionally restricted to U03 user slots:
 
-### SPM Package Resources
-To include assets in your feature package:
-```swift
-.target(
-    name: "GT1000AppFeature",
-    dependencies: [],
-    resources: [.process("Resources")]
-)
+```sh
+scripts/gt1000-agent --pretty patch apply default --live --user-slot U03-1 --verify --timeout 20
+scripts/gt1000-agent --pretty patch apply 4cm-template --live --user-slot U03-2 --verify --timeout 20
 ```
 
-## Notes
+Set a validated parameter:
 
-### Generated with XcodeBuildMCP
-This project was scaffolded using [XcodeBuildMCP](https://github.com/cameroncooke/XcodeBuildMCP), which provides tools for AI-assisted macOS development workflows.
+```sh
+scripts/gt1000-agent --pretty patch set delay1 time 380 --live --user-slot U03-2 --verify
+```
+
+Run tests:
+
+```sh
+python3 -m unittest discover -s tests -q
+```
+
+## Safety Notes
+
+- U01 and U02 are not write targets for the Python CLI.
+- The normal MIDI endpoint is `GT-1000`; avoid `GT-1000 DAW CTRL` unless deliberately targeting DAW control.
+- Writes use typed/validated builders and read-back verification instead of arbitrary SysEx blobs.
+- See `docs/midi-reference/README.md` before changing SysEx, Assign, or chain behavior.

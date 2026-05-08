@@ -2,4 +2,4 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec "$SCRIPT_DIR/gt1000-cli.sh" read current-patch "$@"
+exec "$SCRIPT_DIR/gt1000-agent" patch dump --live "$@"

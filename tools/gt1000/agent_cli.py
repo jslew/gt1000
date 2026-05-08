@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""Agent-facing GT-1000 CLI.
-
-This Python layer owns command ergonomics and offline JSON shaping. Live MIDI
-I/O remains in the Swift backend because it already has tested CoreMIDI code.
-"""
+"""Agent-facing GT-1000 CLI."""
 
 from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
+try:
+    from tools.gt1000 import live, patch_edit
+except ModuleNotFoundError:
+    import live
+    import patch_edit
+
 
 ROOT = Path(__file__).resolve().parents[2]
-SWIFT_CLI = ROOT / "scripts" / "gt1000-cli.sh"
 
 
 class CLIError(Exception):
@@ -37,12 +37,6 @@ def main(argv: list[str] | None = None) -> int:
     except CLIError as error:
         print(f"error: {error}", file=sys.stderr)
         return error.exit_code
-    except subprocess.CalledProcessError as error:
-        if error.stderr:
-            print(error.stderr.rstrip(), file=sys.stderr)
-        else:
-            print(f"error: live backend failed with exit code {error.returncode}", file=sys.stderr)
-        return error.returncode
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -54,7 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     subcommands = parser.add_subparsers(dest="command", required=True)
 
-    ports = subcommands.add_parser("ports", help="List live MIDI ports using the Swift backend.")
+    ports = subcommands.add_parser("ports", help="List live MIDI ports.")
     ports.add_argument("--live", action="store_true", help="Required for live MIDI port reads.")
     ports.set_defaults(func=cmd_ports)
 
@@ -76,7 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
     block.set_defaults(func=cmd_patch_block)
 
     dump = patch_subcommands.add_parser("dump", help="Read/write a full diagnostic patch JSON dump.")
-    dump.add_argument("--live", action="store_true", help="Read live patch data from the Swift backend.")
+    dump.add_argument("--live", action="store_true", help="Read live patch data.")
     dump.add_argument("--timeout", type=float, default=8.0, help="Live read timeout in seconds.")
     dump.add_argument("--output", type=Path, help="Write JSON dump to this file instead of stdout.")
     dump.set_defaults(func=cmd_patch_dump)
@@ -86,12 +80,36 @@ def build_parser() -> argparse.ArgumentParser:
     inspect.add_argument("--view", choices=["overview", "chain", "full"], default="overview")
     inspect.set_defaults(func=cmd_patch_inspect)
 
+    plan = patch_subcommands.add_parser("plan", help="Build a validated patch-write plan without sending it.")
+    plan.add_argument("plan_id", choices=["default", "4cm", "4cm-template"], help="Patch plan to build.")
+    plan.add_argument("--name", help="Patch name to write into the temporary patch.")
+    plan.set_defaults(func=cmd_patch_plan)
+
+    apply = patch_subcommands.add_parser("apply", help="Apply a validated patch-write plan to the temporary patch.")
+    apply.add_argument("plan_id", choices=["default", "4cm", "4cm-template"], help="Patch plan to apply.")
+    apply.add_argument("--name", help="Patch name to write into the temporary patch.")
+    apply.add_argument("--live", action="store_true", help="Required because this writes to the connected GT-1000 temporary patch.")
+    apply.add_argument("--user-slot", choices=["U03-1", "U03-2", "U03-3", "U03-4", "U03-5"], help="Persist to a U03 user patch slot instead of the temporary patch.")
+    apply.add_argument("--verify", action="store_true", help="Re-read every written range and compare exact bytes.")
+    apply.add_argument("--timeout", type=float, default=12.0, help="Verification read timeout in seconds.")
+    apply.set_defaults(func=cmd_patch_apply)
+
+    set_param = patch_subcommands.add_parser("set", help="Set one validated block parameter.")
+    set_param.add_argument("block_id", help="Block id such as delay1 or dist1.")
+    set_param.add_argument("parameter_id", help="Parameter id such as sw, type, time, or drive.")
+    set_param.add_argument("value", help="Raw value, on/off, or exact type name.")
+    set_param.add_argument("--live", action="store_true", help="Required because this writes to the connected GT-1000.")
+    set_param.add_argument("--user-slot", choices=["U03-1", "U03-2", "U03-3", "U03-4", "U03-5"], help="Persist to a U03 user patch slot instead of the temporary patch.")
+    set_param.add_argument("--verify", action="store_true", help="Re-read the written range and compare exact bytes.")
+    set_param.add_argument("--timeout", type=float, default=12.0, help="Verification read timeout in seconds.")
+    set_param.set_defaults(func=cmd_patch_set)
+
     return parser
 
 
 def add_input_options(parser: argparse.ArgumentParser) -> None:
     source = parser.add_mutually_exclusive_group()
-    source.add_argument("--live", action="store_true", help="Read live patch data from the Swift backend.")
+    source.add_argument("--live", action="store_true", help="Read live patch data.")
     source.add_argument("--file", type=Path, help="Inspect a saved full patch JSON dump.")
     parser.add_argument("--timeout", type=float, default=8.0, help="Live read timeout in seconds.")
 
@@ -99,15 +117,17 @@ def add_input_options(parser: argparse.ArgumentParser) -> None:
 def cmd_ports(args: argparse.Namespace) -> Any:
     if not args.live:
         raise CLIError("ports requires --live because MIDI ports are live device state", 64)
-    return run_swift_json(["list-ports"])
+    return live.list_ports()
 
 
 def patch_view(args: argparse.Namespace, view: str) -> Any:
     if args.live or args.file is None:
+        snapshot = read_live_snapshot(args.timeout, requests=live.INITIAL_READS if view in {"overview", "chain"} else None)
         if view == "chain":
-            snapshot = run_swift_json(["read", "current-patch", "--view", "full"], timeout=args.timeout)
             return chain_from_full(snapshot)
-        return run_swift_json(["read", "current-patch", "--view", view], timeout=args.timeout)
+        if view == "overview":
+            return overview_from_full(snapshot)
+        return snapshot
 
     snapshot = load_json(args.file)
     if view == "overview":
@@ -122,12 +142,45 @@ def cmd_patch_block(args: argparse.Namespace) -> Any:
         raise CLIError("patch block requires exactly one selector: block_id or --position", 64)
 
     if args.live or args.file is None:
-        command = ["read", "current-patch", "--view", "block"]
-        if args.position is not None:
-            command += ["--position", str(args.position)]
+        block_request = None
+        if args.block_id is not None:
+            block_definition = next((block for block in live.SUMMARY_BLOCKS if block.id == args.block_id), None)
+            if block_definition is None:
+                raise CLIError(f"unknown block {args.block_id}", 64)
+            block_request = live.PatchReadRequest(
+                block_definition.display_name,
+                block_definition.address,
+                live.seven_bit_address(block_definition.size),
+            )
         else:
-            command += ["--block", args.block_id]
-        return run_swift_json(command, timeout=args.timeout)
+            header_snapshot = read_live_snapshot(args.timeout, requests=live.INITIAL_READS)
+            element = next(
+                (item for item in header_snapshot.get("signalChainElements", []) if item.get("position") == args.position),
+                None,
+            )
+            if element is None:
+                raise CLIError(f"unknown chain position {args.position}", 64)
+            block_definition = next(
+                (block for block in live.SUMMARY_BLOCKS if block.chain_element_value == element.get("rawValue")),
+                None,
+            )
+            if block_definition is None:
+                raise CLIError(
+                    f"chain position {args.position} ({element.get('displayName')}) has no decoded detail block",
+                    64,
+                )
+            block_request = live.PatchReadRequest(
+                block_definition.display_name,
+                block_definition.address,
+                live.seven_bit_address(block_definition.size),
+            )
+        requests = live.INITIAL_READS + ([block_request] if block_request else live.BLOCK_READS)
+        snapshot = read_live_snapshot(args.timeout, requests=requests)
+        if args.position is not None:
+            block = block_for_position(snapshot, args.position)
+        else:
+            block = block_for_id(snapshot, args.block_id)
+        return block_detail_from_full(snapshot, block)
 
     snapshot = load_json(args.file)
     if args.position is not None:
@@ -141,7 +194,7 @@ def cmd_patch_dump(args: argparse.Namespace) -> Any:
     if not args.live:
         raise CLIError("patch dump currently requires --live", 64)
 
-    dump = run_swift_json(["read", "current-patch", "--view", "full"], timeout=args.timeout)
+    dump = read_live_snapshot(args.timeout)
     if args.output:
         args.output.write_text(json.dumps(dump, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return {"output": str(args.output), "patchName": dump.get("patchName")}
@@ -157,23 +210,39 @@ def cmd_patch_inspect(args: argparse.Namespace) -> Any:
     return snapshot
 
 
-def run_swift_json(command: list[str], timeout: float | None = None) -> Any:
-    if not SWIFT_CLI.exists():
-        raise CLIError(f"Swift live backend not found at {SWIFT_CLI}", 69)
+def cmd_patch_plan(args: argparse.Namespace) -> Any:
+    return patch_edit.plan_by_id(args.plan_id, args.name).to_dict()
 
-    full_command = [str(SWIFT_CLI)] + command + ["--format", "json"]
-    if timeout is not None:
-        full_command += ["--timeout", str(timeout)]
 
-    completed = subprocess.run(
-        full_command,
-        cwd=ROOT,
-        check=True,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    return json.loads(completed.stdout)
+def cmd_patch_apply(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch apply requires --live because it writes to the connected GT-1000 temporary patch", 64)
+    plan = patch_edit.plan_by_id(args.plan_id, args.name)
+    if args.user_slot:
+        plan = patch_edit.plan_for_user_slot(plan, args.user_slot)
+    try:
+        return patch_edit.apply_plan(plan, timeout=args.timeout, verify=args.verify)
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
+def cmd_patch_set(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch set requires --live because it writes to the connected GT-1000", 64)
+    try:
+        plan = patch_edit.build_parameter_set_plan(args.block_id, args.parameter_id, args.value, slot=args.user_slot)
+        return patch_edit.apply_plan(plan, timeout=args.timeout, verify=args.verify)
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
+def read_live_snapshot(timeout: float, requests: list[live.PatchReadRequest] | None = None) -> dict[str, Any]:
+    try:
+        return live.read_current_patch(timeout=timeout, requests=requests)
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
 
 
 def load_json(path: Path) -> dict[str, Any]:

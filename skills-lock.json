@@ -1,29 +1,4 @@
 {
   "version": 1,
-  "skills": {
-    "swift-concurrency-pro": {
-      "source": "twostraws/swift-concurrency-agent-skill",
-      "sourceType": "github",
-      "skillPath": "swift-concurrency-pro/SKILL.md",
-      "computedHash": "dec65531b4bd37d15e6243dbb0d2d1f554b4f4087bcb2e8deb7273f570fa4069"
-    },
-    "swift-testing-pro": {
-      "source": "twostraws/swift-testing-agent-skill",
-      "sourceType": "github",
-      "skillPath": "swift-testing-pro/SKILL.md",
-      "computedHash": "90504b29146ccd7e88d8ba7244c6c4e4d2b410fb21bdd4ce578f10583b158481"
-    },
-    "swiftui-pro": {
-      "source": "twostraws/swiftui-agent-skill",
-      "sourceType": "github",
-      "skillPath": "swiftui-pro/SKILL.md",
-      "computedHash": "07033426e384295a4b49cf0b2ffdefd4098cae4af53fef16bc1f2d9281118c41"
-    },
-    "xcodebuildmcp-cli": {
-      "source": "getsentry/xcodebuildmcp",
-      "sourceType": "local",
-      "skillPath": "xcodebuildmcp-cli/SKILL.md",
-      "computedHash": "afeaf4d088fd79760bb6c80ccf9b5e23e1587587d0c8a135d4b4427fc869a0b1"
-    }
-  }
+  "skills": {}
 }

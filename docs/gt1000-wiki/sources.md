@@ -20,7 +20,7 @@ https://www.boss.info/global/support/by_product/gt-1000/owners_manuals/
 The PDFs are not committed. To refresh scratch copies:
 
 ```sh
-.agents/skills/gt1000-knowledge/scripts/fetch-current-manuals.sh /tmp/gt1000-manuals
+.agents/skills/gt1000/scripts/fetch-current-manuals.sh /tmp/gt1000-manuals
 ```
 
 Then inspect the extracted text:
@@ -30,4 +30,3 @@ rg -n "CONTROL ASSIGN|ASSIGN SETTING|AIRD PREAMP|MIDI SETTING|PatchCommon" /tmp/
 ```
 
 When extracting into this wiki, paraphrase and summarize. Do not paste large manual sections.
-

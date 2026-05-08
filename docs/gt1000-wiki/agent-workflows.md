@@ -26,7 +26,7 @@ Use this page when answering user questions about a connected GT-1000 v4+ unit.
 
 For human descriptions, omit switched-off blocks that have no decoded hardware/control assignment. They are still present in `elements` for raw inspection, but they are effectively absent from the playable signal chain. Include switched-off blocks when the chain data says they have a hardware/control assignment, because the player can bring them into the live sound. Do not name dormant blocks in the same answer unless the user asks for raw chain contents.
 
-Run live reads sequentially. Avoid parallel `patch block --live` calls; the current SwiftPM/CoreMIDI execution path can contend on `.build` and time out. Start with `overview` and `chain`, then read only one or two block details if required.
+Run live reads sequentially. Avoid parallel `patch block --live` calls because separate processes can interleave GT-1000 replies on the same MIDI source. Start with `overview` and `chain`, then read only one or two block details if required.
 
 When selecting a patch slot, verify the result by reading `overview`. Trust the live `patchName` over factory sound-list expectations; user slots can contain initialized or edited patches.
 
@@ -57,7 +57,7 @@ For now:
 1. Refresh scratch manuals:
 
    ```sh
-   .agents/skills/gt1000-knowledge/scripts/fetch-current-manuals.sh /tmp/gt1000-manuals
+   .agents/skills/gt1000/scripts/fetch-current-manuals.sh /tmp/gt1000-manuals
    ```
 
 2. Search extracted text:
