@@ -1,30 +1,76 @@
 # GT-1000 Agent Skill
 
-An installable agent skill that lets a coding agent inspect, explain, and safely edit a connected BOSS/Roland GT-1000 or GT-1000CORE.
+An installable agent skill for musicians who use a BOSS/Roland GT-1000 or GT-1000CORE for live performance, recording, practice, MIDI control, direct rigs, amp rigs, and hybrid setups.
 
-The goal is not for people to use a MIDI CLI directly. The goal is for an agent to understand your GT-1000 well enough to answer practical questions and make validated edits from natural-language requests.
+This is not meant to be a tool you operate by memorizing MIDI commands. It gives an agent enough GT-1000 knowledge and safe device access to work with you conversationally:
 
-## What This Enables
+```text
+Use the GT-1000 skill. Look at the current patch and explain how I would use it on stage.
+```
 
-After installing the skill, you can ask an agent things like:
+```text
+Use the GT-1000 skill. I am recording direct tonight. Check whether this patch is set up like an amp/cab direct tone or like a 4CM amp-rig patch.
+```
 
-- "What patch is currently loaded, and what is the signal chain doing?"
-- "Explain what the footswitches and expression pedal do on this patch."
-- "Which blocks are actually audible, and which ones are just sitting in the chain turned off?"
-- "Make a simple default patch in a safe user slot and verify the write."
-- "Create a 4-cable-method template in `U03-2`."
-- "Set Delay 1 time to 420 ms in `U03-2` and verify it."
-- "Why is this MIDI CC not toggling the tuner?"
-- "Decode this patch's Assigns and tell me what is mapped to physical controls."
-- "Use my rig preferences when explaining whether amp/cab simulation should be on."
+```text
+Use the GT-1000 skill. My external MIDI controller is supposed to toggle the tuner. Figure out why it is not working.
+```
 
-The skill gives the agent:
+## Why This Exists
 
-- GT-1000 v4+ manual-derived reference notes.
-- MIDI/SysEx address, checksum, Assign, and control-mapping notes.
-- A bundled Python CoreMIDI backend for live device reads and validated writes.
-- Safety rules that steer agents away from arbitrary SysEx and unsafe user-slot writes.
-- Optional user-profile memory for rig-specific advice.
+GT-1000 patches are deep. A patch can include multiple parallel paths, speaker simulation, send/return loops, direct and assign-based footswitch behavior, MIDI CC mappings, global MIDI settings, and hidden blocks that may or may not affect the sound.
+
+That complexity is useful, but it is hard to inspect quickly when you are:
+
+- building a live set
+- adapting patches between FRFR/direct and real amps
+- checking a 4-cable-method rig before a show
+- preparing direct recording tones
+- mapping CTL switches and expression pedals
+- debugging MIDI controllers
+- making sure a patch does not accidentally depend on global settings you forgot about
+
+This skill is designed to let an agent act like a GT-1000-aware tech: read the device, explain the patch in plain musical terms, identify risks, and make validated edits when you ask.
+
+## What You Can Ask
+
+Patch and tone understanding:
+
+- "What patch is loaded right now?"
+- "Explain the signal chain like I am about to play it live."
+- "Which blocks are actually audible?"
+- "Is this patch intended for direct/FRFR, headphones, 4CM, or the front of an amp?"
+- "Are amp and speaker simulation active?"
+- "What is the wet/dry or parallel routing doing?"
+
+Live-performance prep:
+
+- "Tell me what every footswitch and expression pedal does."
+- "Which controls are direct patch controls, and which are Assign overlays?"
+- "Find anything that could surprise me on stage."
+- "Make CTL 3 a tuner switch if that is safe for this patch."
+- "Set this patch up so Delay 1 can be toggled from a footswitch."
+
+Recording workflow:
+
+- "Check whether this patch is safe to record direct."
+- "Make a version of this patch with cab simulation enabled for interface recording."
+- "Compare this patch against my live amp-rig preferences."
+- "Help me build a clean direct patch with delay and reverb."
+
+Amp and hybrid rigs:
+
+- "I am using 4CM with a tube amp. Does this patch route send/return correctly?"
+- "Make a 4CM template in the user patch slot I choose."
+- "Explain whether the GT-1000 preamps should be on or off for this rig."
+- "Check whether the main/sub outputs make sense for my stage setup."
+
+MIDI and system behavior:
+
+- "What MIDI channel is the GT-1000 listening on?"
+- "Why does this CC work over SysEx but not as a normal controller message?"
+- "Decode the active Assigns."
+- "Show me a validated plan before changing a global MIDI setting."
 
 ## Install
 
@@ -56,54 +102,45 @@ Restart or reload your agent environment after installation if it does not pick 
 
 ## Requirements
 
-- macOS, because the bundled live backend uses CoreMIDI through Python `ctypes`.
+- macOS for the bundled live backend, which uses CoreMIDI through Python `ctypes`.
 - Python 3.
 - A GT-1000 or GT-1000CORE connected over USB/MIDI.
 - The normal MIDI endpoint should appear as `GT-1000`. Avoid `GT-1000 DAW CTRL` unless you deliberately want DAW-control behavior.
 
-## Safety Model
+## Working With Your Rig
 
-The skill is intentionally conservative.
+The same patch can be good or wrong depending on how you connect the GT-1000.
 
-- Agents are instructed not to emit arbitrary SysEx for writes.
-- Writes use typed, validated builders and read-back verification.
-- Persistent user-slot writes are restricted to `U03-1` through `U03-5`.
-- `U01` and `U02` are intentionally blocked.
-- Global settings are not write targets for the packaged edit flows.
-- Live reads run sequentially to avoid interleaving GT-1000 replies across concurrent MIDI clients.
-- Destructive live tests are gated by explicit environment variables.
+For direct/FRFR, headphones, or interface recording, an agent may care about:
 
-If you care about existing patches in `U03`, back them up before asking an agent to write there.
+- GT-1000 preamp and speaker/cab simulation
+- main and sub output routing
+- stereo effects and wet/dry paths
+- output levels and patch level
 
-## How To Work With An Agent
+For 4-cable method or real-amp rigs, an agent may care about:
 
-Ask naturally. The skill tells the agent which local references to load and which bundled command surface to use.
+- send/return placement
+- whether GT-1000 preamps are bypassed or intentionally used
+- whether speaker simulation should be off for amp outputs
+- whether time effects are before or after the amp loop
 
-Examples:
+For live performance, an agent may care about:
 
-```text
-Use the GT-1000 skill. Inspect my current patch and explain it musically.
-```
+- what CTL switches do
+- whether the current number switch has a special function
+- tap tempo, tuner, solo boosts, and expression pedal behavior
+- whether Assign ranges match the physical MIDI/control source
 
-```text
-Use the GT-1000 skill. Tell me what CTL 1, CTL 2, CTL 3, and EXP 1 do on the current patch.
-```
+For recording, an agent may care about:
 
-```text
-Use the GT-1000 skill. Create a verified 4CM template in U03-2. Do not touch any other bank.
-```
-
-```text
-Use the GT-1000 skill. Set Delay 1 time to 420 ms in U03-2 and verify the readback.
-```
-
-```text
-Use the GT-1000 skill. Help me understand why CC#80 is not toggling the tuner.
-```
+- whether the patch produces a complete direct tone
+- whether global output settings could change the recorded result
+- whether the sound depends on an external amp or send/return loop
 
 ## Optional Rig Profile
 
-The skill can use a local profile so advice is grounded in your setup rather than generic GT-1000 assumptions.
+The skill can use a local profile so advice is grounded in your setup instead of generic GT-1000 assumptions.
 
 Agents look for:
 
@@ -115,10 +152,27 @@ $CODEX_HOME/memories/gt1000-profile.md
 You can ask:
 
 ```text
-Use the GT-1000 skill. Create a profile for my normal rig: 4-cable method into a tube amp, main outs matter, speaker simulation usually off.
+Use the GT-1000 skill. Remember that I usually run 4CM into a tube amp live, but record direct through an interface at home.
+```
+
+Or:
+
+```text
+Use the GT-1000 skill. My main live output is to a real amp, but the sub outs go direct to front of house with cab simulation.
 ```
 
 The profile is user-specific memory. It is not stored in this repo or inside the reusable skill package.
+
+## Safety Model
+
+This skill should help an agent make better decisions, not bypass judgment.
+
+- The agent should ask before changing user patches, patch order, global/system settings, MIDI settings, Assigns, or anything persistent.
+- The agent should show the intended target and edit plan before destructive writes.
+- Writes should use typed, validated builders and read-back verification.
+- The agent should not emit arbitrary SysEx blobs as the answer.
+- If the current bundled command surface cannot safely perform a requested edit, the right next step is to add or use a typed validator, not guess bytes.
+- Live reads should run sequentially to avoid interleaving GT-1000 replies across concurrent MIDI clients.
 
 ## What Is In This Repo
 
@@ -132,7 +186,7 @@ That directory is self-contained:
 
 - `SKILL.md` describes how agents should use the skill.
 - `references/` contains GT-1000 manual/wiki and MIDI reference notes.
-- `scripts/` contains thin helpers the agent can call.
+- `scripts/` contains helpers the agent can call.
 - `tools/gt1000/` contains the bundled Python implementation for live reads, validated plans, and read-back verification.
 
 The top-level `tools/`, `docs/`, and `tests/` directories are for maintaining and validating the skill package.
@@ -145,7 +199,7 @@ Default tests are non-destructive. Live tests are skipped unless explicitly enab
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -q
 ```
 
-Run the comprehensive live skill suite against a connected GT-1000. This destructively writes and verifies only `U03-1` and `U03-2`:
+Run the comprehensive live skill suite against a connected GT-1000. The current maintainer suite uses `U03-1` and `U03-2` as disposable sandbox slots:
 
 ```sh
 GT1000_LIVE=1 GT1000_ALLOW_U03_DESTRUCTIVE=1 python3 -m unittest tests.test_live_skill -q
@@ -163,9 +217,8 @@ Validate the packaged skill's offline read path:
 skills/gt1000/scripts/gt1000-agent --pretty patch inspect tests/fixtures/full_patch.json --view chain
 ```
 
-## Current Limits
+## Current Implementation State
 
-- The packaged live backend targets macOS/CoreMIDI.
-- The safe edit surface is intentionally small: default patch plan, 4CM template plan, and selected validated parameter edits.
-- Persistent writes are limited to `U03-*` by design.
-- Broader patch editing should be added as typed intents and validators, not as raw SysEx snippets.
+The skill is meant to support the whole GT-1000: current patch buffer, user patches, global settings, MIDI behavior, Assigns, physical controls, and validated edits through natural language.
+
+The bundled live backend currently targets macOS/CoreMIDI, and the current write helpers are intentionally narrow. Broader patch and global-setting edits should be added as typed intents and validators so an agent can keep working conversationally without falling back to raw SysEx.

@@ -11,6 +11,8 @@ Use the bundled GT-1000 references and CLI to inspect, explain, and safely edit 
 
 Do not emit arbitrary SysEx for writes. Use structured CLI commands and typed/validated builders.
 
+The skill scope is the GT-1000 as a whole: current patch buffer, user patches, Assigns, physical controls, MIDI behavior, and global/system settings. A narrow helper command is an implementation limitation, not a conceptual product boundary. When the current CLI cannot perform a requested edit, add or use a typed validator before writing instead of falling back to raw byte arrays.
+
 ## Skill Layout
 
 Resolve paths relative to this `SKILL.md` file:
@@ -79,14 +81,21 @@ scripts/gt1000-agent --pretty patch plan default
 scripts/gt1000-agent --pretty patch plan 4cm-template
 ```
 
-Temporary patch writes are allowed through validated CLI plans and should be read-back verified:
+Temporary patch writes through validated CLI plans should be read-back verified:
 
 ```sh
 scripts/gt1000-agent --pretty patch apply default --live --verify --timeout 20
 scripts/gt1000-agent --pretty patch apply 4cm-template --live --verify --timeout 20
 ```
 
-Persistent writes are restricted to `U03-1` through `U03-5`:
+Some currently bundled helper commands only expose a narrow persistent write sandbox. Treat that as a temporary safety guardrail in this implementation, not as a GT-1000 skill rule. For other user patches, global settings, MIDI settings, or Assign edits, use or add a typed command that validates:
+
+- target memory area and patch/global address
+- parameter range and encoding
+- model-specific quirks
+- read-back verification
+
+Examples of currently implemented verified writes:
 
 ```sh
 scripts/gt1000-agent --pretty patch apply default --live --user-slot U03-1 --verify --timeout 20
@@ -130,7 +139,9 @@ For reference updates:
 ## Safety Rules
 
 - The normal endpoint is `GT-1000`; avoid `GT-1000 DAW CTRL` unless deliberately targeting DAW control.
+- Ask before changing user patches, global/system settings, patch order, initialize/exchange operations, Assigns, or anything persistent.
 - SysEx writes are not gated the same way as Channel Voice messages; verify MIDI RX channel when CCs do not work.
+- Prefer typed intents and validators over raw byte arrays for every write.
 - Preserve tests that assert exact SysEx byte output when changing builders.
 - GT-1000/GT-1000CORE SysEx model ID is `00 00 00 4F`.
 - Roland/BOSS DT1/RQ1 checksums are calculated over address plus data/size only.
