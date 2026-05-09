@@ -67,3 +67,10 @@ fastlane/test_output
 
 # macOS
 .DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Local GT-1000 scratch dumps
+temp_patch.json

@@ -22,8 +22,8 @@ class AgentCLITests(unittest.TestCase):
 
         chain = agent_cli.chain_from_full(snapshot)
 
-        self.assertEqual(chain["signalChainSummary"], "AIRD PREAMP 1 -> DELAY 1 -> CHORUS -> MAIN OUT L")
-        self.assertEqual(chain["descriptionSignalChainSummary"], "AIRD PREAMP 1 -> CHORUS -> MAIN OUT L")
+        self.assertEqual(chain["signalChainSummary"], "AIRD PREAMP 1 (DIAMOND AMP) -> DELAY 1 -> CHORUS -> MAIN OUT L")
+        self.assertEqual(chain["descriptionSignalChainSummary"], "AIRD PREAMP 1 (DIAMOND AMP) -> CHORUS -> MAIN OUT L")
         self.assertEqual(chain["elements"][0]["detailBlockID"], "preamp1")
         self.assertEqual(chain["elements"][1]["detailBlockID"], "delay1")
         self.assertFalse(chain["elements"][1]["includeInDescription"])
