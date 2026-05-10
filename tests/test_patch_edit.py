@@ -86,6 +86,30 @@ class PatchEditTests(unittest.TestCase):
         self.assertEqual(plan.writes[0].address, [0x10, 0x00, 0x13, 0x01])
         self.assertEqual(plan.writes[0].data, [15])
 
+    def test_chain_move_plan_reorders_full_validated_chain(self):
+        chain = list(patch_edit.CANONICAL_FULL_CHAIN)
+        plan = patch_edit.build_chain_move_plan(chain, 15, before=14)
+
+        self.assertEqual(plan.id, "move:chain:15:before:14")
+        self.assertEqual(plan.writes[0].address, [0x10, 0x00, 0x10, 0x68])
+        data = plan.writes[0].data
+        self.assertEqual(len(data), 49)
+        self.assertEqual(set(data), set(patch_edit.CANONICAL_FULL_CHAIN))
+        self.assertLess(data.index(15), data.index(14))
+
+    def test_chain_move_plan_validates_reference_and_user_slot(self):
+        chain = list(patch_edit.CANONICAL_FULL_CHAIN)
+        plan = patch_edit.build_chain_move_plan(chain, 15, after=14, slot="U03-2")
+
+        self.assertEqual(plan.id, "move:chain:15:after:14:U03-2")
+        self.assertEqual(plan.writes[0].address, [0x20, 0x0B, 0x10, 0x68])
+        self.assertGreater(plan.writes[0].data.index(15), plan.writes[0].data.index(14))
+
+        with self.assertRaises(ValueError):
+            patch_edit.build_chain_move_plan(chain[:-1], 15, before=14)
+        with self.assertRaises(ValueError):
+            patch_edit.build_chain_move_plan(chain, 15, before=15)
+
     def test_bpm_set_plan_encodes_tenths_and_user_slot(self):
         plan = patch_edit.build_bpm_set_plan("120.0")
 

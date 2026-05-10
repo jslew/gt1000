@@ -239,6 +239,49 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(apply.call_args.kwargs, {"timeout": 12.0, "verify": True})
         self.assertEqual(result, {"verified": True})
 
+    def test_patch_move_command_reads_chain_and_applies_typed_plan(self):
+        chain_values = list(agent_cli.patch_edit.CANONICAL_FULL_CHAIN)
+        snapshot = {
+            "signalChainElements": [
+                {"position": index + 1, "rawValue": value, "displayName": live.chain_element_name(value)}
+                for index, value in enumerate(chain_values)
+            ],
+        }
+        args = agent_cli.build_parser().parse_args(["patch", "move", "delay1", "--before", "chorus", "--live", "--verify"])
+
+        with mock.patch.object(agent_cli, "read_live_snapshot", return_value=snapshot) as read_live:
+            with mock.patch.object(agent_cli.patch_edit, "apply_plan", return_value={"verified": True}) as apply:
+                result = agent_cli.cmd_patch_move(args)
+
+        read_live.assert_called_once()
+        plan = apply.call_args.args[0]
+        self.assertEqual(plan.id, "move:chain:15:before:14")
+        self.assertEqual(plan.writes[0].address, [0x10, 0x00, 0x10, 0x68])
+        self.assertLess(plan.writes[0].data.index(15), plan.writes[0].data.index(14))
+        self.assertEqual(apply.call_args.kwargs, {"timeout": 12.0, "verify": True})
+        self.assertEqual(result, {"verified": True})
+
+    def test_patch_move_command_reads_user_slot_chain(self):
+        chain_values = list(agent_cli.patch_edit.CANONICAL_FULL_CHAIN)
+        snapshot = {
+            "signalChainElements": [
+                {"position": index + 1, "rawValue": value, "displayName": live.chain_element_name(value)}
+                for index, value in enumerate(chain_values)
+            ],
+        }
+        args = agent_cli.build_parser().parse_args(["patch", "move", "delay1", "--after", "chorus", "--live", "--user-slot", "U03-2"])
+
+        with mock.patch.object(agent_cli, "read_user_slot_snapshot", return_value=snapshot) as read_slot:
+            with mock.patch.object(agent_cli.patch_edit, "apply_plan", return_value={"verified": None}) as apply:
+                result = agent_cli.cmd_patch_move(args)
+
+        read_slot.assert_called_once_with("U03-2", 12.0, view="chain")
+        plan = apply.call_args.args[0]
+        self.assertEqual(plan.id, "move:chain:15:after:14:U03-2")
+        self.assertEqual(plan.writes[0].address, [0x20, 0x0B, 0x10, 0x68])
+        self.assertGreater(plan.writes[0].data.index(15), plan.writes[0].data.index(14))
+        self.assertEqual(result, {"verified": None})
+
     def test_patch_tuner_assign_command_applies_typed_plan(self):
         args = agent_cli.build_parser().parse_args(["patch", "tuner-assign", "--live", "--verify"])
 

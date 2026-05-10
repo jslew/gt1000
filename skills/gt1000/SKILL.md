@@ -79,6 +79,7 @@ Use this routing:
 - Parameter meaning or musical interpretation: use CLI block detail first, then load only the relevant manual/wiki page from `references/gt1000-wiki/`.
 - Turning decoded blocks on or off: use `patch enable <block>` or `patch disable <block> --live --verify`, which routes through the validated block `sw` parameter. Open `references/midi-reference/cli-usage.md` only if the command surface or persistent-slot guardrails need explanation.
 - Changing a decoded effect type: use `patch type <block> <type> --live --verify`, which routes through the validated block `type` parameter. Use `patch block <block>` first if you need the current type or decoded options.
+- Moving decoded signal-chain blocks: use `patch move <block> --before <block>` or `patch move <block> --after <block> --live --verify`. Run `patch chain` first if the requested relative order is ambiguous.
 - Patch BPM edits: use `patch set-bpm <bpm> --live --verify` for tempo changes. Open `references/midi-reference/patch-effect.md` only if the user asks about the four-nibble `BPM * 10` encoding.
 - Writes: build a CLI `patch plan` or typed `patch set` intent first. Open low-level references only to validate address/range/model quirks before changing the validator.
 
@@ -144,6 +145,7 @@ scripts/gt1000-agent --pretty patch apply default --live --user-slot U03-1 --ver
 scripts/gt1000-agent --pretty patch set delay1 time 380 --live --user-slot U03-2 --verify
 scripts/gt1000-agent --pretty patch enable delay1 --live --verify
 scripts/gt1000-agent --pretty patch type dist1 T-SCREAM --live --verify
+scripts/gt1000-agent --pretty patch move delay1 --before chorus --live --verify
 scripts/gt1000-agent --pretty patch set-bpm 120.0 --live --verify
 scripts/gt1000-agent --pretty patch tuner-assign --live --verify
 ```

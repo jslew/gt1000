@@ -229,6 +229,18 @@ scripts/gt1000-agent --pretty patch type preamp1 "TWIN COMBO" --live --verify
 - `--verify`: Re-reads the type address to confirm the write succeeded.
 - `--user-slot U03-1`: Persist the type change to a specific user slot instead of the temporary patch. Valid slots: `U03-1` through `U03-5`.
 
+### `patch move`
+Move a decoded block in the current signal chain by reading the existing chain, reordering one element, and writing the validated full 49-element chain back.
+```sh
+scripts/gt1000-agent --pretty patch move delay1 --before chorus --live --verify
+scripts/gt1000-agent --pretty patch move dist1 --after preamp1 --live --verify
+```
+- Exactly one of `--before <block>` or `--after <block>` is required.
+- Supports decoded block IDs and aliases (`ds1`, `sr1`).
+- `--verify`: Re-reads the full chain and compares the exact 49 bytes.
+- `--user-slot U03-1`: Move within a specific user slot instead of the temporary patch. Valid slots: `U03-1` through `U03-5`.
+- This command preserves all other current chain elements and refuses malformed or unknown chain data.
+
 ### `patch set-bpm`
 Change the patch master BPM using the validated four-nibble `BPM * 10` encoding.
 ```sh

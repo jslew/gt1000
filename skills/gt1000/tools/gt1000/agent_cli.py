@@ -204,6 +204,17 @@ def build_parser() -> argparse.ArgumentParser:
     type_command.add_argument("--timeout", type=float, default=12.0, help="Verification read timeout in seconds.")
     type_command.set_defaults(func=cmd_patch_type)
 
+    move = patch_subcommands.add_parser("move", help="Move one decoded block in the signal chain.")
+    move.add_argument("block_id", help="Block id to move, such as delay1 or dist1.")
+    relation = move.add_mutually_exclusive_group(required=True)
+    relation.add_argument("--before", help="Move before this block id.")
+    relation.add_argument("--after", help="Move after this block id.")
+    move.add_argument("--live", action="store_true", help="Required because this reads and writes the connected GT-1000.")
+    move.add_argument("--user-slot", choices=["U03-1", "U03-2", "U03-3", "U03-4", "U03-5"], help="Move within a U03 user patch slot instead of the temporary patch.")
+    move.add_argument("--verify", action="store_true", help="Re-read the full chain and compare exact bytes.")
+    move.add_argument("--timeout", type=float, default=12.0, help="Read/verification timeout in seconds.")
+    move.set_defaults(func=cmd_patch_move)
+
     set_bpm = patch_subcommands.add_parser("set-bpm", help="Set validated patch master BPM.")
     set_bpm.add_argument("bpm", help="Patch master BPM, 40.0...250.0 with at most one decimal place.")
     set_bpm.add_argument("--live", action="store_true", help="Required because this writes to the connected GT-1000.")
@@ -395,6 +406,15 @@ def resolve_block_id(block_id: str) -> str:
         if block.id.lower() == lower_id:
             return block.id
     return block_id
+
+
+def chain_value_for_block_id(block_id: str) -> int:
+    resolved = resolve_block_id(block_id)
+    all_definitions = list(live.SUMMARY_BLOCKS) + list(live.RESIDENT_BLOCKS)
+    block = next((definition for definition in all_definitions if definition.id == resolved), None)
+    if block is None:
+        raise ValueError(f"unknown chain block {block_id}")
+    return block.chain_element_value
 
 
 def patch_view(args: argparse.Namespace, view: str) -> Any:
@@ -624,6 +644,26 @@ def cmd_patch_type(args: argparse.Namespace) -> Any:
     try:
         block_id = resolve_block_id(args.block_id)
         plan = patch_edit.build_parameter_set_plan(block_id, "type", args.type_value, slot=args.user_slot)
+        return patch_edit.apply_plan(plan, timeout=args.timeout, verify=args.verify)
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
+def cmd_patch_move(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch move requires --live because it reads and writes the connected GT-1000", 64)
+    try:
+        element = chain_value_for_block_id(args.block_id)
+        before = chain_value_for_block_id(args.before) if args.before else None
+        after = chain_value_for_block_id(args.after) if args.after else None
+        if args.user_slot:
+            snapshot = read_user_slot_snapshot(args.user_slot, args.timeout, view="chain")
+        else:
+            snapshot = read_live_snapshot(args.timeout, requests=requests_for_view("chain"))
+        chain_values = [item["rawValue"] for item in snapshot.get("signalChainElements", [])]
+        plan = patch_edit.build_chain_move_plan(chain_values, element, before=before, after=after, slot=args.user_slot)
         return patch_edit.apply_plan(plan, timeout=args.timeout, verify=args.verify)
     except ValueError as error:
         raise CLIError(str(error), 64) from error

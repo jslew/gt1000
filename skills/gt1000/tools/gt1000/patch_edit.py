@@ -187,6 +187,43 @@ def build_bpm_set_plan(raw_value: str, *, slot: str | None = None) -> PatchPlan:
     return plan_for_user_slot(plan, slot) if slot else plan
 
 
+def build_chain_move_plan(
+    chain_values: list[int],
+    element: int,
+    *,
+    before: int | None = None,
+    after: int | None = None,
+    slot: str | None = None,
+) -> PatchPlan:
+    if (before is None) == (after is None):
+        raise ValueError("chain move requires exactly one of before or after")
+    if len(chain_values) != len(CANONICAL_FULL_CHAIN):
+        raise ValueError(f"chain data must contain {len(CANONICAL_FULL_CHAIN)} elements")
+    if set(chain_values) != set(CANONICAL_FULL_CHAIN):
+        raise ValueError("chain data does not match the known GT-1000 chain element set")
+    reference = before if before is not None else after
+    if element == reference:
+        raise ValueError("cannot move a chain element relative to itself")
+    if element not in chain_values:
+        raise ValueError(f"chain element {element} is not present in the current chain")
+    if reference not in chain_values:
+        raise ValueError(f"reference chain element {reference} is not present in the current chain")
+
+    reordered = list(chain_values)
+    reordered.remove(element)
+    reference_index = reordered.index(reference)
+    insert_index = reference_index if before is not None else reference_index + 1
+    reordered.insert(insert_index, element)
+    relation = "before" if before is not None else "after"
+    write = chain_write(reordered, f"Move chain element {element} {relation} {reference}")
+    plan = PatchPlan(
+        id=f"move:chain:{element}:{relation}:{reference}",
+        description=f"Move chain element {element} {relation} {reference}.",
+        writes=[write],
+    )
+    return plan_for_user_slot(plan, slot) if slot else plan
+
+
 def build_tuner_assign_plan(*, slot: str | None = None) -> PatchPlan:
     write = live.PatchWrite("Assign 16 tuner on CC80", assign_address(16), tuner_assign_data())
     plan = PatchPlan(
