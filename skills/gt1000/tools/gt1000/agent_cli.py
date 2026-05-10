@@ -450,26 +450,36 @@ def assign_target_for_block_parameter(block_id: str, parameter_id: str) -> dict[
     raise ValueError(f"unknown Assign target for {block_id}.{parameter_id}")
 
 
-def decode_patch_stompbox(data: list[int]) -> dict[str, Any]:
+def user_patch_zero_based_index(slot: str) -> int:
+    normalized = live.normalize_user_slot(slot)
+    bank = int(normalized[1:3])
+    number = int(normalized.split("-", 1)[1])
+    return (bank - 1) * live.USER_PATCHES_PER_BANK + (number - 1)
+
+
+def decode_patch_stompbox_section(data: list[int], definitions: list[dict[str, str | None]], *, size: list[int]) -> dict[str, Any]:
     selections = []
-    for index, definition in enumerate(STOMPBOX_SELECTIONS):
+    for index, definition in enumerate(definitions):
         raw = data[index] if len(data) > index else None
+        prefix = definition["prefix"]
         selections.append({
             "offset": index,
             "address": f"00 {index:02X}",
             "id": definition["id"],
             "displayName": definition["displayName"],
             "rawValue": raw,
-            "selection": stompbox_selection_name(raw, definition["prefix"]) if raw is not None else None,
+            "selection": stompbox_selection_name(raw, prefix) if raw is not None and prefix is not None else None,
         })
     return {
         "supported": True,
-        "totalSize": ["00", "00", "00", "68"],
+        "totalSize": live.hex_bytes(size),
         "selections": selections,
     }
 
 
-def stompbox_selection_name(raw: int, prefix: str) -> str | None:
+def stompbox_selection_name(raw: int, prefix: str | None) -> str | None:
+    if prefix is None:
+        return None
     if raw == 0:
         return "---"
     if 1 <= raw <= 10:
@@ -477,7 +487,7 @@ def stompbox_selection_name(raw: int, prefix: str) -> str | None:
     return None
 
 
-def stompbox_definition(id_: str, display_name: str, prefix: str) -> dict[str, str]:
+def stompbox_definition(id_: str, display_name: str, prefix: str | None) -> dict[str, str | None]:
     return {"id": id_, "displayName": display_name, "prefix": prefix}
 
 
@@ -544,6 +554,66 @@ STOMPBOX_SELECTIONS = [
     stompbox_definition("fx1DefretterBass", "FX 1 Bass Defretter", "DFB"),
     stompbox_definition("fx1FlangerBass", "FX 1 Bass Flanger", "FLB"),
     stompbox_definition("fx1OctaveBass", "FX 1 Bass Octave", "OCB"),
+]
+
+STOMPBOX2_SELECTIONS = [
+    stompbox_definition("fx1PhaserBass", "FX 1 Bass Phaser", "PHB"),
+    stompbox_definition("fx1TWahBass", "FX 1 Bass Touch Wah", "TWB"),
+    stompbox_definition("fx2ChorusBass", "FX 2 Bass Chorus", "CHB"),
+    stompbox_definition("fx2DefretterBass", "FX 2 Bass Defretter", "DFB"),
+    stompbox_definition("fx2FlangerBass", "FX 2 Bass Flanger", "FLB"),
+    stompbox_definition("fx2OctaveBass", "FX 2 Bass Octave", "OCB"),
+    stompbox_definition("fx2PhaserBass", "FX 2 Bass Phaser", "PHB"),
+    stompbox_definition("reserved07", "Reserved 07", None),
+    stompbox_definition("reserved08", "Reserved 08", None),
+    stompbox_definition("reserved09", "Reserved 09", None),
+    stompbox_definition("fx2TWahBass", "FX 2 Bass Touch Wah", "TWB"),
+    stompbox_definition("fx3ChorusBass", "FX 3 Bass Chorus", "CHB"),
+    stompbox_definition("fx3DefretterBass", "FX 3 Bass Defretter", "DFB"),
+    stompbox_definition("fx3FlangerBass", "FX 3 Bass Flanger", "FLB"),
+    stompbox_definition("reserved0E", "Reserved 0E", None),
+    stompbox_definition("reserved0F", "Reserved 0F", None),
+    stompbox_definition("reserved10", "Reserved 10", None),
+]
+
+STOMPBOX3_SELECTIONS = [
+    stompbox_definition("fx3OctaveBass", "FX 3 Bass Octave", "OCB"),
+    stompbox_definition("fx3PhaserBass", "FX 3 Bass Phaser", "PHB"),
+    stompbox_definition("fx3TWahBass", "FX 3 Bass Touch Wah", "TWB"),
+    stompbox_definition("fx4AGSim", "FX 4 Acoustic Guitar Simulator", "ACO"),
+    stompbox_definition("fx4AcReso", "FX 4 Acoustic Resonance", "ACR"),
+    stompbox_definition("fx4AWah", "FX 4 Auto Wah", "AW"),
+    stompbox_definition("fx4Chorus", "FX 4 Chorus", "CHO"),
+    stompbox_definition("fx4CVibe", "FX 4 Classic Vibe", "CV"),
+    stompbox_definition("fx4Comp", "FX 4 Compressor", "CMP"),
+    stompbox_definition("fx4Defretter", "FX 4 Defretter", "DEF"),
+    stompbox_definition("fx4Feedbacker", "FX 4 Feedbacker", "FB"),
+    stompbox_definition("fx4Flanger", "FX 4 Flanger", "FL"),
+    stompbox_definition("fx4Harmonist", "FX 4 Harmonist", "HRM"),
+    stompbox_definition("fx4Humanizer", "FX 4 Humanizer", "HMN"),
+    stompbox_definition("fx4Octave", "FX 4 Octave", "OC"),
+    stompbox_definition("fx4Overtone", "FX 4 Overtone", "OT"),
+    stompbox_definition("fx4Pan", "FX 4 Pan", "PAN"),
+    stompbox_definition("fx4Phaser", "FX 4 Phaser", "PH"),
+    stompbox_definition("fx4PitchShift", "FX 4 Pitch Shift", "PS"),
+    stompbox_definition("fx4RingMod", "FX 4 Ring Modulator", "RM"),
+    stompbox_definition("fx4Rotary", "FX 4 Rotary", "RT"),
+    stompbox_definition("fx4SitarSim", "FX 4 Sitar Simulator", "STR"),
+    stompbox_definition("fx4Slicer", "FX 4 Slicer", "SL"),
+    stompbox_definition("fx4SlowGear", "FX 4 Slow Gear", "SG"),
+    stompbox_definition("fx4SoundHold", "FX 4 Sound Hold", "SH"),
+    stompbox_definition("fx4SBend", "FX 4 S-Bend", "SB"),
+    stompbox_definition("fx4TWah", "FX 4 Touch Wah", "TW"),
+    stompbox_definition("fx4Tremolo", "FX 4 Tremolo", "TR"),
+    stompbox_definition("fx4Vibrato", "FX 4 Vibrato", "VIB"),
+    stompbox_definition("fx4ChorusBass", "FX 4 Bass Chorus", "CHB"),
+    stompbox_definition("fx4DefretterBass", "FX 4 Bass Defretter", "DFB"),
+    stompbox_definition("fx4FlangerBass", "FX 4 Bass Flanger", "FLB"),
+    stompbox_definition("reserved20", "Reserved 20", None),
+    stompbox_definition("fx4OctaveBass", "FX 4 Bass Octave", "OCB"),
+    stompbox_definition("fx4PhaserBass", "FX 4 Bass Phaser", "PHB"),
+    stompbox_definition("fx4TWahBass", "FX 4 Bass Touch Wah", "TWB"),
+    stompbox_definition("bassDist", "Bass Distortion", "BDS"),
 ]
 
 
@@ -706,28 +776,59 @@ def cmd_patch_block(args: argparse.Namespace) -> Any:
 def cmd_patch_stompbox(args: argparse.Namespace) -> Any:
     if not args.live:
         raise CLIError("patch stompbox requires --live because it reads from the connected GT-1000", 64)
-    size = [0x00, 0x00, 0x00, 0x68]
-    address = live.TEMPORARY_PATCH_STOMPBOX
     source_slot = None
+    records = [
+        ("patchStompBox", "Patch Stompbox", live.TEMPORARY_PATCH_STOMPBOX, [0x00, 0x00, 0x00, 0x68], STOMPBOX_SELECTIONS),
+        ("patchStompBox2", "Patch Stompbox 2", live.TEMPORARY_PATCH2_STOMPBOX, [0x00, 0x00, 0x00, 0x11], STOMPBOX2_SELECTIONS),
+        ("patchStompBox3", "Patch Stompbox 3", live.TEMPORARY_PATCH3_STOMPBOX, [0x00, 0x00, 0x00, 0x25], STOMPBOX3_SELECTIONS),
+    ]
     if args.user_slot:
         source_slot = live.normalize_user_slot(args.user_slot)
-        address = live.remap_temporary_patch_address(address, live.user_patch_base(source_slot))
-    request = live.PatchReadRequest("Patch Stompbox", address, size)
+        patch_index = user_patch_zero_based_index(source_slot)
+        patch2_base = live.seven_bit_address(live.seven_bit_address_value(live.USER_PATCH2_1) + patch_index * live.USER_PATCH_STRIDE)
+        patch3_base = live.seven_bit_address(live.seven_bit_address_value(live.USER_PATCH3_1) + patch_index * live.USER_PATCH_STRIDE)
+        records = [
+            (records[0][0], records[0][1], live.remap_temporary_patch_address(records[0][2], live.user_patch_base(source_slot)), records[0][3], records[0][4]),
+            (records[1][0], records[1][1], patch2_base, records[1][3], records[1][4]),
+            (records[2][0], records[2][1], patch3_base, records[2][3], records[2][4]),
+        ]
+    requests = [
+        live.PatchReadRequest(label, address, size)
+        for _id, label, address, size, _definitions in records
+    ]
     try:
-        raw = live.read_data_sets(timeout=args.timeout, requests=[request])
+        raw = live.read_data_sets(timeout=args.timeout, requests=requests)
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
         raise CLIError(str(error)) from error
-    data = raw.get(live.address_key(address), [])
+    sections = []
+    selections = []
+    for section_id, label, address, size, definitions in records:
+        data = raw.get(live.address_key(address), [])
+        decoded = decode_patch_stompbox_section(data, definitions, size=size)
+        sections.append({
+            "id": section_id,
+            "label": label,
+            "address": live.hex_bytes(address),
+            "size": live.hex_bytes(size),
+            "rawDataHex": live.hex_string(data),
+            "decoded": decoded,
+        })
+        selections.extend(
+            dict(selection, sectionId=section_id)
+            for selection in decoded["selections"]
+        )
     return {
         "id": "patchStompBox",
-        "label": "Patch Stompbox",
+        "label": "Patch Stompbox Selections",
         "sourceSlot": source_slot,
-        "address": live.hex_bytes(address),
-        "size": live.hex_bytes(size),
-        "rawDataHex": live.hex_string(data),
-        "decoded": decode_patch_stompbox(data),
+        "sections": sections,
+        "decoded": {
+            "supported": True,
+            "sections": [section["id"] for section in sections],
+            "selections": selections,
+        },
     }
 
 

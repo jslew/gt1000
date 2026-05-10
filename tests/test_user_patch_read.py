@@ -116,31 +116,49 @@ class UserPatchReadTests(unittest.TestCase):
         data = [0] * 0x68
         data[0] = 2
         data[17] = 4
+        data2 = [0] * 0x11
+        data2[0] = 3
+        data3 = [0] * 0x25
+        data3[36] = 5
 
-        with mock.patch.object(agent_cli.live, "read_data_sets", return_value={"10 00 01 00": data}) as read_data_sets:
+        with mock.patch.object(agent_cli.live, "read_data_sets", return_value={
+            "10 00 01 00": data,
+            "10 01 00 00": data2,
+            "10 02 00 00": data3,
+        }) as read_data_sets:
             result = agent_cli.cmd_patch_stompbox(args)
 
-        request = read_data_sets.call_args.kwargs["requests"][0]
-        self.assertEqual(request.label, "Patch Stompbox")
-        self.assertEqual(request.address, [0x10, 0x00, 0x01, 0x00])
-        self.assertEqual(request.size, [0x00, 0x00, 0x00, 0x68])
+        requests = read_data_sets.call_args.kwargs["requests"]
+        self.assertEqual([request.label for request in requests], ["Patch Stompbox", "Patch Stompbox 2", "Patch Stompbox 3"])
+        self.assertEqual(requests[0].address, [0x10, 0x00, 0x01, 0x00])
+        self.assertEqual(requests[0].size, [0x00, 0x00, 0x00, 0x68])
+        self.assertEqual(requests[1].size, [0x00, 0x00, 0x00, 0x11])
+        self.assertEqual(requests[2].size, [0x00, 0x00, 0x00, 0x25])
         self.assertTrue(result["decoded"]["supported"])
-        self.assertEqual(len(result["decoded"]["selections"]), 0x68)
+        self.assertEqual(len(result["decoded"]["selections"]), 0x68 + 0x11 + 0x25)
         self.assertEqual(result["decoded"]["selections"][0]["id"], "comp")
         self.assertEqual(result["decoded"]["selections"][0]["selection"], "CMP-2")
         self.assertEqual(result["decoded"]["selections"][17]["id"], "fx1AGSim")
         self.assertEqual(result["decoded"]["selections"][17]["selection"], "ACO-4")
+        self.assertEqual(result["sections"][1]["decoded"]["selections"][0]["selection"], "PHB-3")
+        self.assertEqual(result["sections"][2]["decoded"]["selections"][36]["selection"], "BDS-5")
 
     def test_patch_stompbox_reads_user_slot_raw_record(self):
         args = agent_cli.build_parser().parse_args(["patch", "stompbox", "--live", "--user-slot", "U03-2"])
 
-        with mock.patch.object(agent_cli.live, "read_data_sets", return_value={"20 0B 01 00": [0]}) as read_data_sets:
+        with mock.patch.object(agent_cli.live, "read_data_sets", return_value={
+            "20 0B 01 00": [0],
+            "22 05 00 00": [0],
+            "23 7F 00 00": [0],
+        }) as read_data_sets:
             result = agent_cli.cmd_patch_stompbox(args)
 
-        request = read_data_sets.call_args.kwargs["requests"][0]
-        self.assertEqual(request.address, [0x20, 0x0B, 0x01, 0x00])
+        requests = read_data_sets.call_args.kwargs["requests"]
+        self.assertEqual(requests[0].address, [0x20, 0x0B, 0x01, 0x00])
+        self.assertEqual(requests[1].address, [0x22, 0x05, 0x00, 0x00])
+        self.assertEqual(requests[2].address, [0x23, 0x7F, 0x00, 0x00])
         self.assertEqual(result["sourceSlot"], "U03-2")
-        self.assertEqual(result["address"], ["20", "0B", "01", "00"])
+        self.assertEqual(result["sections"][0]["address"], ["20", "0B", "01", "00"])
 
     def test_program_change_for_slot_is_typed_and_bounded(self):
         self.assertEqual(agent_cli.program_change_for_slot("U01-1", 1), [0xC0, 0])

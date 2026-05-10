@@ -19,7 +19,11 @@
 | `00 10 08 00` | Program Change map bank 3 |
 | `00 10 0C 00` | Program Change map bank 4 |
 | `10 00 00 00` | Temporary/current patch |
+| `10 01 00 00` | Temporary/current patch extra STOMPBOX selections |
+| `10 02 00 00` | Temporary/current patch extra STOMPBOX selections |
 | `20 00 00 00` | User patch 1 |
+| `21 7A 00 00` | User patch 1 extra STOMPBOX selections, record 2 |
+| `23 74 00 00` | User patch 1 extra STOMPBOX selections, record 3 |
 | `20 01 00 00` | User patch 2 |
 | `21 79 00 00` | User patch 250 |
 | `30 00 00 00` | Preset patch 1, read-only |
@@ -61,6 +65,13 @@ All offsets below are relative to temporary patch base `10 00 00 00`.
 | `00 59 00` | `10 00 59 00` | FX 3 | Effect block summary address |
 | `00 74 00` | `10 00 74 00` | Reverb | Effect block summary address |
 | `00 75 00` | `10 00 75 00` | Pedal FX | Effect block summary address |
+
+Additional temporary patch STOMPBOX selection records:
+
+| Address | Record | Size |
+|---|---|---|
+| `10 01 00 00` | PatchStompBox2 | `00 00 00 11` |
+| `10 02 00 00` | PatchStompBox3 | `00 00 00 25` |
 
 ## Current CLI Read Plan
 
