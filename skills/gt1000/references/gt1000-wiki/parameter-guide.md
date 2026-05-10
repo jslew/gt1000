@@ -123,7 +123,7 @@ Important areas:
 - Total settings such as total noise suppressor and total reverb level.
 - USB audio routing and levels.
 
-The current CLI does not yet read system in/out settings. Avoid overconfident claims about final sound into a specific amp/PA unless those settings are decoded.
+Use `scripts/gt1000-agent --pretty system inout --live --timeout 8` when output select, USB routing, global levels, or total noise/reverb settings matter. Avoid overconfident claims about final sound into a specific amp/PA until those system settings have been read.
 
 ## MIDI
 
