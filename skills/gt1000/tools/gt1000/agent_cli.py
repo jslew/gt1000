@@ -80,7 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("inout", "Read global input/output settings."),
         ("effects", "Read global effects settings."),
         ("pitch", "Read global pitch/tuner settings."),
-        ("controls", "Read global control preference settings."),
+        ("controls", "Read global control functions and preferences."),
         ("manual", "Read global manual-mode number switch settings."),
     ]:
         system_view = system_subcommands.add_parser(name, help=help_text)

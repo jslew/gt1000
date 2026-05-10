@@ -49,6 +49,7 @@ scripts/gt1000-agent --pretty midi bank-select 2 0 --channel 1 --live
 - `msb`: Bank Select MSB `0`...`127`.
 - `lsb`: optional Bank Select LSB `0`...`127`, default `0`.
 - Bank Select is normally followed by Program Change.
+- For GT-1000 patch selection specifically, the MIDI implementation documents received Bank Select MSB `0`...`2` and LSB `0`; broader values are allowed here because Assign/Patch MIDI transmit settings can target external devices.
 
 ## System Inspection Commands
 

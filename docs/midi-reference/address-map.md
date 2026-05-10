@@ -104,6 +104,8 @@ The MIDI implementation defines `System MIDI` total size as `00 00 00 1B`; the C
 
 ## Program Change Map
 
+The GT-1000 MIDI implementation documents received Bank Select MSB `0`...`2`, LSB `0`, followed by Program Change. The system Program Change map stores four 128-entry map banks; validate the on-device bank-select behavior before using Bank Select as a write/select shortcut for slots above a single Program Change range.
+
 Program map banks are `PcmapPc` records:
 
 | Bank | Address | Program Change numbers |
