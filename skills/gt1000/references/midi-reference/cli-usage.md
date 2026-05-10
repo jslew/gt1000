@@ -186,14 +186,14 @@ scripts/gt1000-agent --pretty patch block delay1 --user-slot U01-2
 - Use `--user-slot Uxx-y` to inspect a block from persistent user patch memory without selecting the patch.
 
 ### `patch stompbox`
-Read the known raw PatchStompBox record without decoding its selection layout.
+Read and decode the known PatchStompBox selection record.
 ```sh
 scripts/gt1000-agent --pretty patch stompbox --live --timeout 8
 scripts/gt1000-agent --pretty patch stompbox --live --user-slot U03-2 --timeout 8
 ```
 - Address: temporary `10 00 01 00`; user-slot reads remap this into the selected user patch.
-- Size: `00 00 01 00`.
-- The CLI reports raw bytes only because the bundled references do not yet define the STOMPBOX selection layout.
+- Size: `00 00 00 68`.
+- Each byte decodes one documented STOMPBOX selection. Raw `0` means no shared STOMPBOX; raw `1`...`10` selects that block category's STOMPBOX slot.
 
 ### `patch dump`
 Read the entire current patch state into a JSON object.

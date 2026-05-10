@@ -74,7 +74,7 @@ STOMPBOX stores preferred settings for an effect type and lets multiple patches 
 Agent caution:
 
 - Before changing a parameter, determine whether the block is using STOMPBOX data and whether the user expects local patch editing or global STOMPBOX editing.
-- `patch stompbox --live` can read the known raw PatchStompBox record for investigation, but the current CLI does not yet decode its selection layout.
+- Use `patch stompbox --live` to read PatchStompBox selections. Raw `0` means no shared STOMPBOX; raw `1`...`10` selects that effect category's shared STOMPBOX slot.
 
 ## Saving
 

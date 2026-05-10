@@ -113,16 +113,23 @@ class UserPatchReadTests(unittest.TestCase):
 
     def test_patch_stompbox_reads_known_raw_record(self):
         args = agent_cli.build_parser().parse_args(["patch", "stompbox", "--live"])
+        data = [0] * 0x68
+        data[0] = 2
+        data[17] = 4
 
-        with mock.patch.object(agent_cli.live, "read_data_sets", return_value={"10 00 01 00": [1, 2, 3]}) as read_data_sets:
+        with mock.patch.object(agent_cli.live, "read_data_sets", return_value={"10 00 01 00": data}) as read_data_sets:
             result = agent_cli.cmd_patch_stompbox(args)
 
         request = read_data_sets.call_args.kwargs["requests"][0]
         self.assertEqual(request.label, "Patch Stompbox")
         self.assertEqual(request.address, [0x10, 0x00, 0x01, 0x00])
-        self.assertEqual(request.size, [0x00, 0x00, 0x01, 0x00])
-        self.assertEqual(result["rawDataHex"], "01 02 03")
-        self.assertFalse(result["decoded"]["supported"])
+        self.assertEqual(request.size, [0x00, 0x00, 0x00, 0x68])
+        self.assertTrue(result["decoded"]["supported"])
+        self.assertEqual(len(result["decoded"]["selections"]), 0x68)
+        self.assertEqual(result["decoded"]["selections"][0]["id"], "comp")
+        self.assertEqual(result["decoded"]["selections"][0]["selection"], "CMP-2")
+        self.assertEqual(result["decoded"]["selections"][17]["id"], "fx1AGSim")
+        self.assertEqual(result["decoded"]["selections"][17]["selection"], "ACO-4")
 
     def test_patch_stompbox_reads_user_slot_raw_record(self):
         args = agent_cli.build_parser().parse_args(["patch", "stompbox", "--live", "--user-slot", "U03-2"])

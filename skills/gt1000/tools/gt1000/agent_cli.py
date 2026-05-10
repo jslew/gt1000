@@ -450,6 +450,103 @@ def assign_target_for_block_parameter(block_id: str, parameter_id: str) -> dict[
     raise ValueError(f"unknown Assign target for {block_id}.{parameter_id}")
 
 
+def decode_patch_stompbox(data: list[int]) -> dict[str, Any]:
+    selections = []
+    for index, definition in enumerate(STOMPBOX_SELECTIONS):
+        raw = data[index] if len(data) > index else None
+        selections.append({
+            "offset": index,
+            "address": f"00 {index:02X}",
+            "id": definition["id"],
+            "displayName": definition["displayName"],
+            "rawValue": raw,
+            "selection": stompbox_selection_name(raw, definition["prefix"]) if raw is not None else None,
+        })
+    return {
+        "supported": True,
+        "totalSize": ["00", "00", "00", "68"],
+        "selections": selections,
+    }
+
+
+def stompbox_selection_name(raw: int, prefix: str) -> str | None:
+    if raw == 0:
+        return "---"
+    if 1 <= raw <= 10:
+        return f"{prefix}-{raw}"
+    return None
+
+
+def stompbox_definition(id_: str, display_name: str, prefix: str) -> dict[str, str]:
+    return {"id": id_, "displayName": display_name, "prefix": prefix}
+
+
+def stompbox_fx_definitions(fx_number: int, start_prefix: str = "fx") -> list[dict[str, str]]:
+    base = f"{start_prefix}{fx_number}"
+    display_base = f"FX {fx_number}"
+    return [
+        stompbox_definition(f"{base}AGSim", f"{display_base} Acoustic Guitar Simulator", "ACO"),
+        stompbox_definition(f"{base}AcReso", f"{display_base} Acoustic Resonance", "ACR"),
+        stompbox_definition(f"{base}AWah", f"{display_base} Auto Wah", "AW"),
+        stompbox_definition(f"{base}Chorus", f"{display_base} Chorus", "CHO"),
+        stompbox_definition(f"{base}CVibe", f"{display_base} Classic Vibe", "CV"),
+        stompbox_definition(f"{base}Comp", f"{display_base} Compressor", "CMP"),
+        stompbox_definition(f"{base}Defretter", f"{display_base} Defretter", "DEF"),
+        stompbox_definition(f"{base}Feedbacker", f"{display_base} Feedbacker", "FB"),
+        stompbox_definition(f"{base}Flanger", f"{display_base} Flanger", "FL"),
+        stompbox_definition(f"{base}Harmonist", f"{display_base} Harmonist", "HRM"),
+        stompbox_definition(f"{base}Humanizer", f"{display_base} Humanizer", "HMN"),
+        stompbox_definition(f"{base}Octave", f"{display_base} Octave", "OC"),
+        stompbox_definition(f"{base}Overtone", f"{display_base} Overtone", "OT"),
+        stompbox_definition(f"{base}Pan", f"{display_base} Pan", "PAN"),
+        stompbox_definition(f"{base}Phaser", f"{display_base} Phaser", "PH"),
+        stompbox_definition(f"{base}PitchShift", f"{display_base} Pitch Shift", "PS"),
+        stompbox_definition(f"{base}RingMod", f"{display_base} Ring Modulator", "RM"),
+        stompbox_definition(f"{base}Rotary", f"{display_base} Rotary", "RT"),
+        stompbox_definition(f"{base}SitarSim", f"{display_base} Sitar Simulator", "STR"),
+        stompbox_definition(f"{base}Slicer", f"{display_base} Slicer", "SL"),
+        stompbox_definition(f"{base}SlowGear", f"{display_base} Slow Gear", "SG"),
+        stompbox_definition(f"{base}SoundHold", f"{display_base} Sound Hold", "SH"),
+        stompbox_definition(f"{base}SBend", f"{display_base} S-Bend", "SB"),
+        stompbox_definition(f"{base}TWah", f"{display_base} Touch Wah", "TW"),
+        stompbox_definition(f"{base}Tremolo", f"{display_base} Tremolo", "TR"),
+        stompbox_definition(f"{base}Vibrato", f"{display_base} Vibrato", "VIB"),
+    ]
+
+
+STOMPBOX_SELECTIONS = [
+    stompbox_definition("comp", "Compressor", "CMP"),
+    stompbox_definition("dist1", "Distortion 1", "DS"),
+    stompbox_definition("dist2", "Distortion 2", "DS"),
+    stompbox_definition("preamp1", "Preamp 1", "AMP"),
+    stompbox_definition("preamp2", "Preamp 2", "AMP"),
+    stompbox_definition("ns1", "Noise Suppressor 1", "NS"),
+    stompbox_definition("ns2", "Noise Suppressor 2", "NS"),
+    stompbox_definition("eq1", "Equalizer 1", "EQ"),
+    stompbox_definition("eq2", "Equalizer 2", "EQ"),
+    stompbox_definition("eq3", "Equalizer 3", "EQ"),
+    stompbox_definition("eq4", "Equalizer 4", "EQ"),
+    stompbox_definition("delay1", "Delay 1", "DLY"),
+    stompbox_definition("delay2", "Delay 2", "DLY"),
+    stompbox_definition("delay3", "Delay 3", "DLY"),
+    stompbox_definition("delay4", "Delay 4", "DLY"),
+    stompbox_definition("masterDelay", "Master Delay", "MDL"),
+    stompbox_definition("chorus", "Chorus", "CHO"),
+    *stompbox_fx_definitions(1),
+    *stompbox_fx_definitions(2),
+    *stompbox_fx_definitions(3),
+    stompbox_definition("reverb", "Reverb", "REV"),
+    stompbox_definition("pedalFx", "Pedal FX", "PFX"),
+    stompbox_definition("divider1", "Divider 1", "DIV"),
+    stompbox_definition("divider2", "Divider 2", "DIV"),
+    stompbox_definition("divider3", "Divider 3", "DIV"),
+    stompbox_definition("fx1ChorusBass", "FX 1 Bass Chorus", "CHB"),
+    stompbox_definition("fx1DefretterBass", "FX 1 Bass Defretter", "DFB"),
+    stompbox_definition("fx1FlangerBass", "FX 1 Bass Flanger", "FLB"),
+    stompbox_definition("fx1OctaveBass", "FX 1 Bass Octave", "OCB"),
+]
+
+
 def patch_view(args: argparse.Namespace, view: str) -> Any:
     if args.live or args.file is None:
         assign_requests = [
@@ -609,7 +706,7 @@ def cmd_patch_block(args: argparse.Namespace) -> Any:
 def cmd_patch_stompbox(args: argparse.Namespace) -> Any:
     if not args.live:
         raise CLIError("patch stompbox requires --live because it reads from the connected GT-1000", 64)
-    size = [0x00, 0x00, 0x01, 0x00]
+    size = [0x00, 0x00, 0x00, 0x68]
     address = live.TEMPORARY_PATCH_STOMPBOX
     source_slot = None
     if args.user_slot:
@@ -630,10 +727,7 @@ def cmd_patch_stompbox(args: argparse.Namespace) -> Any:
         "address": live.hex_bytes(address),
         "size": live.hex_bytes(size),
         "rawDataHex": live.hex_string(data),
-        "decoded": {
-            "supported": False,
-            "note": "PatchStompBox record address is known, but the selection layout is not decoded yet.",
-        },
+        "decoded": decode_patch_stompbox(data),
     }
 
 

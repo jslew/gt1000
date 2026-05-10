@@ -33,7 +33,7 @@ All offsets below are relative to temporary patch base `10 00 00 00`.
 | Offset | Address | Record | Notes |
 |---|---|---|---|
 | `00 00 00` | `10 00 00 00` | PatchCommon | Name plus patch-level control functions |
-| `00 01 00` | `10 00 01 00` | PatchStompBox | Stompbox selections; raw read size `00 00 01 00` |
+| `00 01 00` | `10 00 01 00` | PatchStompBox | Stompbox selections; size `00 00 00 68` |
 | `00 02 00` | `10 00 02 00` | PatchLed | LED color/state data |
 | `00 03 00` | `10 00 03 00` | Assign 1 | Assign size `00 00 00 2C` |
 | `00 03 40` | `10 00 03 40` | Assign 2 | Assign blocks are spaced by `0x40` in 7-bit address space |
