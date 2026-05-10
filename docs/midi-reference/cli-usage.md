@@ -27,6 +27,15 @@ Read global MIDI settings as raw bytes with light decoding for common channel fi
 scripts/gt1000-agent --pretty system midi --live --timeout 8
 ```
 
+### `system pcmap`
+Read MIDI Program Change map banks.
+```sh
+scripts/gt1000-agent --pretty system pcmap --live --bank 1 --timeout 8
+scripts/gt1000-agent --pretty system pcmap --live --timeout 8
+```
+- `--bank`: optional bank `1`...`4`; omit to read all four banks sequentially.
+- Each entry decodes a Program Change number to its configured user or preset patch target.
+
 ### `system inout`
 Read global input/output settings as raw bytes with light decoding for common level/output-select fields.
 ```sh

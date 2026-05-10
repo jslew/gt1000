@@ -10,6 +10,10 @@
 | `00 00 40 00` | System input/output |
 | `00 00 50 00` | System effects |
 | `00 00 60 00` | System pitch/tuner |
+| `00 10 00 00` | Program Change map bank 1 |
+| `00 10 04 00` | Program Change map bank 2 |
+| `00 10 08 00` | Program Change map bank 3 |
+| `00 10 0C 00` | Program Change map bank 4 |
 | `10 00 00 00` | Temporary/current patch |
 | `20 00 00 00` | User patch 1 |
 | `20 01 00 00` | User patch 2 |
@@ -80,8 +84,24 @@ Offsets below are relative to `System MIDI` address `00 00 30 00`.
 | `07` | Fixed value | `0` |
 | `08` | Map select | `0` fixed, `1` program |
 | `09`...`0D` | NUM1...NUM5 CC# | `0` off, `1`...`31` = CC#1...CC#31, `32`...`63` = CC#64...CC#95 |
+| `0E`...`0F` | BANK DOWN/UP CC# | same CC encoding |
+| `10`...`16` | CTL1...CTL7 CC# | same CC encoding |
+| `17`...`1A` | EXP1 SW, EXP1, EXP2, EXP3 CC# | same CC encoding |
 
-The CLI currently decodes these validated common offsets and leaves the rest of the `00 00 00 40` read raw until their enum tables are locally validated.
+The MIDI implementation defines `System MIDI` total size as `00 00 00 1B`; the CLI reads a larger range for compatibility but decodes only the documented offsets above.
+
+## Program Change Map
+
+Program map banks are `PcmapPc` records:
+
+| Bank | Address | Program Change numbers |
+|---:|---|---|
+| 1 | `00 10 00 00` | 1...128 |
+| 2 | `00 10 04 00` | 129...256 |
+| 3 | `00 10 08 00` | 257...384 |
+| 4 | `00 10 0C 00` | 385...512 |
+
+Each bank is size `00 00 04 00` and contains 128 four-nibble patch values. Values `0`...`249` map to `U01-1`...`U50-5`; values `250`...`499` map to `P01-1`...`P50-5`.
 
 ## System IN/OUT Known Offsets
 

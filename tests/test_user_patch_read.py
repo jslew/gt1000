@@ -255,7 +255,7 @@ class UserPatchReadTests(unittest.TestCase):
     def test_system_view_decodes_raw_section(self):
         args = agent_cli.build_parser().parse_args(["system", "midi", "--live"])
 
-        data = [0] * 0x0E
+        data = [0] * 0x1B
         data[0] = 1
         data[1] = 0
         data[2] = 16
@@ -267,6 +267,9 @@ class UserPatchReadTests(unittest.TestCase):
         data[9] = 0
         data[10] = 1
         data[13] = 32
+        data[0x0E] = 33
+        data[0x10] = 63
+        data[0x1A] = 31
 
         with mock.patch.object(agent_cli.live, "read_system_section", return_value={"00 00 30 00": data}):
             result = agent_cli.cmd_system_view(args)
@@ -283,6 +286,35 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(result["decoded"]["controlChangeNumbers"]["NUM 1"], {"raw": 0, "cc": "OFF"})
         self.assertEqual(result["decoded"]["controlChangeNumbers"]["NUM 2"], {"raw": 1, "cc": "CC#1"})
         self.assertEqual(result["decoded"]["controlChangeNumbers"]["NUM 5"], {"raw": 32, "cc": "CC#64"})
+        self.assertEqual(result["decoded"]["controlChangeNumbers"]["BANK DOWN"], {"raw": 33, "cc": "CC#65"})
+        self.assertEqual(result["decoded"]["controlChangeNumbers"]["CTL 1"], {"raw": 63, "cc": "CC#95"})
+        self.assertEqual(result["decoded"]["controlChangeNumbers"]["EXP 3"], {"raw": 31, "cc": "CC#31"})
+
+    def test_pcmap_bank_decodes_user_and_preset_targets(self):
+        data = []
+        for value in [0, 249, 250, 499]:
+            data.extend(live.nibbles_for(value))
+
+        entries = agent_cli.decode_pcmap_bank(data, bank=2)
+
+        self.assertEqual(entries[0]["programChange"], 129)
+        self.assertEqual(entries[0]["patch"], "U01-1")
+        self.assertEqual(entries[1]["patch"], "U50-5")
+        self.assertEqual(entries[2]["patch"], "P01-1")
+        self.assertEqual(entries[3]["patch"], "P50-5")
+        self.assertEqual(agent_cli.pcmap_bank_address(2), [0x00, 0x10, 0x04, 0x00])
+
+    def test_system_pcmap_view_reads_selected_bank(self):
+        args = agent_cli.build_parser().parse_args(["system", "pcmap", "--live", "--bank", "1"])
+        data = live.nibbles_for(0) + live.nibbles_for(250)
+
+        with mock.patch.object(agent_cli.live, "read_system_section", return_value={"00 10 00 00": data}) as read_section:
+            result = agent_cli.cmd_system_pcmap(args)
+
+        read_section.assert_called_once_with([0x00, 0x10, 0x00, 0x00], [0x00, 0x00, 0x04, 0x00], timeout=8.0)
+        self.assertEqual(result["id"], "programChangeMap")
+        self.assertEqual(result["banks"][0]["entries"][0]["patch"], "U01-1")
+        self.assertEqual(result["banks"][0]["entries"][1]["patch"], "P01-1")
 
     def test_system_inout_decodes_validated_common_fields(self):
         data = [0] * 0x43

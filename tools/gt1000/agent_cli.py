@@ -65,6 +65,11 @@ def build_parser() -> argparse.ArgumentParser:
         system_view.add_argument("--live", action="store_true", help="Required because system settings are live device state.")
         system_view.add_argument("--timeout", type=float, default=8.0, help="Live read timeout in seconds.")
         system_view.set_defaults(func=cmd_system_view)
+    pcmap = system_subcommands.add_parser("pcmap", help="Read MIDI Program Change map banks.")
+    pcmap.add_argument("--live", action="store_true", help="Required because program maps are live device state.")
+    pcmap.add_argument("--bank", type=int, choices=[1, 2, 3, 4], help="Read one PC map bank instead of all four.")
+    pcmap.add_argument("--timeout", type=float, default=8.0, help="Live read timeout in seconds per bank.")
+    pcmap.set_defaults(func=cmd_system_pcmap)
 
     patch = subcommands.add_parser("patch", help="Inspect GT-1000 patch data.")
     patch_subcommands = patch.add_subparsers(dest="patch_command", required=True)
@@ -186,6 +191,34 @@ def cmd_system_view(args: argparse.Namespace) -> Any:
         "size": live.hex_bytes(size),
         "dataHex": live.hex_string(data),
         "decoded": decoder(data),
+    }
+
+
+def cmd_system_pcmap(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("system pcmap requires --live because program maps are live device state", 64)
+    banks = [args.bank] if args.bank else [1, 2, 3, 4]
+    decoded_banks = []
+    for bank in banks:
+        address = pcmap_bank_address(bank)
+        size = [0x00, 0x00, 0x04, 0x00]
+        try:
+            raw = live.read_system_section(address, size, timeout=args.timeout)
+        except live.LiveMIDIError as error:
+            raise CLIError(str(error)) from error
+        data = raw.get(live.address_key(address), [])
+        decoded_banks.append({
+            "bank": bank,
+            "address": live.hex_bytes(address),
+            "size": live.hex_bytes(size),
+            "dataHex": live.hex_string(data),
+            "entries": decode_pcmap_bank(data, bank=bank),
+        })
+    return {
+        "id": "programChangeMap",
+        "label": "Program Change Map",
+        "banks": decoded_banks,
+        "note": "Each entry maps a received MIDI Program Change number to a user or preset patch according to MENU:MIDI:PROGRAM MAP.",
     }
 
 
@@ -468,6 +501,47 @@ def program_change_for_slot(slot: str, channel: int) -> list[int]:
     if program > 127:
         raise ValueError("patch select currently supports U01-1 through U26-3; higher slots need bank-select mapping validation")
     return [0xC0 + (channel - 1), program]
+
+
+def pcmap_bank_address(bank: int) -> list[int]:
+    if bank not in {1, 2, 3, 4}:
+        raise ValueError("PC map bank must be 1...4")
+    return live.address_adding(live.PC_MAP_BASE, (bank - 1) * live.PC_MAP_BANK_STRIDE)
+
+
+def decode_pcmap_bank(data: list[int], *, bank: int) -> list[dict[str, Any]]:
+    entries = []
+    for index in range(128):
+        offset = index * 4
+        if len(data) < offset + 4:
+            break
+        patch_value = live.integer_from_nibbles(data[offset:offset + 4])
+        entries.append({
+            "bank": bank,
+            "programChange": (bank - 1) * 128 + index + 1,
+            "programChangeInBank": index + 1,
+            "raw": data[offset:offset + 4],
+            "patchValue": patch_value,
+            "patch": decode_pcmap_patch_value(patch_value),
+        })
+    return entries
+
+
+def decode_pcmap_patch_value(value: int | None) -> str | None:
+    if value is None:
+        return None
+    if 0 <= value < live.USER_BANK_COUNT * live.USER_PATCHES_PER_BANK:
+        return slot_from_patch_index("U", value)
+    preset_value = value - (live.USER_BANK_COUNT * live.USER_PATCHES_PER_BANK)
+    if 0 <= preset_value < live.USER_BANK_COUNT * live.USER_PATCHES_PER_BANK:
+        return slot_from_patch_index("P", preset_value)
+    return None
+
+
+def slot_from_patch_index(prefix: str, zero_based_index: int) -> str:
+    bank = zero_based_index // live.USER_PATCHES_PER_BANK + 1
+    number = zero_based_index % live.USER_PATCHES_PER_BANK + 1
+    return f"{prefix}{bank:02d}-{number}"
 
 
 def view_from_full(snapshot: dict[str, Any], view: str) -> Any:
@@ -942,7 +1016,12 @@ def decode_enum(raw: int, values: list[str]) -> str | None:
 
 
 def decode_system_midi_cc_assignments(data: list[int]) -> dict[str, dict[str, int | str | None]]:
-    controls = ["NUM 1", "NUM 2", "NUM 3", "NUM 4", "NUM 5"]
+    controls = [
+        "NUM 1", "NUM 2", "NUM 3", "NUM 4", "NUM 5",
+        "BANK DOWN", "BANK UP",
+        "CTL 1", "CTL 2", "CTL 3", "CTL 4", "CTL 5", "CTL 6", "CTL 7",
+        "EXP 1 SW", "EXP 1", "EXP 2", "EXP 3",
+    ]
     return {
         name: {
             "raw": data[0x09 + index] if len(data) > 0x09 + index else None,
