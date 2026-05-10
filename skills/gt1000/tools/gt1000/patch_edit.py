@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 try:
@@ -173,6 +174,31 @@ def build_parameter_set_plan(block_id: str, parameter_id: str, raw_value: str, *
         writes=[write],
     )
     return plan_for_user_slot(plan, slot) if slot else plan
+
+
+def build_bpm_set_plan(raw_value: str, *, slot: str | None = None) -> PatchPlan:
+    bpm_tenths = parse_bpm_tenths(raw_value)
+    write = live.PatchWrite("Set master BPM", live.TEMPORARY_PATCH_MASTER_BPM, live.nibbles_for(bpm_tenths))
+    plan = PatchPlan(
+        id="set:masterBpm",
+        description=f"Set patch master BPM to {bpm_tenths / 10:.1f}.",
+        writes=[write],
+    )
+    return plan_for_user_slot(plan, slot) if slot else plan
+
+
+def parse_bpm_tenths(raw_value: str) -> int:
+    try:
+        value = Decimal(raw_value.strip())
+    except InvalidOperation as error:
+        raise ValueError("BPM expects a number") from error
+    bpm_tenths = value * 10
+    if bpm_tenths != bpm_tenths.to_integral_value():
+        raise ValueError("BPM supports one decimal place")
+    bpm_tenths_int = int(bpm_tenths)
+    if not 400 <= bpm_tenths_int <= 2500:
+        raise ValueError("BPM must be 40.0...250.0")
+    return bpm_tenths_int
 
 
 def parse_parameter_value(parameter: live.Parameter, raw_value: str) -> int:

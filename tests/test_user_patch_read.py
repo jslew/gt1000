@@ -187,6 +187,19 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(result["type"], "controlChange")
         self.assertEqual(result["messageHex"], "B1 50 7F")
 
+    def test_patch_set_bpm_command_applies_typed_plan(self):
+        args = agent_cli.build_parser().parse_args(["patch", "set-bpm", "120.0", "--live", "--verify"])
+
+        with mock.patch.object(agent_cli.patch_edit, "apply_plan", return_value={"verified": True}) as apply:
+            result = agent_cli.cmd_patch_set_bpm(args)
+
+        plan = apply.call_args.args[0]
+        self.assertEqual(plan.id, "set:masterBpm")
+        self.assertEqual(plan.writes[0].address, [0x10, 0x00, 0x10, 0x61])
+        self.assertEqual(plan.writes[0].data, [0x00, 0x04, 0x0B, 0x00])
+        self.assertEqual(apply.call_args.kwargs, {"timeout": 12.0, "verify": True})
+        self.assertEqual(result, {"verified": True})
+
     def test_assign_decode_includes_ranges_and_midi_fields(self):
         data = bytes([
             0x01, 0x00, 0x03, 0x0D, 0x0B, 0x08, 0x00, 0x00, 0x00,

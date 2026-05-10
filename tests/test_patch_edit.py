@@ -86,6 +86,25 @@ class PatchEditTests(unittest.TestCase):
         self.assertEqual(plan.writes[0].address, [0x10, 0x00, 0x13, 0x01])
         self.assertEqual(plan.writes[0].data, [15])
 
+    def test_bpm_set_plan_encodes_tenths_and_user_slot(self):
+        plan = patch_edit.build_bpm_set_plan("120.0")
+
+        self.assertEqual(plan.writes[0].address, [0x10, 0x00, 0x10, 0x61])
+        self.assertEqual(plan.writes[0].data, [0x00, 0x04, 0x0B, 0x00])
+
+        remapped = patch_edit.build_bpm_set_plan("99.5", slot="U03-2")
+        self.assertEqual(remapped.writes[0].address, [0x20, 0x0B, 0x10, 0x61])
+        self.assertEqual(remapped.writes[0].data, [0x00, 0x03, 0x0E, 0x03])
+
+    def test_bpm_set_plan_validates_documented_range(self):
+        self.assertEqual(patch_edit.parse_bpm_tenths("40"), 400)
+        self.assertEqual(patch_edit.parse_bpm_tenths("250.0"), 2500)
+
+        for value in ["39.9", "250.1", "120.01", "fast"]:
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    patch_edit.build_bpm_set_plan(value)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -76,6 +76,7 @@ Use this routing:
 - Program Change mapping questions: use `system pcmap --bank N` first for a focused bank read, or omit `--bank` only when comparing the full map. Open address-map notes only if the user asks about storage layout or patch-value encoding.
 - Input-setting questions: use `system inputs --number N` first for one named input setting, or omit `--number` only when comparing all ten.
 - Parameter meaning or musical interpretation: use CLI block detail first, then load only the relevant manual/wiki page from `references/gt1000-wiki/`.
+- Patch BPM edits: use `patch set-bpm <bpm> --live --verify` for tempo changes. Open `references/midi-reference/patch-effect.md` only if the user asks about the four-nibble `BPM * 10` encoding.
 - Writes: build a CLI `patch plan` or typed `patch set` intent first. Open low-level references only to validate address/range/model quirks before changing the validator.
 
 ## Live Patch Inspection
@@ -138,6 +139,7 @@ Examples of currently implemented verified writes:
 ```sh
 scripts/gt1000-agent --pretty patch apply default --live --user-slot U03-1 --verify --timeout 20
 scripts/gt1000-agent --pretty patch set delay1 time 380 --live --user-slot U03-2 --verify
+scripts/gt1000-agent --pretty patch set-bpm 120.0 --live --verify
 ```
 
 Ask before persistent operations such as patch write, exchange, initialize, or insert.

@@ -207,6 +207,15 @@ scripts/gt1000-agent --pretty patch set delay1 time 380 --live --verify
 - `--verify`: Re-reads the parameter to confirm the write succeeded.
 - `--user-slot U03-1`: Persist the change to a specific user slot instead of the temporary patch. Valid slots: `U03-1` through `U03-5`.
 
+### `patch set-bpm`
+Change the patch master BPM using the validated four-nibble `BPM * 10` encoding.
+```sh
+scripts/gt1000-agent --pretty patch set-bpm 120.0 --live --verify
+```
+- `bpm`: `40.0`...`250.0`, with at most one decimal place.
+- `--verify`: Re-reads the BPM address to confirm the write succeeded.
+- `--user-slot U03-1`: Persist the BPM change to a specific user slot instead of the temporary patch. Valid slots: `U03-1` through `U03-5`.
+
 ### `patch plan`
 Build a validated write plan (multiple parameters) without sending MIDI.
 ```sh
