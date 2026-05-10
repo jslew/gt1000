@@ -10,6 +10,7 @@
 | `00 00 40 00` | System input/output |
 | `00 00 50 00` | System effects |
 | `00 00 60 00` | System pitch/tuner |
+| `00 00 70 00` | System manual-mode control |
 | `00 01 00 00` | System input setting 1 |
 | `00 01 01 00` | System input setting 2 |
 | `00 01 09 00` | System input setting 10 |
@@ -155,3 +156,15 @@ Offsets below are relative to `System Pitch` address `00 00 60 00`.
 | `04` | Poly tuner type | `6-REGULAR`, `6-DROP D`, `7-REGULAR`, `7-DROP A`, `4-B REGULAR`, `5-B REGULAR` |
 | `05` | Poly tuner offset | raw `11`...`16` = `-5`...`----` |
 | `06` | Tuner output | `0` mute, `1` bypass, `2` thru |
+
+## System Manual Control Known Offsets
+
+Offsets below are relative to `System Manual Control` address `00 00 70 00`.
+
+| Offset | Field | Decoding |
+|---:|---|---|
+| `00`, `02`, `04`, `06`, `08` | Manual NUM1...NUM5 function | Manual-mode function enum |
+| `01`, `03`, `05`, `07`, `09` | Manual NUM1...NUM5 mode | `0` toggle, `1` moment |
+| `0A`...`0E` | Manual NUM1...NUM5 preference | `0` patch, `1` system |
+
+Manual-mode function values are similar to patch control functions but use their own compact enum: raw `1` starts at `LEVEL +10`, raw `11` is `TUNER/MANUAL`, raw `55`...`57` are tuner/manual variants, and raw `58`...`59` are FX4/FX4 trigger on firmware that exposes FX4.

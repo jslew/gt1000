@@ -442,6 +442,28 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(result["decoded"]["polyTunerOffset"], "-2")
         self.assertEqual(result["decoded"]["tunerOutput"], "BYPASS")
 
+    def test_system_manual_view_decodes_manual_control2_fields(self):
+        args = agent_cli.build_parser().parse_args(["system", "manual", "--live"])
+        data = [29, 0, 55, 1, 58, 0, 43, 1, 1, 0, 0, 1, 0, 1, 0]
+
+        with mock.patch.object(agent_cli.live, "read_system_section", return_value={"00 00 70 00": data}):
+            result = agent_cli.cmd_system_view(args)
+
+        controls = result["decoded"]["controls"]
+        self.assertEqual(result["id"], "systemManualControl")
+        self.assertEqual(result["address"], ["00", "00", "70", "00"])
+        self.assertEqual(controls["NUM 1"]["function"], "DELAY 1")
+        self.assertEqual(controls["NUM 1"]["functionTargetBlockId"], "delay1")
+        self.assertTrue(controls["NUM 1"]["functionCanEnableBlock"])
+        self.assertEqual(controls["NUM 1"]["mode"], "TOGGLE")
+        self.assertEqual(controls["NUM 2"]["function"], "TUNER")
+        self.assertEqual(controls["NUM 2"]["mode"], "MOMENT")
+        self.assertEqual(controls["NUM 2"]["preference"], "SYSTEM")
+        self.assertEqual(controls["NUM 3"]["function"], "FX 4")
+        self.assertEqual(controls["NUM 4"]["function"], "DIVIDER 1 CHANNEL SELECT")
+        self.assertEqual(controls["NUM 4"]["functionTargetParameterId"], "channelSelect")
+        self.assertEqual(controls["NUM 5"]["function"], "LEVEL +10")
+
     def test_fx_blocks_keep_validated_summary_read_size(self):
         fx1 = next(block for block in live.SUMMARY_BLOCKS if block.id == "fx1")
         fx2 = next(block for block in live.SUMMARY_BLOCKS if block.id == "fx2")

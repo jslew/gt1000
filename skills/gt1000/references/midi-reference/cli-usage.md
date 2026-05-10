@@ -68,6 +68,12 @@ Read global control preference settings.
 scripts/gt1000-agent --pretty system controls --live --timeout 8
 ```
 
+### `system manual`
+Read global manual-mode NUM switch functions, modes, and patch/system preferences.
+```sh
+scripts/gt1000-agent --pretty system manual --live --timeout 8
+```
+
 ## Patch Inspection Commands
 
 All patch commands support `--live` for the connected device or `--file <path>` for a saved JSON dump.

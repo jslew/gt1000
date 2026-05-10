@@ -60,6 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("effects", "Read global effects settings."),
         ("pitch", "Read global pitch/tuner settings."),
         ("controls", "Read global control preference settings."),
+        ("manual", "Read global manual-mode number switch settings."),
     ]:
         system_view = system_subcommands.add_parser(name, help=help_text)
         system_view.add_argument("--live", action="store_true", help="Required because system settings are live device state.")
@@ -182,6 +183,7 @@ def cmd_system_view(args: argparse.Namespace) -> Any:
         "effects": ("systemEffects", "System Effects", live.SYSTEM_EFFECTS, [0x00, 0x00, 0x00, 0x07], decode_system_effects),
         "pitch": ("systemPitch", "System Pitch", live.SYSTEM_PITCH, [0x00, 0x00, 0x00, 0x07], decode_system_pitch),
         "controls": ("systemControl", "System Control", live.SYSTEM_CONTROL, [0x00, 0x00, 0x00, 0x36], decode_system_controls),
+        "manual": ("systemManualControl", "System Manual Control", live.SYSTEM_CONTROL2, [0x00, 0x00, 0x00, 0x0F], decode_system_manual_controls),
     }
     section_id, label, address, size, decoder = sections[args.system_command]
     try:
@@ -1266,6 +1268,97 @@ def decode_system_pitch(data: list[int]) -> dict[str, Any]:
 def decode_poly_tuner_offset(raw: int) -> str | None:
     values = {11: "-5", 12: "-4", 13: "-3", 14: "-2", 15: "-1", 16: "----"}
     return values.get(raw)
+
+
+def decode_system_manual_controls(data: list[int]) -> dict[str, Any]:
+    controls = {}
+    for index in range(5):
+        control_name = f"NUM {index + 1}"
+        function_offset = index * 2
+        mode_offset = function_offset + 1
+        function_raw = data[function_offset] if len(data) > function_offset else None
+        function_detail = decode_manual_control_function_detail(function_raw) if function_raw is not None else None
+        controls[control_name] = {
+            "functionRaw": function_raw,
+            "function": function_detail["name"] if function_detail else None,
+            "functionTargetBlockId": function_detail["blockId"] if function_detail else None,
+            "functionTargetParameterId": function_detail["parameterId"] if function_detail else None,
+            "functionCanEnableBlock": function_detail["canEnableBlock"] if function_detail else False,
+            "modeRaw": data[mode_offset] if len(data) > mode_offset else None,
+            "mode": "MOMENT" if len(data) > mode_offset and data[mode_offset] == 1 else "TOGGLE" if len(data) > mode_offset else None,
+            "preferenceRaw": data[0x0A + index] if len(data) > 0x0A + index else None,
+            "preference": decode_enum(data[0x0A + index], ["PATCH", "SYSTEM"]) if len(data) > 0x0A + index else None,
+        }
+    return {"controls": controls}
+
+
+def decode_manual_control_function_detail(raw: int) -> dict[str, Any]:
+    names: dict[int, dict[str, Any]] = {
+        0: {"name": "OFF"},
+        1: {"name": "LEVEL +10"},
+        2: {"name": "LEVEL +20"},
+        3: {"name": "LEVEL -10"},
+        4: {"name": "LEVEL -20"},
+        5: {"name": "BPM TAP"},
+        6: {"name": "DELAY 1 TAP", "blockId": "delay1", "parameterId": "time"},
+        7: {"name": "DELAY 2 TAP", "blockId": "delay2", "parameterId": "time"},
+        8: {"name": "DELAY 3 TAP", "blockId": "delay3", "parameterId": "time"},
+        9: {"name": "DELAY 4 TAP", "blockId": "delay4", "parameterId": "time"},
+        10: {"name": "MASTER DELAY TAP", "blockId": "masterDelay", "parameterId": "time"},
+        11: {"name": "TUNER/MANUAL"},
+        12: {"name": "AMP CTL1"},
+        13: {"name": "AMP CTL2"},
+        14: {"name": "COMPRESSOR", "blockId": "comp", "parameterId": "sw", "canEnableBlock": True},
+        15: {"name": "DISTORTION 1", "blockId": "dist1", "parameterId": "sw", "canEnableBlock": True},
+        16: {"name": "DISTORTION 1 SOLO", "blockId": "dist1", "parameterId": "soloSw"},
+        17: {"name": "DISTORTION 2", "blockId": "dist2", "parameterId": "sw", "canEnableBlock": True},
+        18: {"name": "DISTORTION 2 SOLO", "blockId": "dist2", "parameterId": "soloSw"},
+        19: {"name": "PREAMP 1", "blockId": "preamp1", "parameterId": "sw", "canEnableBlock": True},
+        20: {"name": "PREAMP 1 SOLO", "blockId": "preamp1", "parameterId": "soloSw"},
+        21: {"name": "PREAMP 2", "blockId": "preamp2", "parameterId": "sw", "canEnableBlock": True},
+        22: {"name": "PREAMP 2 SOLO", "blockId": "preamp2", "parameterId": "soloSw"},
+        23: {"name": "NOISE SUPPRESSOR 1", "blockId": "ns1", "parameterId": "sw", "canEnableBlock": True},
+        24: {"name": "NOISE SUPPRESSOR 2", "blockId": "ns2", "parameterId": "sw", "canEnableBlock": True},
+        25: {"name": "EQUALIZER 1", "blockId": "eq1", "parameterId": "sw", "canEnableBlock": True},
+        26: {"name": "EQUALIZER 2", "blockId": "eq2", "parameterId": "sw", "canEnableBlock": True},
+        27: {"name": "EQUALIZER 3", "blockId": "eq3", "parameterId": "sw", "canEnableBlock": True},
+        28: {"name": "EQUALIZER 4", "blockId": "eq4", "parameterId": "sw", "canEnableBlock": True},
+        29: {"name": "DELAY 1", "blockId": "delay1", "parameterId": "sw", "canEnableBlock": True},
+        30: {"name": "DELAY 2", "blockId": "delay2", "parameterId": "sw", "canEnableBlock": True},
+        31: {"name": "DELAY 3", "blockId": "delay3", "parameterId": "sw", "canEnableBlock": True},
+        32: {"name": "DELAY 4", "blockId": "delay4", "parameterId": "sw", "canEnableBlock": True},
+        33: {"name": "MASTER DELAY", "blockId": "masterDelay", "parameterId": "sw", "canEnableBlock": True},
+        34: {"name": "CHORUS", "blockId": "chorus", "parameterId": "sw", "canEnableBlock": True},
+        35: {"name": "FX 1", "blockId": "fx1", "parameterId": "sw", "canEnableBlock": True},
+        36: {"name": "FX 2", "blockId": "fx2", "parameterId": "sw", "canEnableBlock": True},
+        37: {"name": "FX 3", "blockId": "fx3", "parameterId": "sw", "canEnableBlock": True},
+        38: {"name": "FX 1 TRIGGER", "blockId": "fx1"},
+        39: {"name": "FX 2 TRIGGER", "blockId": "fx2"},
+        40: {"name": "FX 3 TRIGGER", "blockId": "fx3"},
+        41: {"name": "REVERB", "blockId": "reverb", "parameterId": "sw", "canEnableBlock": True},
+        42: {"name": "PEDAL FX", "blockId": "pedalFx", "parameterId": "sw", "canEnableBlock": True},
+        43: {"name": "DIVIDER 1 CHANNEL SELECT", "blockId": "divider1", "parameterId": "channelSelect"},
+        44: {"name": "DIVIDER 2 CHANNEL SELECT", "blockId": "divider2", "parameterId": "channelSelect"},
+        45: {"name": "DIVIDER 3 CHANNEL SELECT", "blockId": "divider3", "parameterId": "channelSelect"},
+        46: {"name": "SEND/RETURN 1", "blockId": "sendReturn1", "parameterId": "sw", "canEnableBlock": True},
+        47: {"name": "SEND/RETURN 2", "blockId": "sendReturn2", "parameterId": "sw", "canEnableBlock": True},
+        48: {"name": "LOOPER"},
+        49: {"name": "LOOPER STOP"},
+        50: {"name": "LOOPER CLEAR"},
+        51: {"name": "METRONOME"},
+        52: {"name": "MIDI START"},
+        53: {"name": "MMC PLAY"},
+        54: {"name": "MASTER DELAY TRIGGER", "blockId": "masterDelay"},
+        55: {"name": "TUNER"},
+        56: {"name": "MANUAL"},
+        57: {"name": "MANUAL/TUNER"},
+        58: {"name": "FX 4", "blockId": "fx4", "parameterId": "sw", "canEnableBlock": True},
+        59: {"name": "FX 4 TRIGGER", "blockId": "fx4"},
+    }
+    detail = names.get(raw)
+    if detail:
+        return control_function_detail(raw, **detail)
+    return control_function_detail(raw, f"FUNC {raw}")
 
 
 def decode_system_controls(data: list[int]) -> dict[str, Any]:
