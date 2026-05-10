@@ -16,7 +16,7 @@
 ## GT-1000 MIDI Details
 
 - Local MIDI reference wiki: start at `docs/midi-reference/README.md` before changing SysEx, control/assign decoding, CLI patch inspection, or write behavior.
-- Local GT-1000 v4+ knowledge skill: `.agents/skills/gt1000/SKILL.md`; use it for manual/parameter-guide lookups, patch explanations, controls, and wiki updates.
+- Local GT-1000 v4+ knowledge skill: `skills/gt1000/SKILL.md`; use it for manual/parameter-guide lookups, patch explanations, controls, and wiki updates.
 - The GT-1000/GT-1000CORE SysEx model ID is `00 00 00 4F`.
 - Roland/BOSS DT1/RQ1 checksums are calculated over address plus data/size only.
 - GT-1000 BPM values are encoded as four 4-bit nibbles of `BPM * 10`; for example 120.0 BPM is `00 04 0B 00`.

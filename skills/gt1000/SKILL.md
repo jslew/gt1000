@@ -67,10 +67,18 @@ scripts/gt1000-agent --pretty patch summary --live --timeout 8
 scripts/gt1000-agent --pretty patch overview --live --timeout 8
 scripts/gt1000-agent --pretty patch chain --live --timeout 8
 scripts/gt1000-agent --pretty patch controls --live --timeout 8
+scripts/gt1000-agent --pretty patch slot U01-1 --live --view summary --timeout 15
+scripts/gt1000-agent --pretty patch bank U01 --live --view summary --timeout 15
+scripts/gt1000-agent --pretty patch block delay1 --user-slot U01-1
+scripts/gt1000-agent --pretty system midi --live --timeout 8
+scripts/gt1000-agent --pretty system inout --live --timeout 8
+scripts/gt1000-agent --pretty system controls --live --timeout 8
 scripts/gt1000-agent --pretty patch block delay1 --live --timeout 8
 ```
 
 Use `summary` first for human patch descriptions because it includes metadata, typed signal-chain data, and controls.
+Use `slot` or `bank` for persistent user patch inspection; these read user patch memory directly and do not select the patch on the unit.
+Use `patch block --user-slot` for targeted persistent-slot block inspection.
 
 ## Safe Edit Workflow
 

@@ -1,4 +1,0 @@
-interface:
-  display_name: "GT-1000 Knowledge"
-  short_description: "GT-1000 v4+ manuals and CLI workflows"
-  default_prompt: "Use the GT-1000 knowledge skill to inspect the connected unit, explain patch behavior, map controls, decode MIDI/SysEx references, or update the local v4+ wiki."

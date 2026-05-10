@@ -17,6 +17,28 @@ scripts/gt1000-agent --pretty ports --live
 ```
 - `--live`: Required for MIDI port discovery.
 
+## System Inspection Commands
+
+System commands are read-only SysEx views of global settings.
+
+### `system midi`
+Read global MIDI settings as raw bytes with light decoding for common channel fields.
+```sh
+scripts/gt1000-agent --pretty system midi --live --timeout 8
+```
+
+### `system inout`
+Read global input/output settings as raw bytes with light decoding for common level/output-select fields.
+```sh
+scripts/gt1000-agent --pretty system inout --live --timeout 8
+```
+
+### `system controls`
+Read global control preference settings.
+```sh
+scripts/gt1000-agent --pretty system controls --live --timeout 8
+```
+
 ## Patch Inspection Commands
 
 All patch commands support `--live` for the connected device or `--file <path>` for a saved JSON dump.
@@ -45,15 +67,42 @@ Show physical foot-switch mappings (NUM 1-5, CTL 1-3, etc.) and active Assign ov
 scripts/gt1000-agent --pretty patch controls --live --timeout 15
 ```
 
+### `patch slot`
+Read a persistent user patch slot directly by SysEx without selecting it on the unit.
+```sh
+scripts/gt1000-agent --pretty patch slot U01-1 --live --view summary --timeout 15
+```
+- `slot`: User slot `U01-1` through `U50-5`.
+- `--view`: `overview`, `chain`, `controls`, `summary`, or `full`.
+
+### `patch bank`
+Read all five persistent user patch slots in a bank sequentially.
+```sh
+scripts/gt1000-agent --pretty patch bank U01 --live --view summary --timeout 15
+```
+- `bank`: User bank `U01` through `U50`.
+- Reads are sequential to avoid interleaving GT-1000 MIDI replies.
+- Use this for comparing patch names, master patch levels, chains, controls, and switchable-path level parameters across a bank.
+
+### `patch select`
+Select a user slot using a typed MIDI Program Change message.
+```sh
+scripts/gt1000-agent --pretty patch select U01-1 --live --channel 1
+```
+- Program Change is subject to the GT-1000 MIDI RX channel and program-map settings.
+- The command currently supports the slots addressable by a single Program Change (`U01-1` through `U26-3`). Higher slots need bank-select mapping validation before use.
+
 ### `patch block`
 Show detailed parameters for a single block.
 ```sh
 scripts/gt1000-agent --pretty patch block preamp1 --live
 scripts/gt1000-agent --pretty patch block ds1 --live
 scripts/gt1000-agent --pretty patch block --position 8 --live
+scripts/gt1000-agent --pretty patch block delay1 --user-slot U01-2
 ```
 - Supports normalized IDs (`preamp1`) and aliases (`ds1`, `sr1`).
 - Use `--position <n>` to target a block by its 1-indexed position in the raw chain.
+- Use `--user-slot Uxx-y` to inspect a block from persistent user patch memory without selecting the patch.
 
 ### `patch dump`
 Read the entire current patch state into a JSON object.

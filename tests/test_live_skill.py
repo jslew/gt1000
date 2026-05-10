@@ -64,6 +64,15 @@ class LiveSkillReadTests(unittest.TestCase):
             inspected = self.run_cli("patch", "inspect", str(output), "--view", "summary", timeout=30)
             self.assertEqual(inspected["overview"]["patchName"], dump["patchName"])
 
+    def test_live_user_slot_and_bank_overview_reads(self):
+        slot = self.run_cli("patch", "slot", "U01-1", "--live", "--view", "overview", "--timeout", "12", timeout=40)
+        bank = self.run_cli("patch", "bank", "U01", "--live", "--view", "overview", "--timeout", "12", timeout=80)
+
+        self.assertIsInstance(slot.get("patchName"), str)
+        self.assertEqual(bank["bank"], "U01")
+        self.assertEqual([patch["slot"] for patch in bank["patches"]], ["U01-1", "U01-2", "U01-3", "U01-4", "U01-5"])
+        self.assertEqual(bank["patches"][0]["data"]["patchName"], slot["patchName"])
+
     def test_patch_plans_build_without_writing(self):
         default = self.run_cli("patch", "plan", "default", timeout=30)
         four_cm = self.run_cli("patch", "plan", "4cm-template", timeout=30)

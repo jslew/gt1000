@@ -20,8 +20,14 @@ TEMPORARY_PATCH_MASTER_BPM = [0x10, 0x00, 0x10, 0x61]
 TEMPORARY_PATCH_EFFECT = [0x10, 0x00, 0x10, 0x00]
 TEMPORARY_PATCH_COMMON = [0x10, 0x00, 0x00, 0x00]
 SYSTEM_CONTROL = [0x00, 0x00, 0x10, 0x00]
+SYSTEM_MIDI = [0x00, 0x00, 0x30, 0x00]
+SYSTEM_IN_OUT = [0x00, 0x00, 0x40, 0x00]
 ASSIGN_BASE = [0x10, 0x00, 0x03, 0x00]
 ASSIGN_STRIDE = 0x40
+USER_PATCH_1 = [0x20, 0x00, 0x00, 0x00]
+USER_PATCH_STRIDE = 0x4000
+USER_BANK_COUNT = 50
+USER_PATCHES_PER_BANK = 5
 
 
 class LiveMIDIError(Exception):
@@ -383,9 +389,84 @@ def read_current_patch(timeout: float, requests: list[PatchReadRequest] | None =
     return state.snapshot
 
 
+def read_user_patch(slot: str, timeout: float, requests: list[PatchReadRequest] | None = None) -> dict[str, Any]:
+    patch_base = user_patch_base(slot)
+    source_requests = requests or READ_PLAN
+    remapped_requests = [
+        PatchReadRequest(request.label, remap_temporary_patch_address(request.address, patch_base), request.size)
+        for request in source_requests
+    ]
+    raw = read_data_sets(timeout=timeout, requests=remapped_requests)
+    snapshot = empty_snapshot()
+    for source_request, remapped_request in zip(source_requests, remapped_requests):
+        data = raw.get(address_key(remapped_request.address))
+        if data is not None:
+            apply_data_set(snapshot, source_request.address, data)
+    snapshot["sourceSlot"] = normalize_user_slot(slot)
+    snapshot["sourceAddress"] = hex_bytes(patch_base)
+    return snapshot
+
+
+def user_patch_base(slot: str) -> list[int]:
+    normalized = normalize_user_slot(slot)
+    bank_text, number_text = normalized[1:].split("-", 1)
+    bank = int(bank_text)
+    number = int(number_text)
+    patch_index = (bank - 1) * USER_PATCHES_PER_BANK + number
+    return seven_bit_address(seven_bit_address_value(USER_PATCH_1) + (patch_index - 1) * USER_PATCH_STRIDE)
+
+
+def normalize_user_slot(slot: str) -> str:
+    text = slot.strip().upper()
+    if not text.startswith("U") or "-" not in text:
+        raise ValueError("slot must look like U01-1")
+    bank_text, number_text = text[1:].split("-", 1)
+    try:
+        bank = int(bank_text)
+        number = int(number_text)
+    except ValueError as error:
+        raise ValueError("slot must look like U01-1") from error
+    if not 1 <= bank <= USER_BANK_COUNT:
+        raise ValueError(f"user bank must be U01...U{USER_BANK_COUNT:02d}")
+    if not 1 <= number <= USER_PATCHES_PER_BANK:
+        raise ValueError("user patch number must be 1...5")
+    return f"U{bank:02d}-{number}"
+
+
+def normalize_user_bank(bank: str) -> str:
+    text = bank.strip().upper()
+    if not text.startswith("U"):
+        raise ValueError("bank must look like U01")
+    try:
+        bank_number = int(text[1:])
+    except ValueError as error:
+        raise ValueError("bank must look like U01") from error
+    if not 1 <= bank_number <= USER_BANK_COUNT:
+        raise ValueError(f"user bank must be U01...U{USER_BANK_COUNT:02d}")
+    return f"U{bank_number:02d}"
+
+
+def user_bank_slots(bank: str) -> list[str]:
+    normalized = normalize_user_bank(bank)
+    return [f"{normalized}-{number}" for number in range(1, USER_PATCHES_PER_BANK + 1)]
+
+
+def remap_temporary_patch_address(address: list[int], patch_base: list[int]) -> list[int]:
+    value = seven_bit_address_value(address)
+    temporary_base = seven_bit_address_value(TEMPORARY_PATCH_COMMON)
+    if value < temporary_base:
+        return address
+    return seven_bit_address(seven_bit_address_value(patch_base) + (value - temporary_base))
+
+
 def read_data_sets(timeout: float, requests: list[PatchReadRequest]) -> dict[str, list[int]]:
     state = transact_requests(timeout=timeout, requests=requests)
     return dict(state.data_sets)
+
+
+def read_system_section(address: list[int], size: list[int], timeout: float) -> dict[str, list[int]]:
+    request = PatchReadRequest("System Section", address, size)
+    return read_data_sets(timeout=timeout, requests=[request])
 
 
 @dataclass(frozen=True)
@@ -425,6 +506,34 @@ def write_data_sets(writes: list[PatchWrite], delay: float = 0.05) -> None:
         for write in writes:
             send_message(midi, output_port.value, destination, write.message)
             time.sleep(delay)
+    finally:
+        if client.value:
+            midi.cm.MIDIClientDispose(client)
+
+
+def send_channel_voice(message: list[int], delay: float = 0.1) -> None:
+    if len(message) not in {2, 3}:
+        raise ValueError("channel voice messages must be two or three bytes")
+    midi = CoreMIDI()
+    destination = find_endpoint(midi, midi.cm.MIDIGetNumberOfDestinations, midi.cm.MIDIGetDestination)
+    if destination is None:
+        raise LiveMIDIError("No GT-1000 MIDI destination found")
+
+    client = ctypes.c_uint32()
+    output_port = ctypes.c_uint32()
+    client_name = midi.cf_string("GT1000PythonChannelVoiceClient")
+    status = midi.cm.MIDIClientCreate(client_name, None, None, ctypes.byref(client))
+    midi.cf.CFRelease(client_name)
+    check_status("MIDIClientCreate", status)
+
+    output_name = midi.cf_string("GT1000PythonChannelVoiceOutput")
+    status = midi.cm.MIDIOutputPortCreate(client, output_name, ctypes.byref(output_port))
+    midi.cf.CFRelease(output_name)
+    check_status("MIDIOutputPortCreate", status)
+
+    try:
+        send_message(midi, output_port.value, destination, message)
+        time.sleep(delay)
     finally:
         if client.value:
             midi.cm.MIDIClientDispose(client)
@@ -697,6 +806,9 @@ def empty_snapshot() -> dict[str, Any]:
         "masterKey": None,
         "ampControl1Enabled": None,
         "ampControl2Enabled": None,
+        "masterCarryoverEnabled": None,
+        "controlAssignTempoHoldEnabled": None,
+        "controlAssignInputSensitivity": None,
         "signalChainSummary": "",
         "signalChainElements": [],
         "blocks": [],
@@ -770,6 +882,9 @@ def apply_patch_effect(snapshot: dict[str, Any], data: list[int]) -> None:
     snapshot["masterKey"] = master_key_name(data[0x65]) if len(data) > 0x65 else None
     snapshot["ampControl1Enabled"] = data[0x66] == 1 if len(data) > 0x66 else None
     snapshot["ampControl2Enabled"] = data[0x67] == 1 if len(data) > 0x67 else None
+    snapshot["masterCarryoverEnabled"] = data[0x99] == 1 if len(data) > 0x99 else None
+    snapshot["controlAssignTempoHoldEnabled"] = data[0x9A] == 1 if len(data) > 0x9A else None
+    snapshot["controlAssignInputSensitivity"] = data[0x9B] if len(data) > 0x9B else None
     chain_start = 0x68
     elements = []
     for index, raw_value in enumerate(data[chain_start:chain_start + 49]):
@@ -883,7 +998,7 @@ def chain_element_name(raw_value: int) -> str:
         5: "NOISE SUPPRESSOR 1", 6: "NOISE SUPPRESSOR 2", 7: "FX 1", 8: "FX 2", 9: "FX 3",
         10: "EQUALIZER 1", 11: "EQUALIZER 2", 12: "EQUALIZER 3", 13: "EQUALIZER 4", 14: "CHORUS",
         15: "DELAY 1", 16: "DELAY 2", 17: "DELAY 3", 18: "DELAY 4", 19: "MASTER DELAY",
-        20: "FX 4", 21: "REVERB", 22: "FOOT VOLUME", 23: "PEDAL FX", 24: "SEND/RETURN 1",
+        20: "(RESERVED)", 21: "REVERB", 22: "FOOT VOLUME", 23: "PEDAL FX", 24: "SEND/RETURN 1",
         25: "SEND/RETURN 2", 26: "LOOPER", 27: "SUB SP.SIMULATOR L", 28: "SUB SP.SIMULATOR R",
         29: "MAIN SP.SIMULATOR L", 30: "MAIN SP.SIMULATOR R", 31: "BYPASS SUB L", 32: "BYPASS SUB R",
         33: "BYPASS MAIN L", 34: "BYPASS MAIN R", 35: "DIVIDER 1", 36: "BRANCH SPLIT1", 37: "MIXER 1",

@@ -30,6 +30,16 @@ Run live reads sequentially. Avoid parallel `patch block --live` calls because s
 
 When selecting a patch slot, verify the result by reading `overview`. Trust the live `patchName` over factory sound-list expectations; user slots can contain initialized or edited patches.
 
+For persistent user-slot inspection, prefer direct slot reads over program-change selection:
+
+```sh
+scripts/gt1000-agent --pretty patch slot U01-1 --live --view summary --timeout 15
+scripts/gt1000-agent --pretty patch bank U01 --live --view summary --timeout 15
+scripts/gt1000-agent --pretty patch block delay1 --user-slot U01-1
+```
+
+These commands read user patch memory by SysEx and do not change the selected patch. Use `patch bank` when comparing levels across U01...U50 banks.
+
 For an initialized/sparse patch, a good answer is concise: identify the live patch name, describe the audible/playable chain, and stop. Do not follow with a catalogue of off blocks.
 
 ## Explain Physical Switches
@@ -38,10 +48,18 @@ Current gap: there is not yet a first-class CLI controls view.
 
 For now:
 
-1. Read `PatchCommon`, `SystemControl`, and Assign 1-16 by direct SysEx or add CLI support.
+1. Read `patch controls`, which includes `PatchCommon`, `SystemControl`, and Assign 1-16.
 2. Decode using [Patch Controls](../midi-reference/patch-controls.md).
 3. Check Assign `SW` values using [Assigns](../midi-reference/assigns.md).
 4. Explain direct control functions plus active Assign overlays.
+
+For global troubleshooting, use the read-only system views:
+
+```sh
+scripts/gt1000-agent --pretty system midi --live --timeout 8
+scripts/gt1000-agent --pretty system inout --live --timeout 8
+scripts/gt1000-agent --pretty system controls --live --timeout 8
+```
 
 ## Plan A Patch Edit
 
