@@ -17,6 +17,20 @@ scripts/gt1000-agent --pretty ports --live
 ```
 - `--live`: Required for MIDI port discovery.
 
+## MIDI Send Commands
+
+Typed channel-voice send commands are intentionally narrow. Use them for validated workflows such as exercising a known Assign source; do not emit raw arbitrary MIDI bytes.
+
+### `midi cc`
+Send a MIDI Control Change message.
+```sh
+scripts/gt1000-agent --pretty midi cc 80 127 --channel 1 --live
+scripts/gt1000-agent --pretty midi cc 80 0 --channel 1 --live
+```
+- `controller`: CC number `0`...`127`.
+- `value`: CC value `0`...`127`.
+- `--channel`: 1-based MIDI channel. Channel Voice messages are gated by the GT-1000 RX channel.
+
 ## System Inspection Commands
 
 System commands are read-only SysEx views of global settings.

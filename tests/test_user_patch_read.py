@@ -119,6 +119,27 @@ class UserPatchReadTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             agent_cli.program_change_for_slot("U26-4", 1)
 
+    def test_control_change_message_is_typed_and_bounded(self):
+        self.assertEqual(agent_cli.control_change_message(80, 127, 1), [0xB0, 80, 127])
+        self.assertEqual(agent_cli.control_change_message(1, 0, 16), [0xBF, 1, 0])
+
+        with self.assertRaises(ValueError):
+            agent_cli.control_change_message(128, 0, 1)
+        with self.assertRaises(ValueError):
+            agent_cli.control_change_message(80, 128, 1)
+        with self.assertRaises(ValueError):
+            agent_cli.control_change_message(80, 0, 17)
+
+    def test_midi_cc_command_sends_typed_message(self):
+        args = agent_cli.build_parser().parse_args(["midi", "cc", "80", "127", "--channel", "2", "--live"])
+
+        with mock.patch.object(agent_cli.live, "send_channel_voice") as send:
+            result = agent_cli.cmd_midi_cc(args)
+
+        send.assert_called_once_with([0xB1, 80, 127])
+        self.assertEqual(result["type"], "controlChange")
+        self.assertEqual(result["messageHex"], "B1 50 7F")
+
     def test_assign_decode_includes_ranges_and_midi_fields(self):
         data = bytes([
             0x01, 0x00, 0x03, 0x0D, 0x0B, 0x08, 0x00, 0x00, 0x00,

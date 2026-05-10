@@ -52,6 +52,15 @@ def build_parser() -> argparse.ArgumentParser:
     ports.add_argument("--live", action="store_true", help="Required for live MIDI port reads.")
     ports.set_defaults(func=cmd_ports)
 
+    midi = subcommands.add_parser("midi", help="Send typed MIDI channel-voice messages.")
+    midi_subcommands = midi.add_subparsers(dest="midi_command", required=True)
+    cc = midi_subcommands.add_parser("cc", help="Send a typed MIDI Control Change message.")
+    cc.add_argument("controller", type=int, help="MIDI CC controller number 0...127.")
+    cc.add_argument("value", type=int, help="MIDI CC value 0...127.")
+    cc.add_argument("--channel", type=int, default=1, help="1-based MIDI channel, default 1.")
+    cc.add_argument("--live", action="store_true", help="Required because this sends MIDI to the connected GT-1000.")
+    cc.set_defaults(func=cmd_midi_cc)
+
     system = subcommands.add_parser("system", help="Inspect GT-1000 system/global MIDI sections.")
     system_subcommands = system.add_subparsers(dest="system_command", required=True)
     for name, help_text in [
@@ -172,6 +181,26 @@ def cmd_ports(args: argparse.Namespace) -> Any:
     if not args.live:
         raise CLIError("ports requires --live because MIDI ports are live device state", 64)
     return live.list_ports()
+
+
+def cmd_midi_cc(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("midi cc requires --live because it sends MIDI to the connected GT-1000", 64)
+    try:
+        message = control_change_message(args.controller, args.value, args.channel)
+        live.send_channel_voice(message)
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+    return {
+        "type": "controlChange",
+        "channel": args.channel,
+        "controller": args.controller,
+        "value": args.value,
+        "messageHex": live.hex_string(message),
+        "note": "Control Change messages are gated by the GT-1000 MIDI RX channel and only affect mapped Assign/control sources.",
+    }
 
 
 def cmd_system_view(args: argparse.Namespace) -> Any:
@@ -529,6 +558,16 @@ def program_change_for_slot(slot: str, channel: int) -> list[int]:
     if program > 127:
         raise ValueError("patch select currently supports U01-1 through U26-3; higher slots need bank-select mapping validation")
     return [0xC0 + (channel - 1), program]
+
+
+def control_change_message(controller: int, value: int, channel: int) -> list[int]:
+    if not 1 <= channel <= 16:
+        raise ValueError("MIDI channel must be 1...16")
+    if not 0 <= controller <= 127:
+        raise ValueError("MIDI CC controller must be 0...127")
+    if not 0 <= value <= 127:
+        raise ValueError("MIDI CC value must be 0...127")
+    return [0xB0 + (channel - 1), controller, value]
 
 
 def pcmap_bank_address(bank: int) -> list[int]:
