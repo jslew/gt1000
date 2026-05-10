@@ -200,6 +200,32 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(apply.call_args.kwargs, {"timeout": 12.0, "verify": True})
         self.assertEqual(result, {"verified": True})
 
+    def test_patch_enable_command_applies_typed_switch_plan(self):
+        args = agent_cli.build_parser().parse_args(["patch", "enable", "delay1", "--live", "--verify"])
+
+        with mock.patch.object(agent_cli.patch_edit, "apply_plan", return_value={"verified": True}) as apply:
+            result = agent_cli.cmd_patch_enable(args)
+
+        plan = apply.call_args.args[0]
+        self.assertEqual(plan.id, "set:delay1.sw")
+        self.assertEqual(plan.writes[0].address, [0x10, 0x00, 0x1D, 0x00])
+        self.assertEqual(plan.writes[0].data, [0x01])
+        self.assertEqual(apply.call_args.kwargs, {"timeout": 12.0, "verify": True})
+        self.assertEqual(result, {"verified": True})
+
+    def test_patch_disable_command_resolves_alias_and_user_slot(self):
+        args = agent_cli.build_parser().parse_args(["patch", "disable", "ds1", "--live", "--user-slot", "U03-2"])
+
+        with mock.patch.object(agent_cli.patch_edit, "apply_plan", return_value={"verified": None}) as apply:
+            result = agent_cli.cmd_patch_enable(args)
+
+        plan = apply.call_args.args[0]
+        self.assertEqual(plan.id, "set:dist1.sw:U03-2")
+        self.assertEqual(plan.writes[0].address, [0x20, 0x0B, 0x13, 0x00])
+        self.assertEqual(plan.writes[0].data, [0x00])
+        self.assertEqual(apply.call_args.kwargs, {"timeout": 12.0, "verify": False})
+        self.assertEqual(result, {"verified": None})
+
     def test_patch_tuner_assign_command_applies_typed_plan(self):
         args = agent_cli.build_parser().parse_args(["patch", "tuner-assign", "--live", "--verify"])
 

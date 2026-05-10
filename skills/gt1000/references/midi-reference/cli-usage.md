@@ -207,6 +207,17 @@ scripts/gt1000-agent --pretty patch set delay1 time 380 --live --verify
 - `--verify`: Re-reads the parameter to confirm the write succeeded.
 - `--user-slot U03-1`: Persist the change to a specific user slot instead of the temporary patch. Valid slots: `U03-1` through `U03-5`.
 
+### `patch enable` / `patch disable`
+Turn a switchable block on or off through the validated block `sw` parameter.
+```sh
+scripts/gt1000-agent --pretty patch enable delay1 --live --verify
+scripts/gt1000-agent --pretty patch disable dist1 --live --verify
+```
+- Supports normalized IDs (`delay1`, `dist1`) and aliases (`ds1`, `sr1`).
+- `--verify`: Re-reads the block switch address to confirm the write succeeded.
+- `--user-slot U03-1`: Persist the switch change to a specific user slot instead of the temporary patch. Valid slots: `U03-1` through `U03-5`.
+- If a block has no decoded `sw` parameter, use `patch block` to inspect it and add a typed validator before writing.
+
 ### `patch set-bpm`
 Change the patch master BPM using the validated four-nibble `BPM * 10` encoding.
 ```sh
