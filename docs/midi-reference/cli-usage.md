@@ -40,6 +40,16 @@ scripts/gt1000-agent --pretty midi pc 128 --channel 1 --live
 - `program`: Program Change number `1`...`128`; the MIDI payload is zero-based `0`...`127`.
 - Program Change messages are gated by the GT-1000 RX channel and resolved through the active Program Map.
 
+### `midi bank-select`
+Send MIDI Bank Select MSB/LSB messages.
+```sh
+scripts/gt1000-agent --pretty midi bank-select 0 --channel 1 --live
+scripts/gt1000-agent --pretty midi bank-select 2 0 --channel 1 --live
+```
+- `msb`: Bank Select MSB `0`...`127`.
+- `lsb`: optional Bank Select LSB `0`...`127`, default `0`.
+- Bank Select is normally followed by Program Change.
+
 ## System Inspection Commands
 
 System commands are read-only SysEx views of global settings.

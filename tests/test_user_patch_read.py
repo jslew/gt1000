@@ -142,6 +142,30 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(result["programZeroBased"], 127)
         self.assertEqual(result["messageHex"], "C1 7F")
 
+    def test_bank_select_messages_are_typed_and_bounded(self):
+        self.assertEqual(agent_cli.bank_select_messages(2, 0, 1), [[0xB0, 0, 2], [0xB0, 32, 0]])
+        self.assertEqual(agent_cli.bank_select_messages(127, 127, 16), [[0xBF, 0, 127], [0xBF, 32, 127]])
+
+        with self.assertRaises(ValueError):
+            agent_cli.bank_select_messages(128, 0, 1)
+        with self.assertRaises(ValueError):
+            agent_cli.bank_select_messages(0, 128, 1)
+        with self.assertRaises(ValueError):
+            agent_cli.bank_select_messages(0, 0, 17)
+
+    def test_midi_bank_select_command_sends_typed_messages(self):
+        args = agent_cli.build_parser().parse_args(["midi", "bank-select", "2", "1", "--channel", "3", "--live"])
+
+        with mock.patch.object(agent_cli.live, "send_channel_voice") as send:
+            result = agent_cli.cmd_midi_bank_select(args)
+
+        send.assert_has_calls([
+            mock.call([0xB2, 0, 2]),
+            mock.call([0xB2, 32, 1]),
+        ])
+        self.assertEqual(result["type"], "bankSelect")
+        self.assertEqual(result["messagesHex"], ["B2 00 02", "B2 20 01"])
+
     def test_control_change_message_is_typed_and_bounded(self):
         self.assertEqual(agent_cli.control_change_message(80, 127, 1), [0xB0, 80, 127])
         self.assertEqual(agent_cli.control_change_message(1, 0, 16), [0xBF, 1, 0])

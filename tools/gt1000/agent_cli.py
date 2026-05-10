@@ -65,6 +65,12 @@ def build_parser() -> argparse.ArgumentParser:
     pc.add_argument("--channel", type=int, default=1, help="1-based MIDI channel, default 1.")
     pc.add_argument("--live", action="store_true", help="Required because this sends MIDI to the connected GT-1000.")
     pc.set_defaults(func=cmd_midi_pc)
+    bank_select = midi_subcommands.add_parser("bank-select", help="Send typed MIDI Bank Select MSB/LSB messages.")
+    bank_select.add_argument("msb", type=int, help="Bank Select MSB 0...127.")
+    bank_select.add_argument("lsb", type=int, nargs="?", default=0, help="Bank Select LSB 0...127, default 0.")
+    bank_select.add_argument("--channel", type=int, default=1, help="1-based MIDI channel, default 1.")
+    bank_select.add_argument("--live", action="store_true", help="Required because this sends MIDI to the connected GT-1000.")
+    bank_select.set_defaults(func=cmd_midi_bank_select)
 
     system = subcommands.add_parser("system", help="Inspect GT-1000 system/global MIDI sections.")
     system_subcommands = system.add_subparsers(dest="system_command", required=True)
@@ -225,6 +231,27 @@ def cmd_midi_pc(args: argparse.Namespace) -> Any:
         "programZeroBased": args.program - 1,
         "messageHex": live.hex_string(message),
         "note": "Program Change messages are gated by the GT-1000 MIDI RX channel and resolved through MENU:MIDI:PROGRAM MAP.",
+    }
+
+
+def cmd_midi_bank_select(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("midi bank-select requires --live because it sends MIDI to the connected GT-1000", 64)
+    try:
+        messages = bank_select_messages(args.msb, args.lsb, args.channel)
+        for message in messages:
+            live.send_channel_voice(message)
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+    return {
+        "type": "bankSelect",
+        "channel": args.channel,
+        "msb": args.msb,
+        "lsb": args.lsb,
+        "messagesHex": [live.hex_string(message) for message in messages],
+        "note": "Bank Select is normally followed by Program Change and is gated by the GT-1000 MIDI RX channel.",
     }
 
 
@@ -601,6 +628,17 @@ def control_change_message(controller: int, value: int, channel: int) -> list[in
     if not 0 <= value <= 127:
         raise ValueError("MIDI CC value must be 0...127")
     return [0xB0 + (channel - 1), controller, value]
+
+
+def bank_select_messages(msb: int, lsb: int, channel: int) -> list[list[int]]:
+    if not 0 <= msb <= 127:
+        raise ValueError("MIDI Bank Select MSB must be 0...127")
+    if not 0 <= lsb <= 127:
+        raise ValueError("MIDI Bank Select LSB must be 0...127")
+    return [
+        control_change_message(0, msb, channel),
+        control_change_message(32, lsb, channel),
+    ]
 
 
 def pcmap_bank_address(bank: int) -> list[int]:
