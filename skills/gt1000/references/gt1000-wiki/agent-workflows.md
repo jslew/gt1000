@@ -44,13 +44,9 @@ For an initialized/sparse patch, a good answer is concise: identify the live pat
 
 ## Explain Physical Switches
 
-Current gap: there is not yet a first-class CLI controls view.
-
-For now:
-
-1. Read `patch controls`, which includes `PatchCommon`, `SystemControl`, and Assign 1-16.
-2. Decode using [Patch Controls](../midi-reference/patch-controls.md).
-3. Check Assign `SW` values using [Assigns](../midi-reference/assigns.md).
+1. Read `patch controls`, which includes direct PatchCommon/SystemControl functions and Assign 1-16 overlays.
+2. Use [Patch Controls](../midi-reference/patch-controls.md) only if a raw function value is unclear.
+3. Use [Assigns](../midi-reference/assigns.md) only if source IDs, target min/max encoding, or target-table caveats matter.
 4. Explain direct control functions plus active Assign overlays.
 
 For global troubleshooting, use the read-only system views:
@@ -66,7 +62,7 @@ scripts/gt1000-agent --pretty system controls --live --timeout 8
 1. Inspect current state progressively.
 2. Identify the exact block and parameter.
 3. Validate the requested value against the Parameter Guide and MIDI range.
-4. Prefer structured intents such as `setEffectEnabled`, `setParameter`, or `setAssign`.
+4. Prefer structured CLI intents such as `patch enable`, `patch disable`, `patch set`, `patch type`, `patch move`, `patch assign-cc`, `patch set-bpm`, or `patch tuner-assign`.
 5. Do not emit arbitrary SysEx directly.
 6. Ask before persistent patch write.
 
