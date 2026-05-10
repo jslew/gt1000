@@ -261,7 +261,7 @@ def cmd_system_view(args: argparse.Namespace) -> Any:
         raise CLIError("system views require --live because system settings are live device state", 64)
     sections = {
         "common": ("systemCommon", "System Common", live.SYSTEM_COMMON, [0x00, 0x00, 0x00, 0x0D], decode_system_common),
-        "midi": ("systemMidi", "System MIDI", live.SYSTEM_MIDI, [0x00, 0x00, 0x00, 0x40], decode_system_midi),
+        "midi": ("systemMidi", "System MIDI", live.SYSTEM_MIDI, [0x00, 0x00, 0x00, 0x1B], decode_system_midi),
         "inout": ("systemInOut", "System IN/OUT", live.SYSTEM_IN_OUT, [0x00, 0x00, 0x00, 0x60], decode_system_inout),
         "effects": ("systemEffects", "System Effects", live.SYSTEM_EFFECTS, [0x00, 0x00, 0x00, 0x07], decode_system_effects),
         "pitch": ("systemPitch", "System Pitch", live.SYSTEM_PITCH, [0x00, 0x00, 0x00, 0x07], decode_system_pitch),
@@ -1161,7 +1161,6 @@ def decode_system_midi(data: list[int]) -> dict[str, Any]:
         "mapSelectRaw": data[8] if len(data) > 8 else None,
         "mapSelect": decode_enum(data[8], ["FIX", "PROG"]) if len(data) > 8 else None,
         "controlChangeNumbers": decode_system_midi_cc_assignments(data),
-        "note": "Offsets after the documented common MIDI settings are left raw until their enum tables are locally validated.",
     }
 
 

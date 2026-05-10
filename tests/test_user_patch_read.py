@@ -365,6 +365,7 @@ class UserPatchReadTests(unittest.TestCase):
 
         self.assertEqual(result["id"], "systemMidi")
         self.assertEqual(result["address"], ["00", "00", "30", "00"])
+        self.assertEqual(result["size"], ["00", "00", "00", "1B"])
         self.assertEqual(result["decoded"]["rxChannelRaw"], 1)
         self.assertEqual(result["decoded"]["rxChannel"], "Ch.2")
         self.assertEqual(result["decoded"]["txChannel"], "RX")
