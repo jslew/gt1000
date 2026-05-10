@@ -72,6 +72,14 @@ All offsets below are relative to temporary patch base `10 00 00 00`.
 
 Physical control mappings require extra reads of `PatchCommon`, `SystemControl`, and Assign blocks. See [Patch Controls](patch-controls.md).
 
+## System Common Known Offsets
+
+Offsets below are relative to `System Common` address `00 00 00 00`.
+
+| Offset | Field | Decoding |
+|---:|---|---|
+| `09`...`0C` | System metronome BPM | four nibbles of `BPM * 10` |
+
 ## System MIDI Known Offsets
 
 Offsets below are relative to `System MIDI` address `00 00 30 00`.

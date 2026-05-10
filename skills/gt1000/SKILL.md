@@ -71,6 +71,7 @@ Use this routing:
 - Sending Bank Select: use `midi bank-select <msb> [lsb] --channel N --live` only when the user explicitly needs bank-select/channel-voice behavior; follow it with `midi pc` if selecting via an external-style bank/program sequence.
 - Signal-chain routing, divider/mixer behavior, chain element values, or reserved elements: run `patch chain` or `patch summary` first. Open `references/midi-reference/patch-effect.md` only when raw chain/routing details matter.
 - System/global MIDI, IN/OUT, or control preference questions: use the relevant `system` CLI view first. Open `references/midi-reference/README.md` or address-map notes only when addresses, sizes, or SysEx behavior need explanation.
+- System metronome BPM questions: use `system common` first. Open address-map notes only if the user asks about the underlying System Common address or BPM nibble encoding.
 - Manual-mode switch questions: use `system manual` first. Open address-map notes only if the user asks how manual-mode NUM functions are encoded.
 - Program Change mapping questions: use `system pcmap --bank N` first for a focused bank read, or omit `--bank` only when comparing the full map. Open address-map notes only if the user asks about storage layout or patch-value encoding.
 - Input-setting questions: use `system inputs --number N` first for one named input setting, or omit `--number` only when comparing all ten.
@@ -93,6 +94,7 @@ scripts/gt1000-agent --pretty patch block delay1 --user-slot U01-1
 scripts/gt1000-agent --pretty midi cc 80 127 --channel 1 --live
 scripts/gt1000-agent --pretty midi bank-select 0 --channel 1 --live
 scripts/gt1000-agent --pretty midi pc 1 --channel 1 --live
+scripts/gt1000-agent --pretty system common --live --timeout 8
 scripts/gt1000-agent --pretty system midi --live --timeout 8
 scripts/gt1000-agent --pretty system pcmap --live --bank 1 --timeout 8
 scripts/gt1000-agent --pretty system inputs --live --number 1 --timeout 8

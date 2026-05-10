@@ -54,6 +54,12 @@ scripts/gt1000-agent --pretty midi bank-select 2 0 --channel 1 --live
 
 System commands are read-only SysEx views of global settings.
 
+### `system common`
+Read common global settings with the known metronome BPM field decoded.
+```sh
+scripts/gt1000-agent --pretty system common --live --timeout 8
+```
+
 ### `system midi`
 Read global MIDI settings as raw bytes with light decoding for common channel fields.
 ```sh

@@ -75,6 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
     system = subcommands.add_parser("system", help="Inspect GT-1000 system/global MIDI sections.")
     system_subcommands = system.add_subparsers(dest="system_command", required=True)
     for name, help_text in [
+        ("common", "Read common global settings."),
         ("midi", "Read global MIDI settings."),
         ("inout", "Read global input/output settings."),
         ("effects", "Read global effects settings."),
@@ -259,6 +260,7 @@ def cmd_system_view(args: argparse.Namespace) -> Any:
     if not args.live:
         raise CLIError("system views require --live because system settings are live device state", 64)
     sections = {
+        "common": ("systemCommon", "System Common", live.SYSTEM_COMMON, [0x00, 0x00, 0x00, 0x0D], decode_system_common),
         "midi": ("systemMidi", "System MIDI", live.SYSTEM_MIDI, [0x00, 0x00, 0x00, 0x40], decode_system_midi),
         "inout": ("systemInOut", "System IN/OUT", live.SYSTEM_IN_OUT, [0x00, 0x00, 0x00, 0x60], decode_system_inout),
         "effects": ("systemEffects", "System Effects", live.SYSTEM_EFFECTS, [0x00, 0x00, 0x00, 0x07], decode_system_effects),
@@ -680,6 +682,15 @@ def slot_from_patch_index(prefix: str, zero_based_index: int) -> str:
     bank = zero_based_index // live.USER_PATCHES_PER_BANK + 1
     number = zero_based_index % live.USER_PATCHES_PER_BANK + 1
     return f"{prefix}{bank:02d}-{number}"
+
+
+def decode_system_common(data: list[int]) -> dict[str, Any]:
+    metronome_bpm = live.bpm_from_data(data[0x09:0x0D]) if len(data) >= 0x0D else None
+    return {
+        "metronomeBpmRaw": data[0x09:0x0D] if len(data) >= 0x0D else [],
+        "metronomeBpm": metronome_bpm,
+        "note": "Only the documented system metronome BPM field is decoded here; other System Common bytes stay raw.",
+    }
 
 
 def system_input_setting_address(number: int) -> list[int]:

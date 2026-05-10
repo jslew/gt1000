@@ -379,6 +379,20 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(result["decoded"]["controlChangeNumbers"]["CTL 1"], {"raw": 63, "cc": "CC#95"})
         self.assertEqual(result["decoded"]["controlChangeNumbers"]["EXP 3"], {"raw": 31, "cc": "CC#31"})
 
+    def test_system_common_view_decodes_metronome_bpm(self):
+        args = agent_cli.build_parser().parse_args(["system", "common", "--live"])
+        data = [0] * 0x0D
+        data[0x09:0x0D] = live.nibbles_for(1200)
+
+        with mock.patch.object(agent_cli.live, "read_system_section", return_value={"00 00 00 00": data}) as read_section:
+            result = agent_cli.cmd_system_view(args)
+
+        read_section.assert_called_once_with([0x00, 0x00, 0x00, 0x00], [0x00, 0x00, 0x00, 0x0D], timeout=8.0)
+        self.assertEqual(result["id"], "systemCommon")
+        self.assertEqual(result["address"], ["00", "00", "00", "00"])
+        self.assertEqual(result["decoded"]["metronomeBpmRaw"], [0, 4, 11, 0])
+        self.assertEqual(result["decoded"]["metronomeBpm"], 120.0)
+
     def test_pcmap_bank_decodes_user_and_preset_targets(self):
         data = []
         for value in [0, 249, 250, 499]:
