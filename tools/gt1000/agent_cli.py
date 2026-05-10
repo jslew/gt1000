@@ -1483,17 +1483,53 @@ def decode_manual_control_function_detail(raw: int) -> dict[str, Any]:
 
 
 def decode_system_controls(data: list[int]) -> dict[str, Any]:
-    preferences = [
-        "NUM 1", "NUM 2", "NUM 3", "NUM 4", "NUM 5", "BANK DOWN", "BANK UP",
-        "CTL 1", "CTL 2", "CTL 3", "CTL 4", "CTL 5", "CTL 6", "CTL 7",
-        "CURRENT NUMBER", "EXP 1 SW", "EXP 1", "EXP 2", "EXP 3",
+    controls = {}
+    switches = [
+        ("NUM 1", 0x00, 0x23), ("NUM 2", 0x02, 0x24), ("NUM 3", 0x04, 0x25),
+        ("NUM 4", 0x06, 0x26), ("NUM 5", 0x08, 0x27),
+        ("BANK DOWN", 0x0A, 0x28), ("BANK UP", 0x0C, 0x29),
+        ("CTL 1", 0x0E, 0x2A), ("CTL 2", 0x10, 0x2B), ("CTL 3", 0x12, 0x2C),
+        ("CTL 4", 0x14, 0x2D), ("CTL 5", 0x16, 0x2E), ("CTL 6", 0x18, 0x2F),
+        ("CTL 7", 0x1A, 0x30), ("CURRENT NUMBER", 0x1C, 0x31), ("EXP 1 SW", 0x1E, 0x32),
     ]
+    for name, function_offset, preference_offset in switches:
+        function_raw = data[function_offset] if len(data) > function_offset else None
+        mode_raw = data[function_offset + 1] if len(data) > function_offset + 1 else None
+        preference_raw = data[preference_offset] if len(data) > preference_offset else None
+        function_detail = decode_control_function_detail(function_raw, is_num=name.startswith("NUM ")) if function_raw is not None else None
+        controls[name] = {
+            "functionRaw": function_raw,
+            "function": function_detail["name"] if function_detail else None,
+            "functionTargetBlockId": function_detail["blockId"] if function_detail else None,
+            "functionTargetParameterId": function_detail["parameterId"] if function_detail else None,
+            "functionCanEnableBlock": function_detail["canEnableBlock"] if function_detail else False,
+            "modeRaw": mode_raw,
+            "mode": "MOMENT" if mode_raw == 1 else "TOGGLE" if mode_raw is not None else None,
+            "preferenceRaw": preference_raw,
+            "preference": decode_enum(preference_raw, ["PATCH", "SYSTEM"]) if preference_raw is not None else None,
+        }
+
+    exp_pedals = [("EXP 1", 0x20, 0x33), ("EXP 2", 0x21, 0x34), ("EXP 3", 0x22, 0x35)]
+    for name, function_offset, preference_offset in exp_pedals:
+        function_raw = data[function_offset] if len(data) > function_offset else None
+        preference_raw = data[preference_offset] if len(data) > preference_offset else None
+        function_detail = decode_exp_function_detail(function_raw) if function_raw is not None else None
+        controls[name] = {
+            "functionRaw": function_raw,
+            "function": function_detail["name"] if function_detail else None,
+            "functionTargetBlockId": function_detail["blockId"] if function_detail else None,
+            "functionTargetParameterId": function_detail["parameterId"] if function_detail else None,
+            "functionCanEnableBlock": function_detail["canEnableBlock"] if function_detail else False,
+            "preferenceRaw": preference_raw,
+            "preference": decode_enum(preference_raw, ["PATCH", "SYSTEM"]) if preference_raw is not None else None,
+        }
+
     return {
+        "controls": controls,
         "preferences": {
-            name: ("SYSTEM" if len(data) > 0x23 + index and data[0x23 + index] == 1 else "PATCH")
-            for index, name in enumerate(preferences)
+            name: control["preference"]
+            for name, control in controls.items()
         },
-        "note": "System control function bytes are decoded in patch controls when a control preference is SYSTEM.",
     }
 
 

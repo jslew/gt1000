@@ -102,7 +102,7 @@ scripts/gt1000-agent --pretty system pitch --live --timeout 8
 ```
 
 ### `system controls`
-Read global control preference settings.
+Read global control functions, modes, and patch/system preference settings.
 ```sh
 scripts/gt1000-agent --pretty system controls --live --timeout 8
 ```

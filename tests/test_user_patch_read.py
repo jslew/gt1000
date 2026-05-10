@@ -545,6 +545,36 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(result["decoded"]["polyTunerOffset"], "-2")
         self.assertEqual(result["decoded"]["tunerOutput"], "BYPASS")
 
+    def test_system_controls_view_decodes_global_functions(self):
+        args = agent_cli.build_parser().parse_args(["system", "controls", "--live"])
+        data = [0] * 0x36
+        data[0x00] = 1
+        data[0x01] = 0
+        data[0x0E] = 33
+        data[0x0F] = 1
+        data[0x20] = 3
+        data[0x23] = 0
+        data[0x2A] = 1
+        data[0x33] = 1
+
+        with mock.patch.object(agent_cli.live, "read_system_section", return_value={"00 00 10 00": data}):
+            result = agent_cli.cmd_system_view(args)
+
+        controls = result["decoded"]["controls"]
+        self.assertEqual(result["id"], "systemControl")
+        self.assertEqual(result["address"], ["00", "00", "10", "00"])
+        self.assertEqual(controls["NUM 1"]["function"], "MATCHING NUM")
+        self.assertEqual(controls["NUM 1"]["mode"], "TOGGLE")
+        self.assertEqual(controls["NUM 1"]["preference"], "PATCH")
+        self.assertEqual(controls["CTL 1"]["function"], "DELAY 1")
+        self.assertEqual(controls["CTL 1"]["functionTargetBlockId"], "delay1")
+        self.assertTrue(controls["CTL 1"]["functionCanEnableBlock"])
+        self.assertEqual(controls["CTL 1"]["mode"], "MOMENT")
+        self.assertEqual(controls["CTL 1"]["preference"], "SYSTEM")
+        self.assertEqual(controls["EXP 1"]["function"], "FV + PEDAL FX")
+        self.assertEqual(controls["EXP 1"]["functionTargetBlockId"], "pedalFx")
+        self.assertEqual(result["decoded"]["preferences"]["EXP 1"], "SYSTEM")
+
     def test_system_manual_view_decodes_manual_control2_fields(self):
         args = agent_cli.build_parser().parse_args(["system", "manual", "--live"])
         data = [29, 0, 55, 1, 58, 0, 43, 1, 1, 0, 0, 1, 0, 1, 0]
