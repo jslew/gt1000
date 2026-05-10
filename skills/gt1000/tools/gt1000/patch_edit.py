@@ -234,6 +234,48 @@ def build_tuner_assign_plan(*, slot: str | None = None) -> PatchPlan:
     return plan_for_user_slot(plan, slot) if slot else plan
 
 
+def build_assign_cc_plan(
+    number: int,
+    *,
+    target: int,
+    target_min: int,
+    target_max: int,
+    source_cc: int,
+    mode: str,
+    active_min: int = 0,
+    active_max: int = 127,
+    slot: str | None = None,
+) -> PatchPlan:
+    source = assign_source_for_cc(source_cc)
+    if mode not in {"toggle", "moment"}:
+        raise ValueError("assign mode must be toggle or moment")
+    for label, value in {"target": target, "target_min": target_min, "target_max": target_max}.items():
+        if not 0 <= value <= 16383:
+            raise ValueError(f"{label} must be 0...16383")
+    if not 0 <= active_min <= 127 or not 0 <= active_max <= 127:
+        raise ValueError("active range must be 0...127")
+    if active_min > active_max:
+        raise ValueError("active range low must be <= high")
+
+    data = assign_data(
+        target=target,
+        target_min=target_min + 32768,
+        target_max=target_max + 32768,
+        source=source,
+        mode=0x00 if mode == "toggle" else 0x01,
+        active_min=active_min,
+        active_max=active_max,
+        midi_cc=source_cc,
+    )
+    write = live.PatchWrite(f"Assign {number} target {target} from CC{source_cc}", assign_address(number), data)
+    plan = PatchPlan(
+        id=f"set:assign{number}:cc{source_cc}:target{target}",
+        description=f"Map Assign {number} target {target} to MIDI CC#{source_cc}.",
+        writes=[write],
+    )
+    return plan_for_user_slot(plan, slot) if slot else plan
+
+
 def parse_bpm_tenths(raw_value: str) -> int:
     try:
         value = Decimal(raw_value.strip())
@@ -377,6 +419,14 @@ def tuner_assign_data() -> list[int]:
         mode=0x01,
         midi_cc=80,
     )
+
+
+def assign_source_for_cc(cc: int) -> int:
+    if 1 <= cc <= 31:
+        return cc + 21
+    if 64 <= cc <= 95:
+        return cc - 11
+    raise ValueError("MIDI CC Assign sources support CC#1...31 and CC#64...95")
 
 
 def all_switchable_blocks_off() -> list[live.PatchWrite]:

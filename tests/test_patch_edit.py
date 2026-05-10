@@ -140,6 +140,37 @@ class PatchEditTests(unittest.TestCase):
         self.assertEqual(remapped.writes[0].address, [0x20, 0x0B, 0x0A, 0x40])
         self.assertEqual(remapped.writes[0].data, patch_edit.tuner_assign_data())
 
+    def test_assign_cc_plan_encodes_source_and_offset_target_range(self):
+        plan = patch_edit.build_assign_cc_plan(
+            3,
+            target=158,
+            target_min=0,
+            target_max=1,
+            source_cc=80,
+            mode="moment",
+        )
+
+        data = plan.writes[0].data
+        self.assertEqual(plan.id, "set:assign3:cc80:target158")
+        self.assertEqual(plan.writes[0].address, [0x10, 0x00, 0x04, 0x00])
+        self.assertEqual(data[0], 1)
+        self.assertEqual(data[1:5], live.nibbles_for(158))
+        self.assertEqual(data[5:9], live.nibbles_for(32768))
+        self.assertEqual(data[9:13], live.nibbles_for(32769))
+        self.assertEqual(data[13], 69)
+        self.assertEqual(data[14], 1)
+        self.assertEqual(data[20:28], live.nibbles_for(0) + live.nibbles_for(127))
+        self.assertEqual(data[29], 80)
+
+    def test_assign_cc_plan_validates_supported_cc_sources(self):
+        self.assertEqual(patch_edit.assign_source_for_cc(1), 22)
+        self.assertEqual(patch_edit.assign_source_for_cc(31), 52)
+        self.assertEqual(patch_edit.assign_source_for_cc(64), 53)
+        self.assertEqual(patch_edit.assign_source_for_cc(95), 84)
+
+        with self.assertRaises(ValueError):
+            patch_edit.build_assign_cc_plan(1, target=158, target_min=0, target_max=1, source_cc=32, mode="moment")
+
 
 if __name__ == "__main__":
     unittest.main()

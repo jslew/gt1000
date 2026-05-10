@@ -241,6 +241,20 @@ scripts/gt1000-agent --pretty patch move dist1 --after preamp1 --live --verify
 - `--user-slot U03-1`: Move within a specific user slot instead of the temporary patch. Valid slots: `U03-1` through `U03-5`.
 - This command preserves all other current chain elements and refuses malformed or unknown chain data.
 
+### `patch assign-cc`
+Map one Assign block to a decoded target from a MIDI CC source.
+```sh
+scripts/gt1000-agent --pretty patch assign-cc 3 delay1 sw --cc 80 --mode moment --live --verify
+scripts/gt1000-agent --pretty patch assign-cc 4 delay1 effectLevel --cc 81 --mode moment --min 20 --max 70 --live --verify
+```
+- Assign number must be `1`...`16`.
+- `--cc` supports GT-1000 Assign MIDI CC sources `1`...`31` and `64`...`95`.
+- `--mode` is required and must be `toggle` or `moment`.
+- On/off targets default to logical min/max `0` and `1`; other targets require explicit `--min` and `--max`.
+- Target min/max are encoded with the GT-1000 Assign `+32768` offset rule.
+- `--active-min` / `--active-max` default to the full CC value range `0`...`127`.
+- `--user-slot U03-1`: Persist the Assign change to a specific user slot instead of the temporary patch. Valid slots: `U03-1` through `U03-5`.
+
 ### `patch set-bpm`
 Change the patch master BPM using the validated four-nibble `BPM * 10` encoding.
 ```sh

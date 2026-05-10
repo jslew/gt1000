@@ -215,6 +215,22 @@ def build_parser() -> argparse.ArgumentParser:
     move.add_argument("--timeout", type=float, default=12.0, help="Read/verification timeout in seconds.")
     move.set_defaults(func=cmd_patch_move)
 
+    assign_cc = patch_subcommands.add_parser("assign-cc", help="Map one Assign to a decoded target from a MIDI CC source.")
+    assign_cc.add_argument("number", type=int, help="Assign number 1...16.")
+    assign_cc.add_argument("block_id", help="Decoded target block id, such as delay1.")
+    assign_cc.add_argument("parameter_id", help="Decoded target parameter id, such as sw.")
+    assign_cc.add_argument("--cc", type=int, required=True, help="MIDI CC source number. Supported: 1...31 and 64...95.")
+    assign_cc.add_argument("--mode", choices=["toggle", "moment"], required=True, help="Assign source mode.")
+    assign_cc.add_argument("--min", dest="target_min", type=int, help="Logical target minimum before the +32768 Assign offset.")
+    assign_cc.add_argument("--max", dest="target_max", type=int, help="Logical target maximum before the +32768 Assign offset.")
+    assign_cc.add_argument("--active-min", type=int, default=0, help="CC active range low, default 0.")
+    assign_cc.add_argument("--active-max", type=int, default=127, help="CC active range high, default 127.")
+    assign_cc.add_argument("--live", action="store_true", help="Required because this writes to the connected GT-1000.")
+    assign_cc.add_argument("--user-slot", choices=["U03-1", "U03-2", "U03-3", "U03-4", "U03-5"], help="Persist to a U03 user patch slot instead of the temporary patch.")
+    assign_cc.add_argument("--verify", action="store_true", help="Re-read the Assign block and compare exact bytes.")
+    assign_cc.add_argument("--timeout", type=float, default=12.0, help="Verification read timeout in seconds.")
+    assign_cc.set_defaults(func=cmd_patch_assign_cc)
+
     set_bpm = patch_subcommands.add_parser("set-bpm", help="Set validated patch master BPM.")
     set_bpm.add_argument("bpm", help="Patch master BPM, 40.0...250.0 with at most one decimal place.")
     set_bpm.add_argument("--live", action="store_true", help="Required because this writes to the connected GT-1000.")
@@ -415,6 +431,17 @@ def chain_value_for_block_id(block_id: str) -> int:
     if block is None:
         raise ValueError(f"unknown chain block {block_id}")
     return block.chain_element_value
+
+
+def assign_target_for_block_parameter(block_id: str, parameter_id: str) -> dict[str, Any]:
+    resolved = resolve_block_id(block_id)
+    for target_range in ASSIGN_TARGET_RANGES:
+        if target_range["blockId"] != resolved:
+            continue
+        for index, (candidate_id, _candidate_name) in enumerate(target_range["parameters"]):
+            if candidate_id == parameter_id:
+                return decode_assign_target_detail(target_range["start"] + index)
+    raise ValueError(f"unknown Assign target for {block_id}.{parameter_id}")
 
 
 def patch_view(args: argparse.Namespace, view: str) -> Any:
@@ -664,6 +691,37 @@ def cmd_patch_move(args: argparse.Namespace) -> Any:
             snapshot = read_live_snapshot(args.timeout, requests=requests_for_view("chain"))
         chain_values = [item["rawValue"] for item in snapshot.get("signalChainElements", [])]
         plan = patch_edit.build_chain_move_plan(chain_values, element, before=before, after=after, slot=args.user_slot)
+        return patch_edit.apply_plan(plan, timeout=args.timeout, verify=args.verify)
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
+def cmd_patch_assign_cc(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch assign-cc requires --live because it writes to the connected GT-1000", 64)
+    try:
+        target = assign_target_for_block_parameter(args.block_id, args.parameter_id)
+        if target["isOnOff"]:
+            target_min = 0 if args.target_min is None else args.target_min
+            target_max = 1 if args.target_max is None else args.target_max
+        elif args.target_min is None or args.target_max is None:
+            raise ValueError("non-on/off Assign targets require --min and --max")
+        else:
+            target_min = args.target_min
+            target_max = args.target_max
+        plan = patch_edit.build_assign_cc_plan(
+            args.number,
+            target=target["raw"],
+            target_min=target_min,
+            target_max=target_max,
+            source_cc=args.cc,
+            mode=args.mode,
+            active_min=args.active_min,
+            active_max=args.active_max,
+            slot=args.user_slot,
+        )
         return patch_edit.apply_plan(plan, timeout=args.timeout, verify=args.verify)
     except ValueError as error:
         raise CLIError(str(error), 64) from error

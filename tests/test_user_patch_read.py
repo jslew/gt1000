@@ -282,6 +282,32 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertGreater(plan.writes[0].data.index(15), plan.writes[0].data.index(14))
         self.assertEqual(result, {"verified": None})
 
+    def test_patch_assign_cc_command_maps_decoded_on_off_target(self):
+        args = agent_cli.build_parser().parse_args([
+            "patch", "assign-cc", "3", "delay1", "sw", "--cc", "80", "--mode", "moment", "--live", "--verify",
+        ])
+
+        with mock.patch.object(agent_cli.patch_edit, "apply_plan", return_value={"verified": True}) as apply:
+            result = agent_cli.cmd_patch_assign_cc(args)
+
+        plan = apply.call_args.args[0]
+        self.assertEqual(plan.id, "set:assign3:cc80:target158")
+        self.assertEqual(plan.writes[0].address, [0x10, 0x00, 0x04, 0x00])
+        self.assertEqual(plan.writes[0].data[1:5], live.nibbles_for(158))
+        self.assertEqual(plan.writes[0].data[5:9], live.nibbles_for(32768))
+        self.assertEqual(plan.writes[0].data[9:13], live.nibbles_for(32769))
+        self.assertEqual(plan.writes[0].data[13], 69)
+        self.assertEqual(apply.call_args.kwargs, {"timeout": 12.0, "verify": True})
+        self.assertEqual(result, {"verified": True})
+
+    def test_patch_assign_cc_requires_ranges_for_non_on_off_target(self):
+        args = agent_cli.build_parser().parse_args([
+            "patch", "assign-cc", "4", "delay1", "effectLevel", "--cc", "80", "--mode", "moment", "--live",
+        ])
+
+        with self.assertRaises(agent_cli.CLIError):
+            agent_cli.cmd_patch_assign_cc(args)
+
     def test_patch_tuner_assign_command_applies_typed_plan(self):
         args = agent_cli.build_parser().parse_args(["patch", "tuner-assign", "--live", "--verify"])
 
