@@ -33,6 +33,18 @@ Read global input/output settings as raw bytes with light decoding for common le
 scripts/gt1000-agent --pretty system inout --live --timeout 8
 ```
 
+### `system effects`
+Read global effects settings such as phrase-loop mode, metronome level, and metronome output routing.
+```sh
+scripts/gt1000-agent --pretty system effects --live --timeout 8
+```
+
+### `system pitch`
+Read global pitch/tuner settings such as reference pitch, poly-tuner type/offset, and tuner output mode.
+```sh
+scripts/gt1000-agent --pretty system pitch --live --timeout 8
+```
+
 ### `system controls`
 Read global control preference settings.
 ```sh
@@ -60,12 +72,16 @@ Show the signal chain with block types (e.g., `T-SCREAM`) but without detailed p
 ```sh
 scripts/gt1000-agent --pretty patch chain --live
 ```
+- Reads Assign blocks and direct physical-control mappings so switched-off blocks can still be marked as description candidates when a decoded control can enable them.
+- Chain elements include `activeAssigns` and `directControls` when those mappings target the element's block.
 
 ### `patch controls`
 Show physical foot-switch mappings (NUM 1-5, CTL 1-3, etc.) and active Assign overlays.
 ```sh
 scripts/gt1000-agent --pretty patch controls --live --timeout 15
 ```
+- Direct switch functions expose raw function bytes plus decoded target metadata: `functionTargetBlockId`, `functionTargetParameterId`, and `functionCanEnableBlock`.
+- Active Assigns expose decoded target metadata: `targetCategory`, `targetBlockId`, `targetParameterId`, and `targetIsOnOff`.
 
 ### `patch slot`
 Read a persistent user patch slot directly by SysEx without selecting it on the unit.

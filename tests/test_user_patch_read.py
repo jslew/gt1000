@@ -132,20 +132,254 @@ class UserPatchReadTests(unittest.TestCase):
 
         self.assertEqual(assign["target"], 987)
         self.assertEqual(assign["targetName"], "TUNER ON/OFF")
+        self.assertEqual(assign["targetCategory"], "TUNER")
+        self.assertIsNone(assign["targetBlockId"])
+        self.assertEqual(assign["targetParameterId"], "sw")
+        self.assertTrue(assign["targetIsOnOff"])
         self.assertEqual(assign["targetMin"], {"encoded": 32768, "logical": 0})
         self.assertEqual(assign["targetMax"], {"encoded": 32769, "logical": 1})
         self.assertEqual(assign["sourceName"], "MIDI CC 80")
         self.assertEqual(assign["midi"]["ccNumber"], 0x50)
 
+    def test_assign_target_decode_exposes_block_metadata(self):
+        detail = agent_cli.decode_assign_target_detail(158)
+
+        self.assertEqual(detail["name"], "DELAY 1 SW")
+        self.assertEqual(detail["category"], "DELAY 1")
+        self.assertEqual(detail["blockId"], "delay1")
+        self.assertEqual(detail["parameterId"], "sw")
+        self.assertTrue(detail["isOnOff"])
+
+        self.assertEqual(agent_cli.decode_assign_target_detail(932)["blockId"], "divider1")
+
+    def test_active_assign_marks_off_block_as_description_candidate(self):
+        assign_data = [0] * 44
+        assign_data[0] = 1
+        assign_data[1:5] = live.nibbles_for(158)
+        assign_data[5:9] = live.nibbles_for(32768)
+        assign_data[9:13] = live.nibbles_for(32769)
+        assign_data[13] = 8
+        snapshot = {
+            "patchName": "ASSIGNED DELAY",
+            "masterBPM": 120.0,
+            "masterPatchLevel": 80,
+            "masterKey": "C(Am)",
+            "ampControl1Enabled": False,
+            "ampControl2Enabled": False,
+            "signalChainElements": [
+                {"position": 1, "rawValue": 15, "displayName": "DELAY 1"},
+                {"position": 2, "rawValue": 31, "displayName": "MAIN OUT L", "isOutput": True},
+            ],
+            "blocks": [
+                {
+                    "id": "delay1",
+                    "displayName": "DELAY 1",
+                    "chainElementValue": 15,
+                    "isEnabled": False,
+                    "typeName": None,
+                    "parameters": [],
+                }
+            ],
+            "rawSections": {"Assign 1": assign_data},
+        }
+
+        chain = agent_cli.chain_from_full(snapshot)
+        delay = chain["elements"][0]
+
+        self.assertTrue(delay["hasControlAssignment"])
+        self.assertTrue(delay["includeInDescription"])
+        self.assertEqual(delay["activeAssignCount"], 1)
+        self.assertEqual(delay["activeAssigns"][0]["targetBlockId"], "delay1")
+        self.assertEqual(chain["descriptionElements"][0]["detailBlockID"], "delay1")
+
+    def test_direct_control_marks_off_block_as_description_candidate(self):
+        patch_common = [0] * 0x7E
+        patch_common[0x31] = 33
+        patch_common[0x32] = 0
+        system_control = [0] * 0x36
+        snapshot = {
+            "patchName": "CTL DELAY",
+            "masterBPM": 120.0,
+            "masterPatchLevel": 80,
+            "masterKey": "C(Am)",
+            "ampControl1Enabled": False,
+            "ampControl2Enabled": False,
+            "signalChainElements": [
+                {"position": 1, "rawValue": 15, "displayName": "DELAY 1"},
+                {"position": 2, "rawValue": 31, "displayName": "MAIN OUT L", "isOutput": True},
+            ],
+            "blocks": [
+                {
+                    "id": "delay1",
+                    "displayName": "DELAY 1",
+                    "chainElementValue": 15,
+                    "isEnabled": False,
+                    "typeName": None,
+                    "parameters": [],
+                }
+            ],
+            "rawSections": [
+                {"id": "patchCommon", "dataHex": live.hex_string(patch_common)},
+                {"id": "systemControl", "dataHex": live.hex_string(system_control)},
+            ],
+        }
+
+        controls = agent_cli.controls_from_full(snapshot)["controls"]
+        chain = agent_cli.chain_from_full(snapshot)
+        delay = chain["elements"][0]
+
+        self.assertEqual(controls["CTL 1"]["function"], "DELAY 1")
+        self.assertEqual(controls["CTL 1"]["functionTargetBlockId"], "delay1")
+        self.assertTrue(controls["CTL 1"]["functionCanEnableBlock"])
+        self.assertTrue(delay["hasControlAssignment"])
+        self.assertTrue(delay["includeInDescription"])
+        self.assertEqual(delay["directControlCount"], 1)
+        self.assertEqual(delay["directControls"][0]["control"], "CTL 1")
+
+    def test_chain_view_reads_assigns_for_reachability(self):
+        labels = [request.label for request in agent_cli.requests_for_view("chain")]
+
+        self.assertIn("Assign 1", labels)
+        self.assertIn("Assign 16", labels)
+
+    def test_control_function_decode_covers_documented_patch_control_values(self):
+        self.assertEqual(agent_cli.decode_control_function(5), "LEVEL +10")
+        self.assertEqual(agent_cli.decode_control_function(14), "MASTER DELAY TAP")
+        self.assertEqual(agent_cli.decode_control_function(1, is_num=True), "MATCHING NUM")
+        detail = agent_cli.decode_control_function_detail(47)
+
+        self.assertEqual(detail["name"], "DIVIDER 1 CHANNEL SELECT")
+        self.assertEqual(detail["blockId"], "divider1")
+        self.assertEqual(detail["parameterId"], "channelSelect")
+
     def test_system_view_decodes_raw_section(self):
         args = agent_cli.build_parser().parse_args(["system", "midi", "--live"])
 
-        with mock.patch.object(agent_cli.live, "read_system_section", return_value={"00 00 30 00": [1, 2, 3]}):
+        data = [0] * 0x0E
+        data[0] = 1
+        data[1] = 0
+        data[2] = 16
+        data[3] = 2
+        data[4] = 3
+        data[5] = 1
+        data[6] = 1
+        data[8] = 1
+        data[9] = 0
+        data[10] = 1
+        data[13] = 32
+
+        with mock.patch.object(agent_cli.live, "read_system_section", return_value={"00 00 30 00": data}):
             result = agent_cli.cmd_system_view(args)
 
         self.assertEqual(result["id"], "systemMidi")
         self.assertEqual(result["address"], ["00", "00", "30", "00"])
         self.assertEqual(result["decoded"]["rxChannelRaw"], 1)
+        self.assertEqual(result["decoded"]["rxChannel"], "Ch.2")
+        self.assertEqual(result["decoded"]["txChannel"], "RX")
+        self.assertEqual(result["decoded"]["syncClock"], "MIDI(AUTO)")
+        self.assertEqual(result["decoded"]["midiInThru"], "USB/MIDI")
+        self.assertEqual(result["decoded"]["clockOut"], "ON")
+        self.assertEqual(result["decoded"]["mapSelect"], "PROG")
+        self.assertEqual(result["decoded"]["controlChangeNumbers"]["NUM 1"], {"raw": 0, "cc": "OFF"})
+        self.assertEqual(result["decoded"]["controlChangeNumbers"]["NUM 2"], {"raw": 1, "cc": "CC#1"})
+        self.assertEqual(result["decoded"]["controlChangeNumbers"]["NUM 5"], {"raw": 32, "cc": "CC#64"})
+
+    def test_system_inout_decodes_validated_common_fields(self):
+        data = [0] * 0x43
+        data[0] = 32
+        data[1] = 0
+        data[2] = 1
+        data[0x03] = 30
+        data[0x04] = 34
+        data[0x05] = 17
+        data[0x06] = 2
+        data[0x08] = 0
+        data[0x09] = 31
+        data[0x11] = 24
+        data[0x12] = 39
+        data[0x21] = 2
+        data[0x22] = 42
+        data[0x23:0x25] = live.nibbles_for(125, byte_count=2)
+        data[0x25] = 1
+        data[0x26:0x28] = live.nibbles_for(150, byte_count=2)
+        data[0x28:0x2A] = live.nibbles_for(75, byte_count=2)
+        data[0x2B:0x2D] = live.nibbles_for(110, byte_count=2)
+        data[0x2D:0x2F] = live.nibbles_for(111, byte_count=2)
+        data[0x30:0x32] = live.nibbles_for(112, byte_count=2)
+        data[0x32:0x34] = live.nibbles_for(113, byte_count=2)
+        data[0x3A] = 0
+        data[0x3B] = 88
+        data[0x3C] = 1
+        data[0x3D] = 1
+        data[0x3E] = 0
+        data[0x3F] = 31
+        data[0x40] = 32
+        data[0x41] = 33
+        data[0x42] = 34
+
+        decoded = agent_cli.decode_system_inout(data)
+
+        self.assertEqual(decoded["inputLevelDb"], 0)
+        self.assertEqual(decoded["mainOutSelect"], "LINE/PHONES")
+        self.assertEqual(decoded["mainROutSelect"], "RECORDING")
+        self.assertEqual(decoded["subOutSelect"], "KATANA-50 INPUT")
+        self.assertEqual(decoded["subROutSelect"], "KATANA-50 MkII POWER AMP IN")
+        self.assertEqual(decoded["mainLeft"]["lowGainDb"], -2)
+        self.assertEqual(decoded["mainLeft"]["midGainDb"], 2)
+        self.assertEqual(decoded["mainLeft"]["midFreq"], "1.00kHz")
+        self.assertEqual(decoded["mainLeft"]["midQ"], "2")
+        self.assertEqual(decoded["mainLeft"]["lowCut"], "FLAT")
+        self.assertEqual(decoded["mainLeft"]["highCut"], "FLAT")
+        self.assertEqual(decoded["phonesSetting"], "MAIN+SUB")
+        self.assertEqual(decoded["totalNsThresholdDb"], 10)
+        self.assertEqual(decoded["totalReverbLevel"], 125)
+        self.assertEqual(decoded["mainLevelSelect"], "+4dBu")
+        self.assertEqual(decoded["usbDryOut"], 150)
+        self.assertEqual(decoded["usbDryToEfx"], 75)
+        self.assertEqual(decoded["usbMainEfxOut"], 110)
+        self.assertEqual(decoded["usbMainMixLevel"], 111)
+        self.assertEqual(decoded["usbSubEfxOut"], 112)
+        self.assertEqual(decoded["usbSubMixLevel"], 113)
+        self.assertEqual(decoded["subLevelSelect"], "-10dBu")
+        self.assertEqual(decoded["subOutputLevel"], 88)
+        self.assertEqual(decoded["subGroundLift"], "ON")
+        self.assertEqual(decoded["mainStereoLink"], "ON")
+        self.assertEqual(decoded["subStereoLink"], "OFF")
+        self.assertEqual(decoded["outputLevels"], {
+            "mainLeftDb": -1,
+            "mainRightDb": 0,
+            "subLeftDb": 1,
+            "subRightDb": 2,
+        })
+
+    def test_system_effects_view_decodes_validated_fields(self):
+        args = agent_cli.build_parser().parse_args(["system", "effects", "--live"])
+        data = [1, 0, 73, 2, 2, 0, 0]
+
+        with mock.patch.object(agent_cli.live, "read_system_section", return_value={"00 00 50 00": data}):
+            result = agent_cli.cmd_system_view(args)
+
+        self.assertEqual(result["id"], "systemEffects")
+        self.assertEqual(result["address"], ["00", "00", "50", "00"])
+        self.assertEqual(result["decoded"]["phraseLoopMode"], "STEREO")
+        self.assertEqual(result["decoded"]["phraseLoopRecAction"], "REC>PLAY>DUB")
+        self.assertEqual(result["decoded"]["metronomeLevel"], 73)
+        self.assertEqual(result["decoded"]["mainGroundLift"], 3)
+        self.assertEqual(result["decoded"]["totalMetronomeOut"], "MAIN+SUB")
+
+    def test_system_pitch_view_decodes_validated_fields(self):
+        args = agent_cli.build_parser().parse_args(["system", "pitch", "--live"])
+        data = live.nibbles_for(440) + [3, 14, 1]
+
+        with mock.patch.object(agent_cli.live, "read_system_section", return_value={"00 00 60 00": data}):
+            result = agent_cli.cmd_system_view(args)
+
+        self.assertEqual(result["id"], "systemPitch")
+        self.assertEqual(result["address"], ["00", "00", "60", "00"])
+        self.assertEqual(result["decoded"]["referencePitchHz"], 440)
+        self.assertEqual(result["decoded"]["polyTunerType"], "7-DROP A")
+        self.assertEqual(result["decoded"]["polyTunerOffset"], "-2")
+        self.assertEqual(result["decoded"]["tunerOutput"], "BYPASS")
 
     def test_fx_blocks_keep_validated_summary_read_size(self):
         fx1 = next(block for block in live.SUMMARY_BLOCKS if block.id == "fx1")

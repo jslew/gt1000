@@ -9,6 +9,7 @@
 | `00 00 30 00` | System MIDI |
 | `00 00 40 00` | System input/output |
 | `00 00 50 00` | System effects |
+| `00 00 60 00` | System pitch/tuner |
 | `10 00 00 00` | Temporary/current patch |
 | `20 00 00 00` | User patch 1 |
 | `20 01 00 00` | User patch 2 |
@@ -62,3 +63,60 @@ All offsets below are relative to temporary patch base `10 00 00 00`.
 - Major effect block summaries listed above.
 
 Physical control mappings require extra reads of `PatchCommon`, `SystemControl`, and Assign blocks. See [Patch Controls](patch-controls.md).
+
+## System MIDI Known Offsets
+
+Offsets below are relative to `System MIDI` address `00 00 30 00`.
+
+| Offset | Field | Decoding |
+|---:|---|---|
+| `00` | RX channel | `0`...`15` = Ch.1...Ch.16 |
+| `01` | Omni mode | `0` off, `1` on |
+| `02` | TX channel | `0`...`15` = Ch.1...Ch.16, `16` = RX |
+| `03` | Sync clock | `0` auto, `1` internal, `2` MIDI(auto), `3` USB(auto) |
+| `04` | MIDI IN thru | `0` off, `1` MIDI out, `2` USB out, `3` USB/MIDI |
+| `05` | USB IN thru | `0` off, `1` MIDI out, `2` USB out, `3` USB/MIDI |
+| `06` | Clock out | `0` off, `1` on |
+| `07` | Fixed value | `0` |
+| `08` | Map select | `0` fixed, `1` program |
+| `09`...`0D` | NUM1...NUM5 CC# | `0` off, `1`...`31` = CC#1...CC#31, `32`...`63` = CC#64...CC#95 |
+
+The CLI currently decodes these validated common offsets and leaves the rest of the `00 00 00 40` read raw until their enum tables are locally validated.
+
+## System IN/OUT Known Offsets
+
+Offsets below are relative to `System IN/OUT` address `00 00 40 00`.
+
+| Offset | Field | Decoding |
+|---:|---|---|
+| `00` | Input level | raw `12`...`52` = `-20`...`+20 dB` |
+| `01` | Main L AIRD output select | `0`...`39` output-select enum |
+| `02` | Main R AIRD output select | `0`...`39` output-select enum |
+| `11` | Sub L AIRD output select | `0`...`39` output-select enum |
+| `12` | Sub R AIRD output select | `0`...`39` output-select enum |
+
+The output-select enum is shared across main/sub L/R and includes line/recording, Roland/BOSS amp return/input choices, user slots, and the v3.11 MkII power-amp-in choices. The CLI decodes the documented `00`...`42` fields in this section: output selection, EQ gains/cutoffs, phones routing, total NS/reverb, USB levels, stereo links, and output levels.
+
+## System Effects Known Offsets
+
+Offsets below are relative to `System Effects` address `00 00 50 00`.
+
+| Offset | Field | Decoding |
+|---:|---|---|
+| `00` | Phrase loop mode | `0` mono, `1` stereo |
+| `01` | Phrase loop rec action | `0` REC>PLAY>DUB, `1` REC>DUB>PLAY |
+| `02` | Metronome level | `0`...`100` |
+| `03` | Main ground lift | raw `0`...`5` = `1`...`6` |
+| `04` | Total metronome out | `0` main out, `1` sub out, `2` main+sub |
+| `05`...`06` | Fixed values | `0`, `0` |
+
+## System Pitch Known Offsets
+
+Offsets below are relative to `System Pitch` address `00 00 60 00`.
+
+| Offset | Field | Decoding |
+|---:|---|---|
+| `00`...`03` | Reference pitch | four nibbles, `435`...`445 Hz` |
+| `04` | Poly tuner type | `6-REGULAR`, `6-DROP D`, `7-REGULAR`, `7-DROP A`, `4-B REGULAR`, `5-B REGULAR` |
+| `05` | Poly tuner offset | raw `11`...`16` = `-5`...`----` |
+| `06` | Tuner output | `0` mute, `1` bypass, `2` thru |

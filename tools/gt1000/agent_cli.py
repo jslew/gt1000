@@ -57,6 +57,8 @@ def build_parser() -> argparse.ArgumentParser:
     for name, help_text in [
         ("midi", "Read global MIDI settings."),
         ("inout", "Read global input/output settings."),
+        ("effects", "Read global effects settings."),
+        ("pitch", "Read global pitch/tuner settings."),
         ("controls", "Read global control preference settings."),
     ]:
         system_view = system_subcommands.add_parser(name, help=help_text)
@@ -167,6 +169,8 @@ def cmd_system_view(args: argparse.Namespace) -> Any:
     sections = {
         "midi": ("systemMidi", "System MIDI", live.SYSTEM_MIDI, [0x00, 0x00, 0x00, 0x40], decode_system_midi),
         "inout": ("systemInOut", "System IN/OUT", live.SYSTEM_IN_OUT, [0x00, 0x00, 0x00, 0x60], decode_system_inout),
+        "effects": ("systemEffects", "System Effects", live.SYSTEM_EFFECTS, [0x00, 0x00, 0x00, 0x07], decode_system_effects),
+        "pitch": ("systemPitch", "System Pitch", live.SYSTEM_PITCH, [0x00, 0x00, 0x00, 0x07], decode_system_pitch),
         "controls": ("systemControl", "System Control", live.SYSTEM_CONTROL, [0x00, 0x00, 0x00, 0x36], decode_system_controls),
     }
     section_id, label, address, size, decoder = sections[args.system_command]
@@ -447,7 +451,7 @@ def requests_for_view(view: str) -> list[live.PatchReadRequest]:
     if view in {"controls", "summary"}:
         return live.READ_PLAN + assign_requests
     if view == "chain":
-        return live.READ_PLAN
+        return live.READ_PLAN + assign_requests
     if view == "overview":
         return live.INITIAL_READS
     return live.READ_PLAN + assign_requests
@@ -510,7 +514,7 @@ def overview_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
 
 
 def controls_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
-    raw_sections = {s["id"]: bytes.fromhex(s["dataHex"].replace(" ", "")) for s in snapshot.get("rawSections", [])}
+    raw_sections = normalized_raw_sections(snapshot)
     patch_common = raw_sections.get("patchCommon")
     system_control = raw_sections.get("systemControl")
 
@@ -533,10 +537,15 @@ def controls_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
         preference = "SYSTEM" if system_control[system_pref_offset] == 1 else "PATCH"
         func_byte = system_control[patch_offset - 0x23] if preference == "SYSTEM" else patch_common[patch_offset]
         mode_byte = system_control[patch_offset - 0x23 + 1] if preference == "SYSTEM" else patch_common[patch_offset + 1]
+        function_detail = decode_control_function_detail(func_byte, is_num="NUM" in name)
         
         controls[name] = {
             "preference": preference,
-            "function": decode_control_function(func_byte, is_num="NUM" in name),
+            "functionRaw": func_byte,
+            "function": function_detail["name"],
+            "functionTargetBlockId": function_detail["blockId"],
+            "functionTargetParameterId": function_detail["parameterId"],
+            "functionCanEnableBlock": function_detail["canEnableBlock"],
             "mode": "MOMENT" if mode_byte == 1 else "TOGGLE",
         }
 
@@ -545,69 +554,220 @@ def controls_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
     for name, patch_offset, system_pref_offset in exp_pedals:
         preference = "SYSTEM" if system_control[system_pref_offset] == 1 else "PATCH"
         func_byte = system_control[patch_offset - 0x23] if preference == "SYSTEM" else patch_common[patch_offset]
+        function_detail = decode_exp_function_detail(func_byte)
         controls[name] = {
             "preference": preference,
-            "function": decode_exp_function(func_byte),
+            "functionRaw": func_byte,
+            "function": function_detail["name"],
+            "functionTargetBlockId": function_detail["blockId"],
+            "functionTargetParameterId": function_detail["parameterId"],
+            "functionCanEnableBlock": function_detail["canEnableBlock"],
         }
-
-    # Active Assigns
-    assigns = []
-    # Assign data is currently stored in rawSections as Assign 1...16
-    for i in range(1, 17):
-        data = raw_sections.get(f"Assign {i}")
-        if data and data[0] == 1: # SW == ON
-            assigns.append(assign_from_data(f"Assign {i}", data))
 
     return {
         "overview": overview_from_full(snapshot),
         "controls": controls,
-        "activeAssigns": assigns,
+        "activeAssigns": active_assigns_from_snapshot(snapshot),
     }
 
 
 def decode_control_function(raw: int, is_num: bool = False) -> str:
-    # Paraphrased from patch-controls.md
-    if raw == 0: return "OFF"
-    if is_num and raw == 1: return "MATCHING NUM"
-    if raw == 1: return "BANK UP"
-    if raw == 2: return "BANK DOWN"
-    if raw == 3: return "PATCH +1"
-    if raw == 4: return "PATCH -1"
-    if raw == 9: return "BPM TAP"
-    if raw == 15: return "TUNER"
-    # ... more mappings from patch-controls.md can be added as needed
-    names = {
-        16: "AMP CTL1", 17: "AMP CTL2", 18: "COMPRESSOR", 19: "DISTORTION 1",
-        20: "DISTORTION 1 SOLO", 21: "DISTORTION 2", 22: "DISTORTION 2 SOLO",
-        23: "PREAMP 1", 24: "PREAMP 1 SOLO", 25: "PREAMP 2", 26: "PREAMP 2 SOLO",
-        27: "NOISE SUPPRESSOR 1", 28: "NOISE SUPPRESSOR 2", 29: "EQUALIZER 1",
-        30: "EQUALIZER 2", 31: "EQUALIZER 3", 32: "EQUALIZER 4",
-        33: "DELAY 1", 34: "DELAY 2", 35: "DELAY 3", 36: "DELAY 4",
-        37: "MASTER DELAY", 38: "CHORUS", 39: "FX 1", 40: "FX 2",
-        41: "FX 3", 42: "FX 1 TRIGGER", 43: "FX 2 TRIGGER", 44: "FX 3 TRIGGER",
-        45: "REVERB", 46: "PEDAL FX", 47: "DIVIDER 1",
-        48: "DIVIDER 2", 49: "DIVIDER 3", 50: "SEND/RETURN 1",
-        51: "SEND/RETURN 2", 52: "LOOPER", 53: "LOOPER STOP", 54: "LOOPER CLEAR",
-        55: "METRONOME", 56: "MIDI START", 57: "MMC PLAY", 58: "MASTER DELAY TRIGGER",
+    return decode_control_function_detail(raw, is_num=is_num)["name"]
+
+
+def decode_control_function_detail(raw: int, is_num: bool = False) -> dict[str, Any]:
+    if is_num and raw == 1:
+        return control_function_detail(raw, "MATCHING NUM")
+
+    detail = CONTROL_FUNCTIONS.get(raw)
+    if detail:
+        return control_function_detail(raw, **detail)
+    return control_function_detail(raw, f"FUNC {raw}")
+
+
+def control_function_detail(
+    raw: int,
+    name: str,
+    blockId: str | None = None,
+    parameterId: str | None = None,
+    canEnableBlock: bool = False,
+) -> dict[str, Any]:
+    return {
+        "raw": raw,
+        "name": name,
+        "blockId": blockId,
+        "parameterId": parameterId,
+        "canEnableBlock": canEnableBlock,
     }
-    return names.get(raw, f"FUNC {raw}")
+
+
+CONTROL_FUNCTIONS: dict[int, dict[str, Any]] = {
+    0: {"name": "OFF"},
+    1: {"name": "BANK UP"},
+    2: {"name": "BANK DOWN"},
+    3: {"name": "PATCH +1"},
+    4: {"name": "PATCH -1"},
+    5: {"name": "LEVEL +10"},
+    6: {"name": "LEVEL +20"},
+    7: {"name": "LEVEL -10"},
+    8: {"name": "LEVEL -20"},
+    9: {"name": "BPM TAP"},
+    10: {"name": "DELAY 1 TAP", "blockId": "delay1", "parameterId": "time"},
+    11: {"name": "DELAY 2 TAP", "blockId": "delay2", "parameterId": "time"},
+    12: {"name": "DELAY 3 TAP", "blockId": "delay3", "parameterId": "time"},
+    13: {"name": "DELAY 4 TAP", "blockId": "delay4", "parameterId": "time"},
+    14: {"name": "MASTER DELAY TAP", "blockId": "masterDelay", "parameterId": "time"},
+    15: {"name": "TUNER"},
+    16: {"name": "AMP CTL1"},
+    17: {"name": "AMP CTL2"},
+    18: {"name": "COMPRESSOR", "blockId": "comp", "parameterId": "sw", "canEnableBlock": True},
+    19: {"name": "DISTORTION 1", "blockId": "dist1", "parameterId": "sw", "canEnableBlock": True},
+    20: {"name": "DISTORTION 1 SOLO", "blockId": "dist1", "parameterId": "soloSw"},
+    21: {"name": "DISTORTION 2", "blockId": "dist2", "parameterId": "sw", "canEnableBlock": True},
+    22: {"name": "DISTORTION 2 SOLO", "blockId": "dist2", "parameterId": "soloSw"},
+    23: {"name": "PREAMP 1", "blockId": "preamp1", "parameterId": "sw", "canEnableBlock": True},
+    24: {"name": "PREAMP 1 SOLO", "blockId": "preamp1", "parameterId": "soloSw"},
+    25: {"name": "PREAMP 2", "blockId": "preamp2", "parameterId": "sw", "canEnableBlock": True},
+    26: {"name": "PREAMP 2 SOLO", "blockId": "preamp2", "parameterId": "soloSw"},
+    27: {"name": "NOISE SUPPRESSOR 1", "blockId": "ns1", "parameterId": "sw", "canEnableBlock": True},
+    28: {"name": "NOISE SUPPRESSOR 2", "blockId": "ns2", "parameterId": "sw", "canEnableBlock": True},
+    29: {"name": "EQUALIZER 1", "blockId": "eq1", "parameterId": "sw", "canEnableBlock": True},
+    30: {"name": "EQUALIZER 2", "blockId": "eq2", "parameterId": "sw", "canEnableBlock": True},
+    31: {"name": "EQUALIZER 3", "blockId": "eq3", "parameterId": "sw", "canEnableBlock": True},
+    32: {"name": "EQUALIZER 4", "blockId": "eq4", "parameterId": "sw", "canEnableBlock": True},
+    33: {"name": "DELAY 1", "blockId": "delay1", "parameterId": "sw", "canEnableBlock": True},
+    34: {"name": "DELAY 2", "blockId": "delay2", "parameterId": "sw", "canEnableBlock": True},
+    35: {"name": "DELAY 3", "blockId": "delay3", "parameterId": "sw", "canEnableBlock": True},
+    36: {"name": "DELAY 4", "blockId": "delay4", "parameterId": "sw", "canEnableBlock": True},
+    37: {"name": "MASTER DELAY", "blockId": "masterDelay", "parameterId": "sw", "canEnableBlock": True},
+    38: {"name": "CHORUS", "blockId": "chorus", "parameterId": "sw", "canEnableBlock": True},
+    39: {"name": "FX 1", "blockId": "fx1", "parameterId": "sw", "canEnableBlock": True},
+    40: {"name": "FX 2", "blockId": "fx2", "parameterId": "sw", "canEnableBlock": True},
+    41: {"name": "FX 3", "blockId": "fx3", "parameterId": "sw", "canEnableBlock": True},
+    42: {"name": "FX 1 TRIGGER", "blockId": "fx1"},
+    43: {"name": "FX 2 TRIGGER", "blockId": "fx2"},
+    44: {"name": "FX 3 TRIGGER", "blockId": "fx3"},
+    45: {"name": "REVERB", "blockId": "reverb", "parameterId": "sw", "canEnableBlock": True},
+    46: {"name": "PEDAL FX", "blockId": "pedalFx", "parameterId": "sw", "canEnableBlock": True},
+    47: {"name": "DIVIDER 1 CHANNEL SELECT", "blockId": "divider1", "parameterId": "channelSelect"},
+    48: {"name": "DIVIDER 2 CHANNEL SELECT", "blockId": "divider2", "parameterId": "channelSelect"},
+    49: {"name": "DIVIDER 3 CHANNEL SELECT", "blockId": "divider3", "parameterId": "channelSelect"},
+    50: {"name": "SEND/RETURN 1", "blockId": "sendReturn1", "parameterId": "sw", "canEnableBlock": True},
+    51: {"name": "SEND/RETURN 2", "blockId": "sendReturn2", "parameterId": "sw", "canEnableBlock": True},
+    52: {"name": "LOOPER"},
+    53: {"name": "LOOPER STOP"},
+    54: {"name": "LOOPER CLEAR"},
+    55: {"name": "METRONOME"},
+    56: {"name": "MIDI START"},
+    57: {"name": "MMC PLAY"},
+    58: {"name": "MASTER DELAY TRIGGER", "blockId": "masterDelay"},
+}
 
 
 def decode_exp_function(raw: int) -> str:
-    names = {0: "OFF", 1: "FOOT VOLUME", 2: "PEDAL FX", 3: "FV + PEDAL FX"}
-    return names.get(raw, f"FUNC {raw}")
+    return decode_exp_function_detail(raw)["name"]
+
+
+def decode_exp_function_detail(raw: int) -> dict[str, Any]:
+    names = {
+        0: {"name": "OFF"},
+        1: {"name": "FOOT VOLUME", "blockId": "footVolume"},
+        2: {"name": "PEDAL FX", "blockId": "pedalFx", "parameterId": "sw", "canEnableBlock": True},
+        3: {"name": "FV + PEDAL FX", "blockId": "pedalFx", "parameterId": "sw", "canEnableBlock": True},
+    }
+    detail = names.get(raw)
+    if detail:
+        return control_function_detail(raw, **detail)
+    return control_function_detail(raw, f"FUNC {raw}")
 
 
 def decode_assign_target(raw: int) -> str:
-    # Common targets from assigns.md
-    names = {
-        932: "DIVIDER 1 CHANNEL SELECT",
-        933: "DIVIDER 2 CHANNEL SELECT",
-        934: "DIVIDER 3 CHANNEL SELECT",
-        987: "TUNER ON/OFF",
-        991: "TUNER ON/OFF (PDF alternate)",
+    return decode_assign_target_detail(raw)["name"]
+
+
+def decode_assign_target_detail(raw: int | None) -> dict[str, Any]:
+    if raw is None:
+        return {"name": "TARGET UNKNOWN", "category": None, "blockId": None, "parameterId": None, "isOnOff": False}
+
+    exact_targets: dict[int, dict[str, Any]] = {
+        932: {"name": "DIVIDER 1 CHANNEL SELECT", "category": "DIVIDER 1", "blockId": "divider1", "parameterId": "channelSelect"},
+        933: {"name": "DIVIDER 2 CHANNEL SELECT", "category": "DIVIDER 2", "blockId": "divider2", "parameterId": "channelSelect"},
+        934: {"name": "DIVIDER 3 CHANNEL SELECT", "category": "DIVIDER 3", "blockId": "divider3", "parameterId": "channelSelect"},
+        987: {"name": "TUNER ON/OFF", "category": "TUNER", "blockId": None, "parameterId": "sw", "isOnOff": True},
+        991: {"name": "TUNER ON/OFF (PDF alternate)", "category": "TUNER", "blockId": None, "parameterId": "sw", "isOnOff": True},
     }
-    return names.get(raw, f"TARGET {raw}")
+    if raw in exact_targets:
+        return assign_target_detail(raw, **exact_targets[raw])
+
+    for target_range in ASSIGN_TARGET_RANGES:
+        start = target_range["start"]
+        parameter_names = target_range["parameters"]
+        if start <= raw < start + len(parameter_names):
+            index = raw - start
+            parameter_id, parameter_name = parameter_names[index]
+            return assign_target_detail(
+                raw,
+                name=f'{target_range["category"]} {parameter_name}',
+                category=target_range["category"],
+                blockId=target_range["blockId"],
+                parameterId=parameter_id,
+                isOnOff=parameter_id in {"sw", "soloSw", "bright"},
+            )
+
+    return assign_target_detail(raw, name=f"TARGET {raw}", category=None, blockId=None, parameterId=None)
+
+
+def assign_target_detail(
+    raw: int,
+    *,
+    name: str,
+    category: str | None,
+    blockId: str | None,
+    parameterId: str | None,
+    isOnOff: bool = False,
+) -> dict[str, Any]:
+    return {
+        "name": name,
+        "category": category,
+        "blockId": blockId,
+        "parameterId": parameterId,
+        "isOnOff": isOnOff,
+        "raw": raw,
+    }
+
+
+def block_parameter_names(block_id: str) -> list[tuple[str, str]]:
+    block = next((item for item in live.SUMMARY_BLOCKS if item.id == block_id), None)
+    if block is None:
+        return []
+    by_offset = {parameter.offset: (parameter.id, parameter.display_name) for parameter in block.parameters}
+    return [by_offset.get(offset, (f"param{offset}", f"PARAM {offset}")) for offset in range(block.size)]
+
+
+ASSIGN_TARGET_RANGES = [
+    {"start": 0, "category": "COMP", "blockId": "comp", "parameters": block_parameter_names("comp")},
+    {"start": 8, "category": "OD/DS 1", "blockId": "dist1", "parameters": block_parameter_names("dist1")},
+    {"start": 17, "category": "OD/DS 2", "blockId": "dist2", "parameters": block_parameter_names("dist2")},
+    {"start": 26, "category": "PREAMP 1", "blockId": "preamp1", "parameters": block_parameter_names("preamp1")},
+    {"start": 40, "category": "PREAMP 2", "blockId": "preamp2", "parameters": block_parameter_names("preamp2")},
+    {"start": 54, "category": "NS 1", "blockId": "ns1", "parameters": block_parameter_names("ns1")},
+    {"start": 58, "category": "NS 2", "blockId": "ns2", "parameters": block_parameter_names("ns2")},
+    {"start": 62, "category": "EQ 1", "blockId": "eq1", "parameters": block_parameter_names("eq1")},
+    {"start": 86, "category": "EQ 2", "blockId": "eq2", "parameters": block_parameter_names("eq2")},
+    {"start": 110, "category": "EQ 3", "blockId": "eq3", "parameters": block_parameter_names("eq3")},
+    {"start": 134, "category": "EQ 4", "blockId": "eq4", "parameters": block_parameter_names("eq4")},
+    {"start": 158, "category": "DELAY 1", "blockId": "delay1", "parameters": block_parameter_names("delay1")[:6]},
+    {"start": 164, "category": "DELAY 2", "blockId": "delay2", "parameters": block_parameter_names("delay2")[:6]},
+    {"start": 170, "category": "DELAY 3", "blockId": "delay3", "parameters": block_parameter_names("delay3")[:6]},
+    {"start": 176, "category": "DELAY 4", "blockId": "delay4", "parameters": block_parameter_names("delay4")[:6]},
+    {"start": 182, "category": "MASTER DELAY", "blockId": "masterDelay", "parameters": block_parameter_names("masterDelay")},
+    {"start": 213, "category": "CHORUS", "blockId": "chorus", "parameters": block_parameter_names("chorus")},
+    {"start": 237, "category": "FX 1", "blockId": "fx1", "parameters": block_parameter_names("fx1")},
+    {"start": 449, "category": "FX 2", "blockId": "fx2", "parameters": block_parameter_names("fx2")},
+    {"start": 661, "category": "FX 3", "blockId": "fx3", "parameters": block_parameter_names("fx3")},
+    {"start": 873, "category": "REVERB", "blockId": "reverb", "parameters": block_parameter_names("reverb")},
+    {"start": 915, "category": "PEDAL FX", "blockId": "pedalFx", "parameters": block_parameter_names("pedalFx")},
+]
 
 
 def decode_assign_source(raw: int) -> str:
@@ -632,11 +792,16 @@ def decode_assign_source(raw: int) -> str:
 def assign_from_data(assign_id: str, data: bytes) -> dict[str, Any]:
     target = live.integer_from_nibbles(list(data[1:5]))
     source = data[13]
+    target_detail = decode_assign_target_detail(target)
     return {
         "id": assign_id,
         "enabled": data[0] == 1,
         "target": target,
-        "targetName": decode_assign_target(target),
+        "targetName": target_detail["name"],
+        "targetCategory": target_detail["category"],
+        "targetBlockId": target_detail["blockId"],
+        "targetParameterId": target_detail["parameterId"],
+        "targetIsOnOff": target_detail["isOnOff"],
         "targetMin": decoded_assign_value(data[5:9]),
         "targetMax": decoded_assign_value(data[9:13]),
         "source": source,
@@ -667,21 +832,310 @@ def decoded_assign_value(values: bytes) -> dict[str, int | None]:
     return {"encoded": encoded, "logical": logical}
 
 
+def active_assigns_from_snapshot(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    assigns = []
+    raw_sections = normalized_raw_sections(snapshot)
+    for i in range(1, 17):
+        data = raw_sections.get(f"Assign {i}")
+        if data and data[0] == 1:
+            assigns.append(assign_from_data(f"Assign {i}", bytes(data)))
+    return assigns
+
+
+def normalized_raw_sections(snapshot: dict[str, Any]) -> dict[str, bytes]:
+    raw_sections = snapshot.get("rawSections", {})
+    if isinstance(raw_sections, dict):
+        return {
+            key: bytes(value)
+            for key, value in raw_sections.items()
+            if isinstance(value, (bytes, bytearray, list, tuple))
+        }
+    if isinstance(raw_sections, list):
+        normalized = {}
+        for section in raw_sections:
+            if not isinstance(section, dict) or "id" not in section:
+                continue
+            data_hex = section.get("dataHex")
+            if isinstance(data_hex, str):
+                normalized[section["id"]] = bytes.fromhex(data_hex.replace(" ", ""))
+        return normalized
+    return {}
+
+
+def active_assigns_by_block(snapshot: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    by_block: dict[str, list[dict[str, Any]]] = {}
+    for assign in active_assigns_from_snapshot(snapshot):
+        block_id = assign.get("targetBlockId")
+        if block_id:
+            by_block.setdefault(block_id, []).append(assign)
+    return by_block
+
+
+def direct_controls_by_block(snapshot: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    try:
+        controls = controls_from_full(snapshot)["controls"]
+    except CLIError:
+        return {}
+
+    by_block: dict[str, list[dict[str, Any]]] = {}
+    for control_name, control in controls.items():
+        block_id = control.get("functionTargetBlockId")
+        if not block_id or not control.get("functionCanEnableBlock"):
+            continue
+        by_block.setdefault(block_id, []).append({
+            "control": control_name,
+            "preference": control.get("preference"),
+            "functionRaw": control.get("functionRaw"),
+            "function": control.get("function"),
+            "targetParameterId": control.get("functionTargetParameterId"),
+            "mode": control.get("mode"),
+        })
+    return by_block
+
+
 def decode_system_midi(data: list[int]) -> dict[str, Any]:
     return {
         "rxChannelRaw": data[0] if len(data) > 0 else None,
-        "txChannelRaw": data[1] if len(data) > 1 else None,
-        "note": "Raw values are exposed because the complete System MIDI enum table is not yet decoded.",
+        "rxChannel": decode_one_based_channel(data[0]) if len(data) > 0 else None,
+        "omniModeRaw": data[1] if len(data) > 1 else None,
+        "omniMode": decode_on_off(data[1]) if len(data) > 1 else None,
+        "txChannelRaw": data[2] if len(data) > 2 else None,
+        "txChannel": decode_tx_channel(data[2]) if len(data) > 2 else None,
+        "syncClockRaw": data[3] if len(data) > 3 else None,
+        "syncClock": decode_enum(data[3], ["AUTO", "INTERNAL", "MIDI(AUTO)", "USB(AUTO)"]) if len(data) > 3 else None,
+        "midiInThruRaw": data[4] if len(data) > 4 else None,
+        "midiInThru": decode_enum(data[4], ["OFF", "MIDI OUT", "USB OUT", "USB/MIDI"]) if len(data) > 4 else None,
+        "usbInThruRaw": data[5] if len(data) > 5 else None,
+        "usbInThru": decode_enum(data[5], ["OFF", "MIDI OUT", "USB OUT", "USB/MIDI"]) if len(data) > 5 else None,
+        "clockOutRaw": data[6] if len(data) > 6 else None,
+        "clockOut": decode_on_off(data[6]) if len(data) > 6 else None,
+        "fixedRaw": data[7] if len(data) > 7 else None,
+        "mapSelectRaw": data[8] if len(data) > 8 else None,
+        "mapSelect": decode_enum(data[8], ["FIX", "PROG"]) if len(data) > 8 else None,
+        "controlChangeNumbers": decode_system_midi_cc_assignments(data),
+        "note": "Offsets after the documented common MIDI settings are left raw until their enum tables are locally validated.",
     }
+
+
+def decode_one_based_channel(raw: int) -> str | None:
+    if 0 <= raw <= 15:
+        return f"Ch.{raw + 1}"
+    return None
+
+
+def decode_tx_channel(raw: int) -> str | None:
+    if 0 <= raw <= 15:
+        return f"Ch.{raw + 1}"
+    if raw == 16:
+        return "RX"
+    return None
+
+
+def decode_on_off(raw: int) -> str | None:
+    return decode_enum(raw, ["OFF", "ON"])
+
+
+def decode_enum(raw: int, values: list[str]) -> str | None:
+    if 0 <= raw < len(values):
+        return values[raw]
+    return None
+
+
+def decode_system_midi_cc_assignments(data: list[int]) -> dict[str, dict[str, int | str | None]]:
+    controls = ["NUM 1", "NUM 2", "NUM 3", "NUM 4", "NUM 5"]
+    return {
+        name: {
+            "raw": data[0x09 + index] if len(data) > 0x09 + index else None,
+            "cc": decode_system_midi_cc(data[0x09 + index]) if len(data) > 0x09 + index else None,
+        }
+        for index, name in enumerate(controls)
+    }
+
+
+def decode_system_midi_cc(raw: int) -> str | None:
+    if raw == 0:
+        return "OFF"
+    if 1 <= raw <= 31:
+        return f"CC#{raw}"
+    if 32 <= raw <= 63:
+        return f"CC#{raw + 32}"
+    return None
 
 
 def decode_system_inout(data: list[int]) -> dict[str, Any]:
     return {
         "inputLevelRaw": data[0] if len(data) > 0 else None,
-        "mainOutSelectRaw": data[1] if len(data) > 1 else None,
-        "subOutSelectRaw": data[2] if len(data) > 2 else None,
-        "note": "Raw values are exposed for IN/OUT settings until the full enum table is validated.",
+        "inputLevelDb": decode_offset_db(data[0]) if len(data) > 0 else None,
+        "mainLeft": decode_system_output_channel(data, 0x03, output_select_offset=0x01),
+        "mainRight": decode_system_output_channel(data, 0x0A, output_select_offset=0x02),
+        "subLeft": decode_system_output_channel(data, 0x13, output_select_offset=0x11),
+        "subRight": decode_system_output_channel(data, 0x1A, output_select_offset=0x12),
+        "mainOutSelectRaw": data[0x01] if len(data) > 0x01 else None,
+        "mainOutSelect": decode_aird_output_select(data[0x01]) if len(data) > 0x01 else None,
+        "mainROutSelectRaw": data[0x02] if len(data) > 0x02 else None,
+        "mainROutSelect": decode_aird_output_select(data[0x02]) if len(data) > 0x02 else None,
+        "subOutSelectRaw": data[0x11] if len(data) > 0x11 else None,
+        "subOutSelect": decode_aird_output_select(data[0x11]) if len(data) > 0x11 else None,
+        "subROutSelectRaw": data[0x12] if len(data) > 0x12 else None,
+        "subROutSelect": decode_aird_output_select(data[0x12]) if len(data) > 0x12 else None,
+        "phonesSettingRaw": data[0x21] if len(data) > 0x21 else None,
+        "phonesSetting": decode_enum(data[0x21], ["MAIN OUT", "SUB OUT", "MAIN+SUB"]) if len(data) > 0x21 else None,
+        "totalNsThresholdRaw": data[0x22] if len(data) > 0x22 else None,
+        "totalNsThresholdDb": decode_offset_db(data[0x22]) if len(data) > 0x22 else None,
+        "totalReverbLevelRaw": data[0x23:0x25] if len(data) > 0x24 else [],
+        "totalReverbLevel": decode_two_nibble_value(data, 0x23, 200),
+        "mainLevelSelectRaw": data[0x25] if len(data) > 0x25 else None,
+        "mainLevelSelect": decode_enum(data[0x25], ["-10dBu", "+4dBu"]) if len(data) > 0x25 else None,
+        "usbDryOutRaw": data[0x26:0x28] if len(data) > 0x27 else [],
+        "usbDryOut": decode_two_nibble_value(data, 0x26, 200),
+        "usbDryToEfxRaw": data[0x28:0x2A] if len(data) > 0x29 else [],
+        "usbDryToEfx": decode_two_nibble_value(data, 0x28, 200),
+        "usbMainEfxOutRaw": data[0x2B:0x2D] if len(data) > 0x2C else [],
+        "usbMainEfxOut": decode_two_nibble_value(data, 0x2B, 200),
+        "usbMainMixLevelRaw": data[0x2D:0x2F] if len(data) > 0x2E else [],
+        "usbMainMixLevel": decode_two_nibble_value(data, 0x2D, 200),
+        "usbSubEfxOutRaw": data[0x30:0x32] if len(data) > 0x31 else [],
+        "usbSubEfxOut": decode_two_nibble_value(data, 0x30, 200),
+        "usbSubMixLevelRaw": data[0x32:0x34] if len(data) > 0x33 else [],
+        "usbSubMixLevel": decode_two_nibble_value(data, 0x32, 200),
+        "subLevelSelectRaw": data[0x3A] if len(data) > 0x3A else None,
+        "subLevelSelect": decode_enum(data[0x3A], ["-10dBu", "+4dBu"]) if len(data) > 0x3A else None,
+        "subOutputLevelRaw": data[0x3B] if len(data) > 0x3B else None,
+        "subOutputLevel": data[0x3B] if len(data) > 0x3B and 0 <= data[0x3B] <= 100 else None,
+        "subGroundLiftRaw": data[0x3C] if len(data) > 0x3C else None,
+        "subGroundLift": decode_on_off(data[0x3C]) if len(data) > 0x3C else None,
+        "mainStereoLinkRaw": data[0x3D] if len(data) > 0x3D else None,
+        "mainStereoLink": decode_on_off(data[0x3D]) if len(data) > 0x3D else None,
+        "subStereoLinkRaw": data[0x3E] if len(data) > 0x3E else None,
+        "subStereoLink": decode_on_off(data[0x3E]) if len(data) > 0x3E else None,
+        "outputLevels": {
+            "mainLeftDb": decode_offset_db(data[0x3F]) if len(data) > 0x3F else None,
+            "mainRightDb": decode_offset_db(data[0x40]) if len(data) > 0x40 else None,
+            "subLeftDb": decode_offset_db(data[0x41]) if len(data) > 0x41 else None,
+            "subRightDb": decode_offset_db(data[0x42]) if len(data) > 0x42 else None,
+        },
     }
+
+
+def decode_system_output_channel(data: list[int], offset: int, *, output_select_offset: int | None = None) -> dict[str, Any]:
+    eq_offset = offset
+    return {
+        "outputSelectRaw": data[output_select_offset] if output_select_offset is not None and len(data) > output_select_offset else None,
+        "outputSelect": decode_aird_output_select(data[output_select_offset]) if output_select_offset is not None and len(data) > output_select_offset else None,
+        "lowGainRaw": data[eq_offset] if len(data) > eq_offset else None,
+        "lowGainDb": decode_offset_db(data[eq_offset]) if len(data) > eq_offset else None,
+        "midGainRaw": data[eq_offset + 1] if len(data) > eq_offset + 1 else None,
+        "midGainDb": decode_offset_db(data[eq_offset + 1]) if len(data) > eq_offset + 1 else None,
+        "midFreqRaw": data[eq_offset + 2] if len(data) > eq_offset + 2 else None,
+        "midFreq": decode_mid_frequency(data[eq_offset + 2]) if len(data) > eq_offset + 2 else None,
+        "midQRaw": data[eq_offset + 3] if len(data) > eq_offset + 3 else None,
+        "midQ": decode_enum(data[eq_offset + 3], ["0.5", "1", "2", "4", "8", "16"]) if len(data) > eq_offset + 3 else None,
+        "highGainRaw": data[eq_offset + 4] if len(data) > eq_offset + 4 else None,
+        "highGainDb": decode_offset_db(data[eq_offset + 4]) if len(data) > eq_offset + 4 else None,
+        "lowCutRaw": data[eq_offset + 5] if len(data) > eq_offset + 5 else None,
+        "lowCut": decode_low_cut(data[eq_offset + 5]) if len(data) > eq_offset + 5 else None,
+        "highCutRaw": data[eq_offset + 6] if len(data) > eq_offset + 6 else None,
+        "highCut": decode_high_cut(data[eq_offset + 6]) if len(data) > eq_offset + 6 else None,
+    }
+
+
+def decode_offset_db(raw: int) -> int | None:
+    if 12 <= raw <= 52:
+        return raw - 32
+    return None
+
+
+def decode_mid_frequency(raw: int) -> str | None:
+    values = [
+        "20.0Hz", "25.0Hz", "31.5Hz", "40.0Hz", "50.0Hz", "63.0Hz",
+        "80.0Hz", "100Hz", "125Hz", "160Hz", "200Hz", "250Hz", "315Hz",
+        "400Hz", "500Hz", "630Hz", "800Hz", "1.00kHz", "1.25kHz",
+        "1.60kHz", "2.00kHz", "2.50kHz", "3.15kHz", "4.00kHz",
+        "5.00kHz", "6.30kHz", "8.00kHz", "10.0kHz", "12.5kHz", "16.0kHz",
+    ]
+    return decode_enum(raw, values)
+
+
+def decode_low_cut(raw: int) -> str | None:
+    return decode_enum(raw, ["FLAT"] + CUTOFF_FREQUENCIES)
+
+
+def decode_high_cut(raw: int) -> str | None:
+    return decode_enum(raw, CUTOFF_FREQUENCIES + ["FLAT"])
+
+
+CUTOFF_FREQUENCIES = [
+    "20.0Hz", "25.0Hz", "31.5Hz", "40.0Hz", "50.0Hz", "63.0Hz",
+    "80.0Hz", "100Hz", "125Hz", "160Hz", "200Hz", "250Hz", "315Hz",
+    "400Hz", "500Hz", "630Hz", "800Hz", "1.00kHz", "1.25kHz",
+    "1.60kHz", "2.00kHz", "2.50kHz", "3.15kHz", "4.00kHz",
+    "5.00kHz", "6.30kHz", "8.00kHz", "10.0kHz", "12.5kHz", "16.0kHz",
+    "20.0kHz",
+]
+
+
+def decode_two_nibble_value(data: list[int], offset: int, maximum: int) -> int | None:
+    if len(data) <= offset + 1:
+        return None
+    value = live.integer_from_nibbles(data[offset:offset + 2])
+    if value is not None and 0 <= value <= maximum:
+        return value
+    return None
+
+
+def decode_aird_output_select(raw: int) -> str | None:
+    values = [
+        "LINE/PHONES", "RECORDING", "JC-120 RETURN", "JC-120 INPUT",
+        "Blues Cube Tour410 RETURN", "Blues Cube Tour410 INPUT",
+        "Blues Cube Artist212 RETURN", "Blues Cube Artist212 INPUT",
+        "WAZA Amp 412 RETURN", "WAZA Amp 412 INPUT", "WAZA Amp 212 RETURN",
+        "WAZA Amp 212 INPUT", "KATANA-100/212 RETURN", "KATANA-100/212 INPUT",
+        "KATANA-100 RETURN", "KATANA-100 INPUT", "TUBE COMBO 212 RETURN",
+        "TUBE COMBO 212 INPUT", "TUBE COMBO 112 RETURN", "TUBE COMBO 112 INPUT",
+        "TUBE STACK 412 RETURN", "TUBE STACK 412 INPUT", "USER 1", "USER 2",
+        "KATANA-50 INPUT", "NEXTONE-Artist RETURN", "NEXTONE-Stage RETURN",
+        "MUSTANG 212 RETURN", "Hot Rod Deluxe RETURN", "Twin Reverb INPUT",
+        "AC30 INPUT", "JCM2000 412 RETURN", "JVM410H 412 RETURN",
+        "Rectifier 412 RETURN", "TriAmp 412 RETURN", "BASS AMP WITH TWEETER",
+        "BASS AMP NO TWEETER", "KATANA-100/212 MkII POWER AMP IN",
+        "KATANA-100 MkII POWER AMP IN", "KATANA-50 MkII POWER AMP IN",
+    ]
+    return decode_enum(raw, values)
+
+
+def decode_system_effects(data: list[int]) -> dict[str, Any]:
+    return {
+        "phraseLoopModeRaw": data[0] if len(data) > 0 else None,
+        "phraseLoopMode": decode_enum(data[0], ["MONO", "STEREO"]) if len(data) > 0 else None,
+        "phraseLoopRecActionRaw": data[1] if len(data) > 1 else None,
+        "phraseLoopRecAction": decode_enum(data[1], ["REC>PLAY>DUB", "REC>DUB>PLAY"]) if len(data) > 1 else None,
+        "metronomeLevelRaw": data[2] if len(data) > 2 else None,
+        "metronomeLevel": data[2] if len(data) > 2 and 0 <= data[2] <= 100 else None,
+        "mainGroundLiftRaw": data[3] if len(data) > 3 else None,
+        "mainGroundLift": data[3] + 1 if len(data) > 3 and 0 <= data[3] <= 5 else None,
+        "totalMetronomeOutRaw": data[4] if len(data) > 4 else None,
+        "totalMetronomeOut": decode_enum(data[4], ["MAIN OUT", "SUB OUT", "MAIN+SUB"]) if len(data) > 4 else None,
+        "fixedRaw": data[5:7] if len(data) > 5 else [],
+    }
+
+
+def decode_system_pitch(data: list[int]) -> dict[str, Any]:
+    reference_pitch = live.integer_from_nibbles(data[0:4]) if len(data) >= 4 else None
+    return {
+        "referencePitchRaw": data[0:4] if len(data) >= 4 else [],
+        "referencePitchHz": reference_pitch if reference_pitch is not None and 435 <= reference_pitch <= 445 else None,
+        "polyTunerTypeRaw": data[4] if len(data) > 4 else None,
+        "polyTunerType": decode_enum(data[4], ["6-REGULAR", "6-DROP D", "7-REGULAR", "7-DROP A", "4-B REGULAR", "5-B REGULAR"]) if len(data) > 4 else None,
+        "polyTunerOffsetRaw": data[5] if len(data) > 5 else None,
+        "polyTunerOffset": decode_poly_tuner_offset(data[5]) if len(data) > 5 else None,
+        "tunerOutputRaw": data[6] if len(data) > 6 else None,
+        "tunerOutput": decode_enum(data[6], ["MUTE", "BYPASS", "THRU"]) if len(data) > 6 else None,
+    }
+
+
+def decode_poly_tuner_offset(raw: int) -> str | None:
+    values = {11: "-5", 12: "-4", 13: "-3", 14: "-2", 15: "-1", 16: "----"}
+    return values.get(raw)
 
 
 def decode_system_controls(data: list[int]) -> dict[str, Any]:
@@ -701,6 +1155,8 @@ def decode_system_controls(data: list[int]) -> dict[str, Any]:
 
 def chain_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
     blocks = snapshot.get("blocks", [])
+    assigns_by_block = active_assigns_by_block(snapshot)
+    controls_by_block = direct_controls_by_block(snapshot)
     detail_by_value = {
         block.get("chainElementValue"): block
         for block in blocks
@@ -710,8 +1166,11 @@ def chain_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
     description_elements = []
     for element in snapshot.get("signalChainElements", []):
         block = detail_by_value.get(element.get("rawValue"))
+        block_id = block.get("id") if block else None
+        active_assigns = assigns_by_block.get(block_id, []) if block_id else []
+        direct_controls = controls_by_block.get(block_id, []) if block_id else []
         is_enabled = block.get("isEnabled") if block else None
-        has_control_assignment = block_has_control_assignment(block)
+        has_control_assignment = block_has_control_assignment(block) or bool(active_assigns) or bool(direct_controls)
         description_candidate = include_element_in_description(
             element,
             block,
@@ -722,10 +1181,14 @@ def chain_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
             "id": element.get("id"),
             "position": element.get("position"),
             "displayName": element.get("displayName"),
-            "detailBlockID": block.get("id") if block else None,
+            "detailBlockID": block_id,
             "typeName": block.get("typeName") if block else None,
             "isEnabled": is_enabled,
             "hasControlAssignment": has_control_assignment,
+            "activeAssignCount": len(active_assigns),
+            "activeAssigns": active_assigns,
+            "directControlCount": len(direct_controls),
+            "directControls": direct_controls,
             "includeInDescription": description_candidate,
             "isReserved": element.get("isReserved", False),
             "isOutput": element.get("isOutput", False),
@@ -823,9 +1286,13 @@ def block_detail_from_full(snapshot: dict[str, Any], block: dict[str, Any]) -> d
         for element in snapshot.get("signalChainElements", [])
         if element.get("rawValue") == block.get("chainElementValue")
     ]
+    active_assigns = active_assigns_by_block(snapshot).get(block.get("id"), [])
+    direct_controls = direct_controls_by_block(snapshot).get(block.get("id"), [])
     return {
         "overview": overview_from_full(snapshot),
         "chainPositions": positions,
+        "activeAssigns": active_assigns,
+        "directControls": direct_controls,
         "block": block,
     }
 
