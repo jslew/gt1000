@@ -144,6 +144,12 @@ def build_parser() -> argparse.ArgumentParser:
     block.add_argument("--user-slot", help="Read the block from a persistent user slot such as U01-1.")
     block.set_defaults(func=cmd_patch_block)
 
+    stompbox = patch_subcommands.add_parser("stompbox", help="Read the raw PatchStompBox selection record.")
+    stompbox.add_argument("--live", action="store_true", help="Required because this reads from the connected GT-1000.")
+    stompbox.add_argument("--user-slot", help="Read the Stompbox record from a persistent user slot such as U01-1.")
+    stompbox.add_argument("--timeout", type=float, default=8.0, help="Live read timeout in seconds.")
+    stompbox.set_defaults(func=cmd_patch_stompbox)
+
     dump = patch_subcommands.add_parser("dump", help="Read/write a full diagnostic patch JSON dump.")
     dump.add_argument("--live", action="store_true", help="Read live patch data.")
     dump.add_argument("--timeout", type=float, default=8.0, help="Live read timeout in seconds.")
@@ -598,6 +604,37 @@ def cmd_patch_block(args: argparse.Namespace) -> Any:
         args.block_id = resolve_block_id(args.block_id)
         block = block_for_id(snapshot, args.block_id)
     return block_detail_from_full(snapshot, block)
+
+
+def cmd_patch_stompbox(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch stompbox requires --live because it reads from the connected GT-1000", 64)
+    size = [0x00, 0x00, 0x01, 0x00]
+    address = live.TEMPORARY_PATCH_STOMPBOX
+    source_slot = None
+    if args.user_slot:
+        source_slot = live.normalize_user_slot(args.user_slot)
+        address = live.remap_temporary_patch_address(address, live.user_patch_base(source_slot))
+    request = live.PatchReadRequest("Patch Stompbox", address, size)
+    try:
+        raw = live.read_data_sets(timeout=args.timeout, requests=[request])
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+    data = raw.get(live.address_key(address), [])
+    return {
+        "id": "patchStompBox",
+        "label": "Patch Stompbox",
+        "sourceSlot": source_slot,
+        "address": live.hex_bytes(address),
+        "size": live.hex_bytes(size),
+        "rawDataHex": live.hex_string(data),
+        "decoded": {
+            "supported": False,
+            "note": "PatchStompBox record address is known, but the selection layout is not decoded yet.",
+        },
+    }
 
 
 def cmd_patch_dump(args: argparse.Namespace) -> Any:

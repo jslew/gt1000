@@ -74,7 +74,7 @@ STOMPBOX stores preferred settings for an effect type and lets multiple patches 
 Agent caution:
 
 - Before changing a parameter, determine whether the block is using STOMPBOX data and whether the user expects local patch editing or global STOMPBOX editing.
-- The current CLI does not yet decode STOMPBOX selections.
+- `patch stompbox --live` can read the known raw PatchStompBox record for investigation, but the current CLI does not yet decode its selection layout.
 
 ## Saving
 

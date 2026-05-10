@@ -111,6 +111,30 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(result["block"]["id"], "delay1")
         self.assertEqual(result["chainPositions"], [1])
 
+    def test_patch_stompbox_reads_known_raw_record(self):
+        args = agent_cli.build_parser().parse_args(["patch", "stompbox", "--live"])
+
+        with mock.patch.object(agent_cli.live, "read_data_sets", return_value={"10 00 01 00": [1, 2, 3]}) as read_data_sets:
+            result = agent_cli.cmd_patch_stompbox(args)
+
+        request = read_data_sets.call_args.kwargs["requests"][0]
+        self.assertEqual(request.label, "Patch Stompbox")
+        self.assertEqual(request.address, [0x10, 0x00, 0x01, 0x00])
+        self.assertEqual(request.size, [0x00, 0x00, 0x01, 0x00])
+        self.assertEqual(result["rawDataHex"], "01 02 03")
+        self.assertFalse(result["decoded"]["supported"])
+
+    def test_patch_stompbox_reads_user_slot_raw_record(self):
+        args = agent_cli.build_parser().parse_args(["patch", "stompbox", "--live", "--user-slot", "U03-2"])
+
+        with mock.patch.object(agent_cli.live, "read_data_sets", return_value={"20 0B 01 00": [0]}) as read_data_sets:
+            result = agent_cli.cmd_patch_stompbox(args)
+
+        request = read_data_sets.call_args.kwargs["requests"][0]
+        self.assertEqual(request.address, [0x20, 0x0B, 0x01, 0x00])
+        self.assertEqual(result["sourceSlot"], "U03-2")
+        self.assertEqual(result["address"], ["20", "0B", "01", "00"])
+
     def test_program_change_for_slot_is_typed_and_bounded(self):
         self.assertEqual(agent_cli.program_change_for_slot("U01-1", 1), [0xC0, 0])
         self.assertEqual(agent_cli.program_change_for_slot("U01-5", 2), [0xC1, 4])
