@@ -69,6 +69,7 @@ Use this routing:
 - Signal-chain routing, divider/mixer behavior, chain element values, or reserved elements: run `patch chain` or `patch summary` first. Open `references/midi-reference/patch-effect.md` only when raw chain/routing details matter.
 - System/global MIDI, IN/OUT, or control preference questions: use the relevant `system` CLI view first. Open `references/midi-reference/README.md` or address-map notes only when addresses, sizes, or SysEx behavior need explanation.
 - Program Change mapping questions: use `system pcmap --bank N` first for a focused bank read, or omit `--bank` only when comparing the full map. Open address-map notes only if the user asks about storage layout or patch-value encoding.
+- Input-setting questions: use `system inputs --number N` first for one named input setting, or omit `--number` only when comparing all ten.
 - Parameter meaning or musical interpretation: use CLI block detail first, then load only the relevant manual/wiki page from `references/gt1000-wiki/`.
 - Writes: build a CLI `patch plan` or typed `patch set` intent first. Open low-level references only to validate address/range/model quirks before changing the validator.
 
@@ -87,6 +88,7 @@ scripts/gt1000-agent --pretty patch bank U01 --live --view summary --timeout 15
 scripts/gt1000-agent --pretty patch block delay1 --user-slot U01-1
 scripts/gt1000-agent --pretty system midi --live --timeout 8
 scripts/gt1000-agent --pretty system pcmap --live --bank 1 --timeout 8
+scripts/gt1000-agent --pretty system inputs --live --number 1 --timeout 8
 scripts/gt1000-agent --pretty system inout --live --timeout 8
 scripts/gt1000-agent --pretty system effects --live --timeout 8
 scripts/gt1000-agent --pretty system pitch --live --timeout 8

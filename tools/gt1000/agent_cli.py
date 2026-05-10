@@ -70,6 +70,11 @@ def build_parser() -> argparse.ArgumentParser:
     pcmap.add_argument("--bank", type=int, choices=[1, 2, 3, 4], help="Read one PC map bank instead of all four.")
     pcmap.add_argument("--timeout", type=float, default=8.0, help="Live read timeout in seconds per bank.")
     pcmap.set_defaults(func=cmd_system_pcmap)
+    inputs = system_subcommands.add_parser("inputs", help="Read named system input-level settings.")
+    inputs.add_argument("--live", action="store_true", help="Required because input settings are live device state.")
+    inputs.add_argument("--number", type=int, choices=range(1, 11), metavar="1-10", help="Read one input setting instead of all ten.")
+    inputs.add_argument("--timeout", type=float, default=8.0, help="Live read timeout in seconds per setting.")
+    inputs.set_defaults(func=cmd_system_inputs)
 
     patch = subcommands.add_parser("patch", help="Inspect GT-1000 patch data.")
     patch_subcommands = patch.add_subparsers(dest="patch_command", required=True)
@@ -219,6 +224,27 @@ def cmd_system_pcmap(args: argparse.Namespace) -> Any:
         "label": "Program Change Map",
         "banks": decoded_banks,
         "note": "Each entry maps a received MIDI Program Change number to a user or preset patch according to MENU:MIDI:PROGRAM MAP.",
+    }
+
+
+def cmd_system_inputs(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("system inputs requires --live because input settings are live device state", 64)
+    numbers = [args.number] if args.number else list(range(1, 11))
+    settings = []
+    for number in numbers:
+        address = system_input_setting_address(number)
+        size = [0x00, 0x00, 0x00, 0x11]
+        try:
+            raw = live.read_system_section(address, size, timeout=args.timeout)
+        except live.LiveMIDIError as error:
+            raise CLIError(str(error)) from error
+        data = raw.get(live.address_key(address), [])
+        settings.append(decode_system_input_setting(data, number=number, address=address, size=size))
+    return {
+        "id": "systemInputSettings",
+        "label": "System Input Settings",
+        "settings": settings,
     }
 
 
@@ -542,6 +568,31 @@ def slot_from_patch_index(prefix: str, zero_based_index: int) -> str:
     bank = zero_based_index // live.USER_PATCHES_PER_BANK + 1
     number = zero_based_index % live.USER_PATCHES_PER_BANK + 1
     return f"{prefix}{bank:02d}-{number}"
+
+
+def system_input_setting_address(number: int) -> list[int]:
+    if not 1 <= number <= 10:
+        raise ValueError("system input setting number must be 1...10")
+    return live.address_adding(live.SYSTEM_INPUT_SETTING_BASE, (number - 1) * live.SYSTEM_INPUT_SETTING_STRIDE)
+
+
+def decode_system_input_setting(
+    data: list[int],
+    *,
+    number: int,
+    address: list[int] | None = None,
+    size: list[int] | None = None,
+) -> dict[str, Any]:
+    name = live.decode_patch_name(data[:16]) if len(data) >= 16 else ""
+    return {
+        "number": number,
+        "address": live.hex_bytes(address) if address else None,
+        "size": live.hex_bytes(size) if size else None,
+        "name": name,
+        "inputLevelRaw": data[0x10] if len(data) > 0x10 else None,
+        "inputLevelDb": decode_offset_db(data[0x10]) if len(data) > 0x10 else None,
+        "dataHex": live.hex_string(data),
+    }
 
 
 def view_from_full(snapshot: dict[str, Any], view: str) -> Any:

@@ -316,6 +316,35 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(result["banks"][0]["entries"][0]["patch"], "U01-1")
         self.assertEqual(result["banks"][0]["entries"][1]["patch"], "P01-1")
 
+    def test_system_input_setting_decodes_name_and_level(self):
+        data = list(b"INPUT ONE       ") + [34]
+
+        decoded = agent_cli.decode_system_input_setting(
+            data,
+            number=1,
+            address=[0x00, 0x01, 0x00, 0x00],
+            size=[0x00, 0x00, 0x00, 0x11],
+        )
+
+        self.assertEqual(decoded["number"], 1)
+        self.assertEqual(decoded["address"], ["00", "01", "00", "00"])
+        self.assertEqual(decoded["name"], "INPUT ONE")
+        self.assertEqual(decoded["inputLevelRaw"], 34)
+        self.assertEqual(decoded["inputLevelDb"], 2)
+        self.assertEqual(agent_cli.system_input_setting_address(10), [0x00, 0x01, 0x09, 0x00])
+
+    def test_system_inputs_view_reads_selected_input(self):
+        args = agent_cli.build_parser().parse_args(["system", "inputs", "--live", "--number", "2"])
+        data = list(b"SECOND          ") + [32]
+
+        with mock.patch.object(agent_cli.live, "read_system_section", return_value={"00 01 01 00": data}) as read_section:
+            result = agent_cli.cmd_system_inputs(args)
+
+        read_section.assert_called_once_with([0x00, 0x01, 0x01, 0x00], [0x00, 0x00, 0x00, 0x11], timeout=8.0)
+        self.assertEqual(result["id"], "systemInputSettings")
+        self.assertEqual(result["settings"][0]["name"], "SECOND")
+        self.assertEqual(result["settings"][0]["inputLevelDb"], 0)
+
     def test_system_inout_decodes_validated_common_fields(self):
         data = [0] * 0x43
         data[0] = 32

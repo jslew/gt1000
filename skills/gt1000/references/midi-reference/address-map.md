@@ -10,6 +10,9 @@
 | `00 00 40 00` | System input/output |
 | `00 00 50 00` | System effects |
 | `00 00 60 00` | System pitch/tuner |
+| `00 01 00 00` | System input setting 1 |
+| `00 01 01 00` | System input setting 2 |
+| `00 01 09 00` | System input setting 10 |
 | `00 10 00 00` | Program Change map bank 1 |
 | `00 10 04 00` | Program Change map bank 2 |
 | `00 10 08 00` | Program Change map bank 3 |
@@ -102,6 +105,18 @@ Program map banks are `PcmapPc` records:
 | 4 | `00 10 0C 00` | 385...512 |
 
 Each bank is size `00 00 04 00` and contains 128 four-nibble patch values. Values `0`...`249` map to `U01-1`...`U50-5`; values `250`...`499` map to `P01-1`...`P50-5`.
+
+## System Input Settings
+
+There are ten `SystemInputSetting` records:
+
+| Setting | Address |
+|---:|---|
+| 1 | `00 01 00 00` |
+| 2 | `00 01 01 00` |
+| 10 | `00 01 09 00` |
+
+Each setting is size `00 00 00 11`: offsets `00`...`0F` are a 16-byte ASCII name and offset `10` is input level, raw `12`...`52` = `-20`...`+20 dB`.
 
 ## System IN/OUT Known Offsets
 

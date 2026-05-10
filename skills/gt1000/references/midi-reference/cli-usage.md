@@ -36,6 +36,14 @@ scripts/gt1000-agent --pretty system pcmap --live --timeout 8
 - `--bank`: optional bank `1`...`4`; omit to read all four banks sequentially.
 - Each entry decodes a Program Change number to its configured user or preset patch target.
 
+### `system inputs`
+Read named system input-level settings.
+```sh
+scripts/gt1000-agent --pretty system inputs --live --number 1 --timeout 8
+scripts/gt1000-agent --pretty system inputs --live --timeout 8
+```
+- `--number`: optional input setting `1`...`10`; omit to read all ten sequentially.
+
 ### `system inout`
 Read global input/output settings as raw bytes with light decoding for common level/output-select fields.
 ```sh
