@@ -508,8 +508,9 @@ def cmd_patch_select(args: argparse.Namespace) -> Any:
         raise CLIError("patch select requires --live because it sends MIDI to the connected GT-1000", 64)
     try:
         slot = live.normalize_user_slot(args.slot)
-        message = program_change_for_slot(slot, args.channel)
-        live.send_channel_voice(message)
+        messages = program_change_messages_for_slot(slot, args.channel)
+        for message in messages:
+            live.send_channel_voice(message)
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -517,8 +518,8 @@ def cmd_patch_select(args: argparse.Namespace) -> Any:
     return {
         "selectedSlot": slot,
         "channel": args.channel,
-        "messageHex": live.hex_string(message),
-        "note": "Selection uses MIDI Program Change and is subject to the GT-1000 RX channel and program-map settings.",
+        "messagesHex": [live.hex_string(message) for message in messages],
+        "note": "Selection uses MIDI Bank Select plus Program Change and is subject to the GT-1000 RX channel and program-map settings.",
     }
 
 
@@ -792,6 +793,10 @@ def requests_for_view(view: str) -> list[live.PatchReadRequest]:
 
 
 def program_change_for_slot(slot: str, channel: int) -> list[int]:
+    return program_change_messages_for_slot(slot, channel)[-1]
+
+
+def program_change_messages_for_slot(slot: str, channel: int) -> list[list[int]]:
     normalized = live.normalize_user_slot(slot)
     if not 1 <= channel <= 16:
         raise ValueError("MIDI channel must be 1...16")
@@ -799,9 +804,12 @@ def program_change_for_slot(slot: str, channel: int) -> list[int]:
     number = int(normalized.split("-", 1)[1])
     patch_index = (bank - 1) * live.USER_PATCHES_PER_BANK + number
     program = patch_index - 1
-    if program > 127:
-        raise ValueError("patch select currently supports U01-1 through U26-3; higher slots need bank-select mapping validation")
-    return program_change_message(program + 1, channel)
+    bank_select_msb = program // 128
+    if bank_select_msb > 2:
+        raise ValueError("patch select supports only GT-1000 documented Bank Select MSB 0...2")
+    messages = bank_select_messages(bank_select_msb, 0, channel)
+    messages.append(program_change_message((program % 128) + 1, channel))
+    return messages
 
 
 def program_change_message(program: int, channel: int) -> list[int]:

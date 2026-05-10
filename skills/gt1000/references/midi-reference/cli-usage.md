@@ -164,12 +164,14 @@ scripts/gt1000-agent --pretty patch bank U01 --live --view summary --timeout 15
 - Use this for comparing patch names, master patch levels, chains, controls, and switchable-path level parameters across a bank.
 
 ### `patch select`
-Select a user slot using a typed MIDI Program Change message.
+Select a user slot using typed MIDI Bank Select and Program Change messages.
 ```sh
 scripts/gt1000-agent --pretty patch select U01-1 --live --channel 1
+scripts/gt1000-agent --pretty patch select U50-5 --live --channel 1
 ```
-- Program Change is subject to the GT-1000 MIDI RX channel and program-map settings.
-- The command currently supports the slots addressable by a single Program Change (`U01-1` through `U26-3`). Higher slots need bank-select mapping validation before use.
+- Uses documented GT-1000 received Bank Select MSB `0`...`2`, LSB `0`, followed by Program Change.
+- Bank Select and Program Change are subject to the GT-1000 MIDI RX channel and program-map settings.
+- Direct `patch slot` / `patch bank` reads are safer for inspection because they do not change the selected patch.
 
 ### `patch block`
 Show detailed parameters for a single block.

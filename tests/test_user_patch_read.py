@@ -115,9 +115,21 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(agent_cli.program_change_for_slot("U01-1", 1), [0xC0, 0])
         self.assertEqual(agent_cli.program_change_for_slot("U01-5", 2), [0xC1, 4])
         self.assertEqual(agent_cli.program_change_for_slot("U26-3", 16), [0xCF, 127])
+        self.assertEqual(agent_cli.program_change_for_slot("U26-4", 1), [0xC0, 0])
 
-        with self.assertRaises(ValueError):
-            agent_cli.program_change_for_slot("U26-4", 1)
+    def test_program_change_messages_for_slot_include_bank_select(self):
+        self.assertEqual(
+            agent_cli.program_change_messages_for_slot("U01-1", 1),
+            [[0xB0, 0, 0], [0xB0, 32, 0], [0xC0, 0]],
+        )
+        self.assertEqual(
+            agent_cli.program_change_messages_for_slot("U26-4", 2),
+            [[0xB1, 0, 1], [0xB1, 32, 0], [0xC1, 0]],
+        )
+        self.assertEqual(
+            agent_cli.program_change_messages_for_slot("U50-5", 16),
+            [[0xBF, 0, 1], [0xBF, 32, 0], [0xCF, 121]],
+        )
 
     def test_program_change_message_is_typed_and_bounded(self):
         self.assertEqual(agent_cli.program_change_message(1, 1), [0xC0, 0])
@@ -165,6 +177,20 @@ class UserPatchReadTests(unittest.TestCase):
         ])
         self.assertEqual(result["type"], "bankSelect")
         self.assertEqual(result["messagesHex"], ["B2 00 02", "B2 20 01"])
+
+    def test_patch_select_command_sends_bank_select_and_program_change(self):
+        args = agent_cli.build_parser().parse_args(["patch", "select", "U26-4", "--channel", "2", "--live"])
+
+        with mock.patch.object(agent_cli.live, "send_channel_voice") as send:
+            result = agent_cli.cmd_patch_select(args)
+
+        send.assert_has_calls([
+            mock.call([0xB1, 0, 1]),
+            mock.call([0xB1, 32, 0]),
+            mock.call([0xC1, 0]),
+        ])
+        self.assertEqual(result["selectedSlot"], "U26-4")
+        self.assertEqual(result["messagesHex"], ["B1 00 01", "B1 20 00", "C1 00"])
 
     def test_control_change_message_is_typed_and_bounded(self):
         self.assertEqual(agent_cli.control_change_message(80, 127, 1), [0xB0, 80, 127])
