@@ -144,7 +144,7 @@ def build_parser() -> argparse.ArgumentParser:
     block.add_argument("--user-slot", help="Read the block from a persistent user slot such as U01-1.")
     block.set_defaults(func=cmd_patch_block)
 
-    stompbox = patch_subcommands.add_parser("stompbox", help="Read the raw PatchStompBox selection record.")
+    stompbox = patch_subcommands.add_parser("stompbox", help="Read decoded PatchStompBox selections.")
     stompbox.add_argument("--live", action="store_true", help="Required because this reads from the connected GT-1000.")
     stompbox.add_argument("--user-slot", help="Read the Stompbox record from a persistent user slot such as U01-1.")
     stompbox.add_argument("--timeout", type=float, default=8.0, help="Live read timeout in seconds.")
