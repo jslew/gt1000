@@ -3,7 +3,8 @@
 ## Project Shape
 
 - This is a Python-based GT-1000 inspection/editing repo.
-- Main code lives in `tools/gt1000`.
+- Main code lives in `skills/gt1000/tools/gt1000`.
+- Top-level `tools/gt1000` files are compatibility wrappers only.
 - Main command surface is `scripts/gt1000-agent`.
 - Useful checks:
   - `python3 -m unittest discover -s tests -q`
@@ -15,7 +16,7 @@
 
 ## GT-1000 MIDI Details
 
-- Local MIDI reference wiki: start at `docs/midi-reference/README.md` before changing SysEx, control/assign decoding, CLI patch inspection, or write behavior.
+- Local MIDI reference wiki: start at `skills/gt1000/references/midi-reference/README.md` before changing SysEx, control/assign decoding, CLI patch inspection, or write behavior.
 - Local GT-1000 v4+ knowledge skill: `skills/gt1000/SKILL.md`; use it for manual/parameter-guide lookups, patch explanations, controls, and wiki updates.
 - The GT-1000/GT-1000CORE SysEx model ID is `00 00 00 4F`.
 - Roland/BOSS DT1/RQ1 checksums are calculated over address plus data/size only.
@@ -35,7 +36,7 @@
 
 ## Python Live MIDI Notes
 
-- `tools/gt1000/live.py` uses Python `ctypes` against CoreMIDI.
+- `skills/gt1000/tools/gt1000/live.py` uses Python `ctypes` against CoreMIDI.
 - CoreMIDI callbacks run on CoreMIDI-owned threads. Copy packet bytes in the callback, then update guarded Python state.
 - Run live patch reads sequentially. Separate CLI processes can interleave GT-1000 replies on the same MIDI source.
 - A quick endpoint inventory should usually show:

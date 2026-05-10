@@ -21,6 +21,7 @@ class SkillPackageTests(unittest.TestCase):
             "tools/gt1000/agent_cli.py",
             "tools/gt1000/live.py",
             "tools/gt1000/patch_edit.py",
+            "__init__.py",
             "references/user-profile-onboarding.md",
             "references/gt1000-wiki/README.md",
             "references/midi-reference/README.md",
@@ -76,36 +77,18 @@ class SkillPackageTests(unittest.TestCase):
                 with self.subTest(path=path.relative_to(SKILL), pattern=pattern):
                     self.assertNotIn(pattern, content)
 
-    def test_packaged_python_cli_matches_repo_cli(self):
-        for relative_path in [
-            "tools/__init__.py",
-            "tools/gt1000/__init__.py",
-            "tools/gt1000/agent_cli.py",
-            "tools/gt1000/live.py",
-            "tools/gt1000/patch_edit.py",
-        ]:
+    def test_repo_local_tools_are_compatibility_wrappers(self):
+        for relative_path in ["agent_cli.py", "live.py", "patch_edit.py"]:
             with self.subTest(relative_path=relative_path):
-                self.assertEqual(
-                    (SKILL / relative_path).read_bytes(),
-                    (ROOT / relative_path).read_bytes(),
-                )
+                content = (ROOT / "tools" / "gt1000" / relative_path).read_text()
+                self.assertIn("skills.gt1000.tools.gt1000", content)
 
-    def test_packaged_references_match_repo_docs(self):
-        reference_pairs = [
-            (ROOT / "docs" / "gt1000-wiki", SKILL / "references" / "gt1000-wiki"),
-            (ROOT / "docs" / "midi-reference", SKILL / "references" / "midi-reference"),
-        ]
-
-        for source_dir, packaged_dir in reference_pairs:
-            source_files = sorted(path.relative_to(source_dir) for path in source_dir.glob("*.md"))
-            packaged_files = sorted(path.relative_to(packaged_dir) for path in packaged_dir.glob("*.md"))
-            self.assertEqual(packaged_files, source_files)
-            for relative_path in source_files:
-                with self.subTest(relative_path=os.fspath(relative_path)):
-                    self.assertEqual(
-                        (packaged_dir / relative_path).read_text(),
-                        (source_dir / relative_path).read_text(),
-                    )
+    def test_repo_local_docs_are_compatibility_pointers(self):
+        for directory in [ROOT / "docs" / "gt1000-wiki", ROOT / "docs" / "midi-reference"]:
+            for path in directory.glob("*.md"):
+                with self.subTest(path=os.fspath(path.relative_to(ROOT))):
+                    content = path.read_text()
+                    self.assertIn("Canonical content lives in `skills/gt1000/references/", content)
 
 
 if __name__ == "__main__":
