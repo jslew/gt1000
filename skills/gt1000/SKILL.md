@@ -67,6 +67,7 @@ Use this routing:
 - Switch/control questions: run `patch controls` first. Open `references/midi-reference/patch-controls.md` only if a raw/unknown function appears or the user asks how a physical control is encoded.
 - Assign behavior, MIDI CC, tuner control, or assigned-off-block reachability: run `patch controls` or `patch summary` first. Open `references/midi-reference/assigns.md` only for source IDs, target min/max encoding, target table caveats, or write planning.
 - Sending a MIDI CC for a known Assign source: use `midi cc <controller> <value> --channel N --live` only after confirming the mapped source and RX channel. Do not send raw MIDI bytes.
+- Sending a Program Change directly: prefer `patch select <slot>` for user-slot selection; use `midi pc <program> --channel N --live` only when the user explicitly asks for Program Change numbers or after checking `system pcmap`.
 - Signal-chain routing, divider/mixer behavior, chain element values, or reserved elements: run `patch chain` or `patch summary` first. Open `references/midi-reference/patch-effect.md` only when raw chain/routing details matter.
 - System/global MIDI, IN/OUT, or control preference questions: use the relevant `system` CLI view first. Open `references/midi-reference/README.md` or address-map notes only when addresses, sizes, or SysEx behavior need explanation.
 - Manual-mode switch questions: use `system manual` first. Open address-map notes only if the user asks how manual-mode NUM functions are encoded.
@@ -89,6 +90,7 @@ scripts/gt1000-agent --pretty patch slot U01-1 --live --view summary --timeout 1
 scripts/gt1000-agent --pretty patch bank U01 --live --view summary --timeout 15
 scripts/gt1000-agent --pretty patch block delay1 --user-slot U01-1
 scripts/gt1000-agent --pretty midi cc 80 127 --channel 1 --live
+scripts/gt1000-agent --pretty midi pc 1 --channel 1 --live
 scripts/gt1000-agent --pretty system midi --live --timeout 8
 scripts/gt1000-agent --pretty system pcmap --live --bank 1 --timeout 8
 scripts/gt1000-agent --pretty system inputs --live --number 1 --timeout 8

@@ -31,6 +31,15 @@ scripts/gt1000-agent --pretty midi cc 80 0 --channel 1 --live
 - `value`: CC value `0`...`127`.
 - `--channel`: 1-based MIDI channel. Channel Voice messages are gated by the GT-1000 RX channel.
 
+### `midi pc`
+Send a MIDI Program Change message by 1-based program number.
+```sh
+scripts/gt1000-agent --pretty midi pc 1 --channel 1 --live
+scripts/gt1000-agent --pretty midi pc 128 --channel 1 --live
+```
+- `program`: Program Change number `1`...`128`; the MIDI payload is zero-based `0`...`127`.
+- Program Change messages are gated by the GT-1000 RX channel and resolved through the active Program Map.
+
 ## System Inspection Commands
 
 System commands are read-only SysEx views of global settings.

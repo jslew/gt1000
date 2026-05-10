@@ -60,6 +60,11 @@ def build_parser() -> argparse.ArgumentParser:
     cc.add_argument("--channel", type=int, default=1, help="1-based MIDI channel, default 1.")
     cc.add_argument("--live", action="store_true", help="Required because this sends MIDI to the connected GT-1000.")
     cc.set_defaults(func=cmd_midi_cc)
+    pc = midi_subcommands.add_parser("pc", help="Send a typed MIDI Program Change message.")
+    pc.add_argument("program", type=int, help="MIDI Program Change number 1...128.")
+    pc.add_argument("--channel", type=int, default=1, help="1-based MIDI channel, default 1.")
+    pc.add_argument("--live", action="store_true", help="Required because this sends MIDI to the connected GT-1000.")
+    pc.set_defaults(func=cmd_midi_pc)
 
     system = subcommands.add_parser("system", help="Inspect GT-1000 system/global MIDI sections.")
     system_subcommands = system.add_subparsers(dest="system_command", required=True)
@@ -200,6 +205,26 @@ def cmd_midi_cc(args: argparse.Namespace) -> Any:
         "value": args.value,
         "messageHex": live.hex_string(message),
         "note": "Control Change messages are gated by the GT-1000 MIDI RX channel and only affect mapped Assign/control sources.",
+    }
+
+
+def cmd_midi_pc(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("midi pc requires --live because it sends MIDI to the connected GT-1000", 64)
+    try:
+        message = program_change_message(args.program, args.channel)
+        live.send_channel_voice(message)
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+    return {
+        "type": "programChange",
+        "channel": args.channel,
+        "program": args.program,
+        "programZeroBased": args.program - 1,
+        "messageHex": live.hex_string(message),
+        "note": "Program Change messages are gated by the GT-1000 MIDI RX channel and resolved through MENU:MIDI:PROGRAM MAP.",
     }
 
 
@@ -557,7 +582,15 @@ def program_change_for_slot(slot: str, channel: int) -> list[int]:
     program = patch_index - 1
     if program > 127:
         raise ValueError("patch select currently supports U01-1 through U26-3; higher slots need bank-select mapping validation")
-    return [0xC0 + (channel - 1), program]
+    return program_change_message(program + 1, channel)
+
+
+def program_change_message(program: int, channel: int) -> list[int]:
+    if not 1 <= channel <= 16:
+        raise ValueError("MIDI channel must be 1...16")
+    if not 1 <= program <= 128:
+        raise ValueError("MIDI Program Change number must be 1...128")
+    return [0xC0 + (channel - 1), program - 1]
 
 
 def control_change_message(controller: int, value: int, channel: int) -> list[int]:

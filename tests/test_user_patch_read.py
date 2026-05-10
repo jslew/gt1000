@@ -119,6 +119,29 @@ class UserPatchReadTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             agent_cli.program_change_for_slot("U26-4", 1)
 
+    def test_program_change_message_is_typed_and_bounded(self):
+        self.assertEqual(agent_cli.program_change_message(1, 1), [0xC0, 0])
+        self.assertEqual(agent_cli.program_change_message(128, 16), [0xCF, 127])
+
+        with self.assertRaises(ValueError):
+            agent_cli.program_change_message(0, 1)
+        with self.assertRaises(ValueError):
+            agent_cli.program_change_message(129, 1)
+        with self.assertRaises(ValueError):
+            agent_cli.program_change_message(1, 17)
+
+    def test_midi_pc_command_sends_typed_message(self):
+        args = agent_cli.build_parser().parse_args(["midi", "pc", "128", "--channel", "2", "--live"])
+
+        with mock.patch.object(agent_cli.live, "send_channel_voice") as send:
+            result = agent_cli.cmd_midi_pc(args)
+
+        send.assert_called_once_with([0xC1, 127])
+        self.assertEqual(result["type"], "programChange")
+        self.assertEqual(result["program"], 128)
+        self.assertEqual(result["programZeroBased"], 127)
+        self.assertEqual(result["messageHex"], "C1 7F")
+
     def test_control_change_message_is_typed_and_bounded(self):
         self.assertEqual(agent_cli.control_change_message(80, 127, 1), [0xB0, 80, 127])
         self.assertEqual(agent_cli.control_change_message(1, 0, 16), [0xBF, 1, 0])
