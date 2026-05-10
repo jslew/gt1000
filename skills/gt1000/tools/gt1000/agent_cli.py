@@ -195,6 +195,15 @@ def build_parser() -> argparse.ArgumentParser:
     disable.add_argument("--timeout", type=float, default=12.0, help="Verification read timeout in seconds.")
     disable.set_defaults(func=cmd_patch_enable, enabled=False)
 
+    type_command = patch_subcommands.add_parser("type", help="Change one validated block effect type.")
+    type_command.add_argument("block_id", help="Block id such as dist1, preamp1, chorus, or masterDelay.")
+    type_command.add_argument("type_value", help="Exact type name such as T-SCREAM, or a raw type number.")
+    type_command.add_argument("--live", action="store_true", help="Required because this writes to the connected GT-1000.")
+    type_command.add_argument("--user-slot", choices=["U03-1", "U03-2", "U03-3", "U03-4", "U03-5"], help="Persist to a U03 user patch slot instead of the temporary patch.")
+    type_command.add_argument("--verify", action="store_true", help="Re-read the written range and compare exact bytes.")
+    type_command.add_argument("--timeout", type=float, default=12.0, help="Verification read timeout in seconds.")
+    type_command.set_defaults(func=cmd_patch_type)
+
     set_bpm = patch_subcommands.add_parser("set-bpm", help="Set validated patch master BPM.")
     set_bpm.add_argument("bpm", help="Patch master BPM, 40.0...250.0 with at most one decimal place.")
     set_bpm.add_argument("--live", action="store_true", help="Required because this writes to the connected GT-1000.")
@@ -602,6 +611,19 @@ def cmd_patch_enable(args: argparse.Namespace) -> Any:
         block_id = resolve_block_id(args.block_id)
         value = "on" if args.enabled else "off"
         plan = patch_edit.build_parameter_set_plan(block_id, "sw", value, slot=args.user_slot)
+        return patch_edit.apply_plan(plan, timeout=args.timeout, verify=args.verify)
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
+def cmd_patch_type(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch type requires --live because it writes to the connected GT-1000", 64)
+    try:
+        block_id = resolve_block_id(args.block_id)
+        plan = patch_edit.build_parameter_set_plan(block_id, "type", args.type_value, slot=args.user_slot)
         return patch_edit.apply_plan(plan, timeout=args.timeout, verify=args.verify)
     except ValueError as error:
         raise CLIError(str(error), 64) from error

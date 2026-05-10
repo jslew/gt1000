@@ -226,6 +226,19 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(apply.call_args.kwargs, {"timeout": 12.0, "verify": False})
         self.assertEqual(result, {"verified": None})
 
+    def test_patch_type_command_applies_typed_type_plan(self):
+        args = agent_cli.build_parser().parse_args(["patch", "type", "ds1", "T-SCREAM", "--live", "--verify"])
+
+        with mock.patch.object(agent_cli.patch_edit, "apply_plan", return_value={"verified": True}) as apply:
+            result = agent_cli.cmd_patch_type(args)
+
+        plan = apply.call_args.args[0]
+        self.assertEqual(plan.id, "set:dist1.type")
+        self.assertEqual(plan.writes[0].address, [0x10, 0x00, 0x13, 0x01])
+        self.assertEqual(plan.writes[0].data, [15])
+        self.assertEqual(apply.call_args.kwargs, {"timeout": 12.0, "verify": True})
+        self.assertEqual(result, {"verified": True})
+
     def test_patch_tuner_assign_command_applies_typed_plan(self):
         args = agent_cli.build_parser().parse_args(["patch", "tuner-assign", "--live", "--verify"])
 

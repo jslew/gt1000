@@ -218,6 +218,17 @@ scripts/gt1000-agent --pretty patch disable dist1 --live --verify
 - `--user-slot U03-1`: Persist the switch change to a specific user slot instead of the temporary patch. Valid slots: `U03-1` through `U03-5`.
 - If a block has no decoded `sw` parameter, use `patch block` to inspect it and add a typed validator before writing.
 
+### `patch type`
+Change a decoded block's effect type through the validated `type` parameter.
+```sh
+scripts/gt1000-agent --pretty patch type dist1 T-SCREAM --live --verify
+scripts/gt1000-agent --pretty patch type preamp1 "TWIN COMBO" --live --verify
+```
+- Supports exact decoded type names where available; raw 0...127 type numbers are accepted for decoded byte-type blocks.
+- Supports normalized IDs (`preamp1`) and aliases (`ds1`, `sr1`).
+- `--verify`: Re-reads the type address to confirm the write succeeded.
+- `--user-slot U03-1`: Persist the type change to a specific user slot instead of the temporary patch. Valid slots: `U03-1` through `U03-5`.
+
 ### `patch set-bpm`
 Change the patch master BPM using the validated four-nibble `BPM * 10` encoding.
 ```sh
