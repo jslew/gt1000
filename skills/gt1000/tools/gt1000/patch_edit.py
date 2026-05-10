@@ -187,6 +187,16 @@ def build_bpm_set_plan(raw_value: str, *, slot: str | None = None) -> PatchPlan:
     return plan_for_user_slot(plan, slot) if slot else plan
 
 
+def build_tuner_assign_plan(*, slot: str | None = None) -> PatchPlan:
+    write = live.PatchWrite("Assign 16 tuner on CC80", assign_address(16), tuner_assign_data())
+    plan = PatchPlan(
+        id="set:tunerAssign",
+        description="Map Assign 16 to tested TUNER ON/OFF target 987, source CC#80, active range 0...127.",
+        writes=[write],
+    )
+    return plan_for_user_slot(plan, slot) if slot else plan
+
+
 def parse_bpm_tenths(raw_value: str) -> int:
     try:
         value = Decimal(raw_value.strip())

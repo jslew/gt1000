@@ -105,6 +105,17 @@ class PatchEditTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     patch_edit.build_bpm_set_plan(value)
 
+    def test_tuner_assign_plan_targets_assign_16_and_user_slot(self):
+        plan = patch_edit.build_tuner_assign_plan()
+
+        self.assertEqual(plan.id, "set:tunerAssign")
+        self.assertEqual(plan.writes[0].address, [0x10, 0x00, 0x0A, 0x40])
+        self.assertEqual(plan.writes[0].data, patch_edit.tuner_assign_data())
+
+        remapped = patch_edit.build_tuner_assign_plan(slot="U03-2")
+        self.assertEqual(remapped.writes[0].address, [0x20, 0x0B, 0x0A, 0x40])
+        self.assertEqual(remapped.writes[0].data, patch_edit.tuner_assign_data())
+
 
 if __name__ == "__main__":
     unittest.main()

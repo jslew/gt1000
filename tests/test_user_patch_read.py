@@ -200,6 +200,19 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(apply.call_args.kwargs, {"timeout": 12.0, "verify": True})
         self.assertEqual(result, {"verified": True})
 
+    def test_patch_tuner_assign_command_applies_typed_plan(self):
+        args = agent_cli.build_parser().parse_args(["patch", "tuner-assign", "--live", "--verify"])
+
+        with mock.patch.object(agent_cli.patch_edit, "apply_plan", return_value={"verified": True}) as apply:
+            result = agent_cli.cmd_patch_tuner_assign(args)
+
+        plan = apply.call_args.args[0]
+        self.assertEqual(plan.id, "set:tunerAssign")
+        self.assertEqual(plan.writes[0].address, [0x10, 0x00, 0x0A, 0x40])
+        self.assertEqual(plan.writes[0].data, agent_cli.patch_edit.tuner_assign_data())
+        self.assertEqual(apply.call_args.kwargs, {"timeout": 12.0, "verify": True})
+        self.assertEqual(result, {"verified": True})
+
     def test_assign_decode_includes_ranges_and_midi_fields(self):
         data = bytes([
             0x01, 0x00, 0x03, 0x0D, 0x0B, 0x08, 0x00, 0x00, 0x00,

@@ -216,6 +216,15 @@ scripts/gt1000-agent --pretty patch set-bpm 120.0 --live --verify
 - `--verify`: Re-reads the BPM address to confirm the write succeeded.
 - `--user-slot U03-1`: Persist the BPM change to a specific user slot instead of the temporary patch. Valid slots: `U03-1` through `U03-5`.
 
+### `patch tuner-assign`
+Install the tested Assign 16 mapping that toggles TUNER ON/OFF from MIDI CC#80.
+```sh
+scripts/gt1000-agent --pretty patch tuner-assign --live --verify
+```
+- Writes Assign 16 to target `987` (`TUNER ON/OFF` on the tested GT-1000 v4 unit with Bass Mode off), source CC#80, active range `0`...`127`.
+- After installing, send values with `midi cc 80 127 --channel N --live` and `midi cc 80 0 --channel N --live`.
+- `--user-slot U03-1`: Persist the Assign change to a specific user slot instead of the temporary patch. Valid slots: `U03-1` through `U03-5`.
+
 ### `patch plan`
 Build a validated write plan (multiple parameters) without sending MIDI.
 ```sh

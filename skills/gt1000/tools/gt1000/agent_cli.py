@@ -187,6 +187,13 @@ def build_parser() -> argparse.ArgumentParser:
     set_bpm.add_argument("--timeout", type=float, default=12.0, help="Verification read timeout in seconds.")
     set_bpm.set_defaults(func=cmd_patch_set_bpm)
 
+    tuner_assign = patch_subcommands.add_parser("tuner-assign", help="Install the tested Assign 16 tuner mapping.")
+    tuner_assign.add_argument("--live", action="store_true", help="Required because this writes to the connected GT-1000.")
+    tuner_assign.add_argument("--user-slot", choices=["U03-1", "U03-2", "U03-3", "U03-4", "U03-5"], help="Persist to a U03 user patch slot instead of the temporary patch.")
+    tuner_assign.add_argument("--verify", action="store_true", help="Re-read the written range and compare exact bytes.")
+    tuner_assign.add_argument("--timeout", type=float, default=12.0, help="Verification read timeout in seconds.")
+    tuner_assign.set_defaults(func=cmd_patch_tuner_assign)
+
     return parser
 
 
@@ -576,6 +583,18 @@ def cmd_patch_set_bpm(args: argparse.Namespace) -> Any:
         raise CLIError("patch set-bpm requires --live because it writes to the connected GT-1000", 64)
     try:
         plan = patch_edit.build_bpm_set_plan(args.bpm, slot=args.user_slot)
+        return patch_edit.apply_plan(plan, timeout=args.timeout, verify=args.verify)
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
+def cmd_patch_tuner_assign(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch tuner-assign requires --live because it writes to the connected GT-1000", 64)
+    try:
+        plan = patch_edit.build_tuner_assign_plan(slot=args.user_slot)
         return patch_edit.apply_plan(plan, timeout=args.timeout, verify=args.verify)
     except ValueError as error:
         raise CLIError(str(error), 64) from error

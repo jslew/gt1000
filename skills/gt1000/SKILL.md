@@ -66,6 +66,7 @@ Use this routing:
 - Patch description, "what is this sound?", or quick signal-chain review: load the optional user profile, run `patch summary`, and use `descriptionSignalChainSummary`, `descriptionElements`, `controls`, and `activeAssigns`. Do not open MIDI reference pages unless a decoded field is unclear.
 - Switch/control questions: run `patch controls` first. Open `references/midi-reference/patch-controls.md` only if a raw/unknown function appears or the user asks how a physical control is encoded.
 - Assign behavior, MIDI CC, tuner control, or assigned-off-block reachability: run `patch controls` or `patch summary` first. Open `references/midi-reference/assigns.md` only for source IDs, target min/max encoding, target table caveats, or write planning.
+- Installing tuner control: use `patch tuner-assign --live --verify` to install the tested Assign 16 / CC#80 tuner mapping. Ask before writing it persistently with `--user-slot`.
 - Sending a MIDI CC for a known Assign source: use `midi cc <controller> <value> --channel N --live` only after confirming the mapped source and RX channel. Do not send raw MIDI bytes.
 - Sending a Program Change directly: prefer `patch select <slot>` for user-slot selection; use `midi pc <program> --channel N --live` only when the user explicitly asks for Program Change numbers or after checking `system pcmap`.
 - Sending Bank Select: use `midi bank-select <msb> [lsb] --channel N --live` only when the user explicitly needs bank-select/channel-voice behavior; follow it with `midi pc` if selecting via an external-style bank/program sequence. For selecting the GT-1000 itself, prefer `patch select` unless the user is deliberately testing Bank Select.
@@ -140,6 +141,7 @@ Examples of currently implemented verified writes:
 scripts/gt1000-agent --pretty patch apply default --live --user-slot U03-1 --verify --timeout 20
 scripts/gt1000-agent --pretty patch set delay1 time 380 --live --user-slot U03-2 --verify
 scripts/gt1000-agent --pretty patch set-bpm 120.0 --live --verify
+scripts/gt1000-agent --pretty patch tuner-assign --live --verify
 ```
 
 Ask before persistent operations such as patch write, exchange, initialize, or insert.
