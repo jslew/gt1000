@@ -242,6 +242,27 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertIn("Assign 1", labels)
         self.assertIn("Assign 16", labels)
 
+    def test_live_patch_chain_reads_assigns_for_reachability(self):
+        snapshot = {
+            "patchName": "CHAIN",
+            "masterBPM": 120.0,
+            "masterPatchLevel": 80,
+            "masterKey": "C(Am)",
+            "ampControl1Enabled": False,
+            "ampControl2Enabled": False,
+            "signalChainElements": [],
+            "blocks": [],
+            "rawSections": [],
+        }
+        args = agent_cli.build_parser().parse_args(["patch", "chain", "--live"])
+
+        with mock.patch.object(agent_cli, "read_live_snapshot", return_value=snapshot) as read_live:
+            agent_cli.patch_view(args, "chain")
+
+        labels = [request.label for request in read_live.call_args.kwargs["requests"]]
+        self.assertIn("Assign 1", labels)
+        self.assertIn("Assign 16", labels)
+
     def test_control_function_decode_covers_documented_patch_control_values(self):
         self.assertEqual(agent_cli.decode_control_function(5), "LEVEL +10")
         self.assertEqual(agent_cli.decode_control_function(14), "MASTER DELAY TAP")

@@ -279,9 +279,9 @@ def patch_view(args: argparse.Namespace, view: str) -> Any:
         assign_requests = [
             live.PatchReadRequest(f"Assign {i}", live.address_adding(live.ASSIGN_BASE, (i-1)*live.ASSIGN_STRIDE), [0x00, 0x00, 0x00, 0x2C])
             for i in range(1, 17)
-        ] if view in {"controls", "summary"} else []
+        ] if view in {"chain", "controls", "summary"} else []
         
-        snapshot = read_live_snapshot(args.timeout, requests=live.READ_PLAN + assign_requests if view in {"controls", "summary"} else live.READ_PLAN if view == "chain" else live.INITIAL_READS)
+        snapshot = read_live_snapshot(args.timeout, requests=live.READ_PLAN + assign_requests if view in {"chain", "controls", "summary"} else live.INITIAL_READS)
         if view == "chain":
             return chain_from_full(snapshot)
         if view == "overview":
