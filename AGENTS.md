@@ -48,14 +48,14 @@
 ## Write Safety
 
 - Temporary patch writes are allowed through validated CLI plans and should be read-back verified.
-- Persistent user-slot writes are restricted to `U03-1` through `U03-5`; do not touch U01 or U02.
+- While developing the skill, agent-run user-slot writes are restricted to `U10-1` through `U11-5`; do not touch the lower banks unless explicitly instructed. The skill/CLI itself should support any valid user slot.
 - Use `--verify` for live write commands so every written range is re-read and compared.
 - Current proven commands:
   - `scripts/gt1000-agent --pretty patch apply default --live --verify --timeout 20`
   - `scripts/gt1000-agent --pretty patch apply 4cm-template --live --verify --timeout 20`
-  - `scripts/gt1000-agent --pretty patch apply default --live --user-slot U03-1 --verify --timeout 20`
-  - `scripts/gt1000-agent --pretty patch apply 4cm-template --live --user-slot U03-2 --verify --timeout 20`
-  - `scripts/gt1000-agent --pretty patch set delay1 time 380 --live --user-slot U03-2 --verify`
+  - `scripts/gt1000-agent --pretty patch apply default --live --user-slot U10-1 --verify --timeout 20`
+  - `scripts/gt1000-agent --pretty patch apply 4cm-template --live --user-slot U10-2 --verify --timeout 20`
+  - `scripts/gt1000-agent --pretty patch set delay1 time 380 --live --user-slot U10-3 --verify`
 
 ## Agent-Control Direction
 

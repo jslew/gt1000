@@ -65,14 +65,21 @@ class PatchEditTests(unittest.TestCase):
         self.assertEqual(data[13], 0x08)
         self.assertEqual(data[14], 0x00)
 
-    def test_user_slot_remap_is_restricted_to_u03(self):
+    def test_user_slot_remap_accepts_any_valid_user_slot(self):
         plan = patch_edit.build_default_patch_plan("PY DEFAULT")
         remapped = patch_edit.plan_for_user_slot(plan, "U03-1")
 
         self.assertEqual(remapped.writes[0].address, [0x20, 0x0A, 0x00, 0x00])
         self.assertEqual(remapped.writes[1].address, [0x20, 0x0A, 0x10, 0x68])
+
+        u10 = patch_edit.plan_for_user_slot(plan, "U10-1")
+        self.assertEqual(u10.writes[0].address, [0x20, 0x2D, 0x00, 0x00])
+
+        u50 = patch_edit.plan_for_user_slot(plan, "U50-5")
+        self.assertEqual(u50.writes[0].address, [0x21, 0x79, 0x00, 0x00])
+
         with self.assertRaises(ValueError):
-            patch_edit.plan_for_user_slot(plan, "U02-5")
+            patch_edit.plan_for_user_slot(plan, "U51-1")
 
     def test_parameter_set_plan_encodes_nibbles_and_user_slot(self):
         plan = patch_edit.build_parameter_set_plan("delay1", "time", "420", slot="U03-2")

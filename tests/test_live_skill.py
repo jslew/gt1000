@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_CLI = ROOT / "skills" / "gt1000" / "scripts" / "gt1000-agent"
 RUN_LIVE = os.environ.get("GT1000_LIVE") == "1"
-ALLOW_U03_DESTRUCTIVE = os.environ.get("GT1000_ALLOW_U03_DESTRUCTIVE") == "1"
+ALLOW_DESTRUCTIVE = os.environ.get("GT1000_ALLOW_DESTRUCTIVE") == "1"
 
 
 @unittest.skipUnless(RUN_LIVE, "set GT1000_LIVE=1 to run live GT-1000 tests")
@@ -84,10 +84,10 @@ class LiveSkillReadTests(unittest.TestCase):
 
 
 @unittest.skipUnless(
-    RUN_LIVE and ALLOW_U03_DESTRUCTIVE,
-    "set GT1000_LIVE=1 and GT1000_ALLOW_U03_DESTRUCTIVE=1 to destructively test U03 writes",
+    RUN_LIVE and ALLOW_DESTRUCTIVE,
+    "set GT1000_LIVE=1 and GT1000_ALLOW_DESTRUCTIVE=1 to destructively test user-slot writes",
 )
-class LiveSkillU03WriteTests(unittest.TestCase):
+class LiveSkillWriteTests(unittest.TestCase):
     def run_cli(self, *args: str, timeout: int = 60) -> dict:
         result = subprocess.run(
             [str(SKILL_CLI), "--pretty", *args],
@@ -99,60 +99,52 @@ class LiveSkillU03WriteTests(unittest.TestCase):
         )
         return json.loads(result.stdout)
 
-    def assert_verified_u03(self, result: dict, slot: str) -> None:
+    def assert_verified_slot(self, result: dict, second_byte: str) -> None:
         self.assertTrue(result["verified"])
-        slot_second_byte = {
-            "U03-1": "0A",
-            "U03-2": "0B",
-            "U03-3": "0C",
-            "U03-4": "0D",
-            "U03-5": "0E",
-        }[slot]
-
         checks = result["verification"]["checks"]
         self.assertGreater(len(checks), 0)
         for check in checks:
             with self.subTest(label=check["label"]):
                 self.assertTrue(check["ok"])
-                self.assertEqual(check["address"][:2], ["20", slot_second_byte])
+                self.assertEqual(check["address"][:2], ["20", second_byte])
 
-    def test_default_plan_verified_on_u03_1(self):
+    def test_default_plan_verified_on_u10_1(self):
         result = self.run_cli(
             "patch",
             "apply",
             "default",
             "--name",
-            "LIVE TST U031",
+            "LIVE TST U101",
             "--live",
             "--user-slot",
-            "U03-1",
+            "U10-1",
             "--verify",
             "--timeout",
             "20",
             timeout=90,
         )
 
-        self.assertEqual(result["plan"], "default:U03-1")
-        self.assert_verified_u03(result, "U03-1")
+        self.assertEqual(result["plan"], "default:U10-1")
+        self.assert_verified_slot(result, "2D")
 
-    def test_4cm_plan_and_parameter_set_verified_on_u03_2(self):
+    def test_4cm_plan_and_parameter_set_verified_on_u10_2(self):
         apply_result = self.run_cli(
             "patch",
             "apply",
             "4cm-template",
             "--name",
-            "LIVE TST U032",
+            "LIVE TST U102",
             "--live",
             "--user-slot",
-            "U03-2",
+            "U10-2",
             "--verify",
             "--timeout",
             "20",
             timeout=90,
         )
 
-        self.assertEqual(apply_result["plan"], "4cm-template:U03-2")
-        self.assert_verified_u03(apply_result, "U03-2")
+        self.assertEqual(apply_result["plan"], "4cm-template:U10-2")
+        self.assert_verified_slot(apply_result, "2E")
 
         set_result = self.run_cli(
             "patch",
@@ -162,17 +154,17 @@ class LiveSkillU03WriteTests(unittest.TestCase):
             "420",
             "--live",
             "--user-slot",
-            "U03-2",
+            "U10-2",
             "--verify",
             "--timeout",
             "20",
             timeout=60,
         )
 
-        self.assertEqual(set_result["plan"], "set:delay1.time:U03-2")
-        self.assert_verified_u03(set_result, "U03-2")
+        self.assertEqual(set_result["plan"], "set:delay1.time:U10-2")
+        self.assert_verified_slot(set_result, "2E")
 
-    def test_non_u03_slot_is_rejected_before_write(self):
+    def test_invalid_user_slot_is_rejected_before_write(self):
         result = subprocess.run(
             [
                 str(SKILL_CLI),
@@ -182,7 +174,7 @@ class LiveSkillU03WriteTests(unittest.TestCase):
                 "default",
                 "--live",
                 "--user-slot",
-                "U02-1",
+                "U51-1",
                 "--verify",
             ],
             cwd=ROOT,
@@ -192,7 +184,7 @@ class LiveSkillU03WriteTests(unittest.TestCase):
         )
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("invalid choice", result.stderr)
+        self.assertIn("user bank must be U01...U50", result.stderr)
 
 
 if __name__ == "__main__":

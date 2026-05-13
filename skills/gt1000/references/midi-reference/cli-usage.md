@@ -217,7 +217,7 @@ Change a single parameter on the connected device.
 scripts/gt1000-agent --pretty patch set delay1 time 380 --live --verify
 ```
 - `--verify`: Re-reads the parameter to confirm the write succeeded.
-- `--user-slot U03-1`: Persist the change to a specific user slot instead of the temporary patch. Valid slots: `U03-1` through `U03-5`.
+- `--user-slot Uxx-y`: Persist the change to any valid user slot (`U01-1` through `U50-5`) instead of the temporary patch.
 
 ### `patch enable` / `patch disable`
 Turn a switchable block on or off through the validated block `sw` parameter.
@@ -227,7 +227,7 @@ scripts/gt1000-agent --pretty patch disable dist1 --live --verify
 ```
 - Supports normalized IDs (`delay1`, `dist1`) and aliases (`ds1`, `sr1`).
 - `--verify`: Re-reads the block switch address to confirm the write succeeded.
-- `--user-slot U03-1`: Persist the switch change to a specific user slot instead of the temporary patch. Valid slots: `U03-1` through `U03-5`.
+- `--user-slot Uxx-y`: Persist the switch change to any valid user slot (`U01-1` through `U50-5`) instead of the temporary patch.
 - If a block has no decoded `sw` parameter, use `patch block` to inspect it and add a typed validator before writing.
 
 ### `patch type`
@@ -239,7 +239,7 @@ scripts/gt1000-agent --pretty patch type preamp1 "TWIN COMBO" --live --verify
 - Supports exact decoded type names where available; raw 0...127 type numbers are accepted for decoded byte-type blocks.
 - Supports normalized IDs (`preamp1`) and aliases (`ds1`, `sr1`).
 - `--verify`: Re-reads the type address to confirm the write succeeded.
-- `--user-slot U03-1`: Persist the type change to a specific user slot instead of the temporary patch. Valid slots: `U03-1` through `U03-5`.
+- `--user-slot Uxx-y`: Persist the type change to any valid user slot (`U01-1` through `U50-5`) instead of the temporary patch.
 
 ### `patch move`
 Move a decoded block in the current signal chain by reading the existing chain, reordering one element, and writing the validated full 49-element chain back.
@@ -250,7 +250,7 @@ scripts/gt1000-agent --pretty patch move dist1 --after preamp1 --live --verify
 - Exactly one of `--before <block>` or `--after <block>` is required.
 - Supports decoded block IDs and aliases (`ds1`, `sr1`).
 - `--verify`: Re-reads the full chain and compares the exact 49 bytes.
-- `--user-slot U03-1`: Move within a specific user slot instead of the temporary patch. Valid slots: `U03-1` through `U03-5`.
+- `--user-slot Uxx-y`: Move within any valid user slot (`U01-1` through `U50-5`) instead of the temporary patch.
 - This command preserves all other current chain elements and refuses malformed or unknown chain data.
 
 ### `patch assign-cc`
@@ -265,7 +265,7 @@ scripts/gt1000-agent --pretty patch assign-cc 4 delay1 effectLevel --cc 81 --mod
 - On/off targets default to logical min/max `0` and `1`; other targets require explicit `--min` and `--max`.
 - Target min/max are encoded with the GT-1000 Assign `+32768` offset rule.
 - `--active-min` / `--active-max` default to the full CC value range `0`...`127`.
-- `--user-slot U03-1`: Persist the Assign change to a specific user slot instead of the temporary patch. Valid slots: `U03-1` through `U03-5`.
+- `--user-slot Uxx-y`: Persist the Assign change to any valid user slot (`U01-1` through `U50-5`) instead of the temporary patch.
 
 ### `patch set-bpm`
 Change the patch master BPM using the validated four-nibble `BPM * 10` encoding.
@@ -274,7 +274,7 @@ scripts/gt1000-agent --pretty patch set-bpm 120.0 --live --verify
 ```
 - `bpm`: `40.0`...`250.0`, with at most one decimal place.
 - `--verify`: Re-reads the BPM address to confirm the write succeeded.
-- `--user-slot U03-1`: Persist the BPM change to a specific user slot instead of the temporary patch. Valid slots: `U03-1` through `U03-5`.
+- `--user-slot Uxx-y`: Persist the BPM change to any valid user slot (`U01-1` through `U50-5`) instead of the temporary patch.
 
 ### `patch tuner-assign`
 Install the tested Assign 16 mapping that toggles TUNER ON/OFF from MIDI CC#80.
@@ -283,7 +283,7 @@ scripts/gt1000-agent --pretty patch tuner-assign --live --verify
 ```
 - Writes Assign 16 to target `987` (`TUNER ON/OFF` on the tested GT-1000 v4 unit with Bass Mode off), source CC#80, active range `0`...`127`.
 - After installing, send values with `midi cc 80 127 --channel N --live` and `midi cc 80 0 --channel N --live`.
-- `--user-slot U03-1`: Persist the Assign change to a specific user slot instead of the temporary patch. Valid slots: `U03-1` through `U03-5`.
+- `--user-slot Uxx-y`: Persist the Assign change to any valid user slot (`U01-1` through `U50-5`) instead of the temporary patch.
 
 ### `patch plan`
 Build a validated write plan (multiple parameters) without sending MIDI.
@@ -296,7 +296,7 @@ Apply a validated write plan to the device.
 ```sh
 scripts/gt1000-agent --pretty patch apply default --live --verify
 ```
-- `--user-slot U03-1`: Persist the plan to a specific user slot.
+- `--user-slot Uxx-y`: Persist the plan to any valid user slot (`U01-1` through `U50-5`).
 
 ## Timeout and Port Selection
 

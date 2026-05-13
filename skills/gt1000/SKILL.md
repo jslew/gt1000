@@ -26,7 +26,7 @@ Resolve paths relative to this `SKILL.md` file:
 
 ## Operational Principles
 
-- Prefer the bundled CLI and markdown references over model memory.
+- Always use the bundled CLI and markdown to interact with the device.
 - Use `scripts/gt1000-agent --pretty patch summary --live` as the default live read for patch descriptions.
 - Do not inspect `tools/gt1000/*.py` unless the CLI fails, returns ambiguous output, or the user asks to modify the toolchain.
 - Run live reads sequentially. Separate processes can interleave GT-1000 replies on the same MIDI source.
@@ -46,6 +46,7 @@ Use the profile as preference context, not device truth. Live CLI reads and curr
 
 Load only the reference needed for the task:
 
+- CLI usage: `references/midi-reference/cli-usage.md`
 - User-facing manual/wiki overview: `references/gt1000-wiki/README.md`
 - Owner Manual extraction: `references/gt1000-wiki/owner-manual.md`
 - Parameter Guide extraction: `references/gt1000-wiki/parameter-guide.md`
@@ -55,7 +56,7 @@ Load only the reference needed for the task:
 - Patch physical controls: `references/midi-reference/patch-controls.md`
 - Assign encoding: `references/midi-reference/assigns.md`
 - PatchEfct chain/routing: `references/midi-reference/patch-effect.md`
-- CLI usage: `references/midi-reference/cli-usage.md`
+
 
 ## Progressive Disclosure Routing
 
@@ -134,7 +135,7 @@ scripts/gt1000-agent --pretty patch apply default --live --verify --timeout 20
 scripts/gt1000-agent --pretty patch apply 4cm-template --live --verify --timeout 20
 ```
 
-Some currently bundled helper commands only expose a narrow persistent write sandbox. Treat that as a temporary safety guardrail in this implementation, not as a GT-1000 skill rule. For other user patches, global settings, MIDI settings, or Assign edits, use or add a typed command that validates:
+Persistent patch writes may target any valid user slot. For global settings, MIDI settings, or unsupported edit intents, use or add a typed command that validates:
 
 - target memory area and patch/global address
 - parameter range and encoding
@@ -144,8 +145,8 @@ Some currently bundled helper commands only expose a narrow persistent write san
 Examples of currently implemented verified writes:
 
 ```sh
-scripts/gt1000-agent --pretty patch apply default --live --user-slot U03-1 --verify --timeout 20
-scripts/gt1000-agent --pretty patch set delay1 time 380 --live --user-slot U03-2 --verify
+scripts/gt1000-agent --pretty patch apply default --live --user-slot U10-1 --verify --timeout 20
+scripts/gt1000-agent --pretty patch set delay1 time 380 --live --user-slot U10-3 --verify
 scripts/gt1000-agent --pretty patch enable delay1 --live --verify
 scripts/gt1000-agent --pretty patch type dist1 T-SCREAM --live --verify
 scripts/gt1000-agent --pretty patch move delay1 --before chorus --live --verify

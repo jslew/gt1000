@@ -12,8 +12,6 @@ except ModuleNotFoundError:
 
 
 PATCH_COMMON = [0x10, 0x00, 0x00, 0x00]
-USER_PATCH_1 = [0x20, 0x00, 0x00, 0x00]
-PATCH_ADDRESS_STRIDE = 0x4000
 PATCH_CTL1_FUNCTION = live.address_adding(PATCH_COMMON, 0x31)
 TEMPORARY_ASSIGN_1 = [0x10, 0x00, 0x03, 0x00]
 CHAIN_START = live.address_adding(live.TEMPORARY_PATCH_EFFECT, 0x68)
@@ -133,17 +131,7 @@ def plan_for_user_slot(plan: PatchPlan, slot: str) -> PatchPlan:
 
 
 def user_slot_base(slot: str) -> list[int]:
-    normalized = slot.upper()
-    if not normalized.startswith("U03-"):
-        raise ValueError("only U03-1 through U03-5 are allowed; U01 and U02 are intentionally blocked")
-    try:
-        number = int(normalized.split("-", 1)[1])
-    except ValueError as error:
-        raise ValueError("slot must look like U03-1") from error
-    if not 1 <= number <= 5:
-        raise ValueError("only U03-1 through U03-5 are allowed")
-    patch_index = 10 + number
-    return live.seven_bit_address(live.seven_bit_address_value(USER_PATCH_1) + (patch_index - 1) * PATCH_ADDRESS_STRIDE)
+    return live.user_patch_base(slot)
 
 
 def apply_plan(plan: PatchPlan, *, timeout: float, verify: bool) -> dict[str, Any]:
