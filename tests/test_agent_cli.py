@@ -1,5 +1,8 @@
+import sys
 import unittest
 from pathlib import Path
+
+sys.dont_write_bytecode = True
 
 from tools.gt1000 import agent_cli
 

@@ -1,4 +1,7 @@
+import sys
 import unittest
+
+sys.dont_write_bytecode = True
 
 from tools.gt1000 import live, patch_edit
 

@@ -1,5 +1,8 @@
+import sys
 import unittest
 from unittest import mock
+
+sys.dont_write_bytecode = True
 
 from tools.gt1000 import agent_cli, live
 
