@@ -183,7 +183,7 @@ SUMMARY_BLOCKS = [
     BlockDefinition("delay2", "DELAY 2", 16, [0x10, 0x00, 0x1E, 0x00], 9, DELAY_PARAMETERS),
     BlockDefinition("delay3", "DELAY 3", 17, [0x10, 0x00, 0x1F, 0x00], 9, DELAY_PARAMETERS),
     BlockDefinition("delay4", "DELAY 4", 18, [0x10, 0x00, 0x20, 0x00], 9, DELAY_PARAMETERS),
-    BlockDefinition("masterDelay", "MASTER DELAY", 19, [0x10, 0x00, 0x21, 0x00], 31, MASTER_DELAY_PARAMETERS),
+    BlockDefinition("masterDelay", "MASTER DELAY", 19, [0x10, 0x00, 0x21, 0x00], 28, MASTER_DELAY_PARAMETERS),
     BlockDefinition("chorus", "CHORUS", 14, [0x10, 0x00, 0x22, 0x00], 24, CHORUS_PARAMETERS),
     BlockDefinition("fx1", "FX 1", 7, [0x10, 0x00, 0x23, 0x00], 2, FX_PARAMETERS),
     BlockDefinition("fx2", "FX 2", 8, [0x10, 0x00, 0x3E, 0x00], 2, FX_PARAMETERS),
@@ -422,11 +422,25 @@ def read_user_patch(slot: str, timeout: float, requests: list[PatchReadRequest] 
 
 def user_patch_base(slot: str) -> list[int]:
     normalized = normalize_user_slot(slot)
+    return seven_bit_address(seven_bit_address_value(USER_PATCH_1) + user_patch_zero_based_index(normalized) * USER_PATCH_STRIDE)
+
+
+def user_patch2_base(slot: str) -> list[int]:
+    normalized = normalize_user_slot(slot)
+    return seven_bit_address(seven_bit_address_value(USER_PATCH2_1) + user_patch_zero_based_index(normalized) * USER_PATCH_STRIDE)
+
+
+def user_patch3_base(slot: str) -> list[int]:
+    normalized = normalize_user_slot(slot)
+    return seven_bit_address(seven_bit_address_value(USER_PATCH3_1) + user_patch_zero_based_index(normalized) * USER_PATCH_STRIDE)
+
+
+def user_patch_zero_based_index(slot: str) -> int:
+    normalized = normalize_user_slot(slot)
     bank_text, number_text = normalized[1:].split("-", 1)
     bank = int(bank_text)
     number = int(number_text)
-    patch_index = (bank - 1) * USER_PATCHES_PER_BANK + number
-    return seven_bit_address(seven_bit_address_value(USER_PATCH_1) + (patch_index - 1) * USER_PATCH_STRIDE)
+    return (bank - 1) * USER_PATCHES_PER_BANK + (number - 1)
 
 
 def normalize_user_slot(slot: str) -> str:

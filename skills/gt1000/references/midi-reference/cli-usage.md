@@ -173,6 +173,16 @@ scripts/gt1000-agent --pretty patch select U50-5 --live --channel 1
 - Bank Select and Program Change are subject to the GT-1000 MIDI RX channel and program-map settings.
 - Direct `patch slot` / `patch bank` reads are safer for inspection because they do not change the selected patch.
 
+### `patch clone`
+Clone one persistent user patch slot to another by reading the source records and writing them to the destination slot.
+```sh
+scripts/gt1000-agent --pretty patch clone U10-1 U10-2 --live --verify --timeout 20
+```
+- `source_slot` / `destination_slot`: User slots `U01-1` through `U50-5`; they must be different.
+- `--verify`: Re-reads every written clone record and compares exact bytes.
+- Copies the known patch records used by the CLI: PatchCommon, PatchStompBox, Assign 1...16, PatchEfct, decoded effect block records, PatchStompBox2, and PatchStompBox3.
+- This is a persistent write to the destination user slot; inspect the source and destination first when slot contents matter.
+
 ### `patch block`
 Show detailed parameters for a single block.
 ```sh

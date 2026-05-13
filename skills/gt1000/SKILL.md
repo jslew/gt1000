@@ -99,6 +99,7 @@ scripts/gt1000-agent --pretty patch controls --live --timeout 8
 scripts/gt1000-agent --pretty patch slot U01-1 --live --view summary --timeout 15
 scripts/gt1000-agent --pretty patch bank U01 --live --view summary --timeout 15
 scripts/gt1000-agent --pretty patch block delay1 --user-slot U01-1
+scripts/gt1000-agent --pretty patch clone U10-1 U10-2 --live --verify --timeout 20
 scripts/gt1000-agent --pretty midi cc 80 127 --channel 1 --live
 scripts/gt1000-agent --pretty midi bank-select 0 --channel 1 --live
 scripts/gt1000-agent --pretty midi pc 1 --channel 1 --live
@@ -146,6 +147,7 @@ Examples of currently implemented verified writes:
 
 ```sh
 scripts/gt1000-agent --pretty patch apply default --live --user-slot U10-1 --verify --timeout 20
+scripts/gt1000-agent --pretty patch clone U10-1 U10-2 --live --verify --timeout 20
 scripts/gt1000-agent --pretty patch set delay1 time 380 --live --user-slot U10-3 --verify
 scripts/gt1000-agent --pretty patch enable delay1 --live --verify
 scripts/gt1000-agent --pretty patch type dist1 T-SCREAM --live --verify

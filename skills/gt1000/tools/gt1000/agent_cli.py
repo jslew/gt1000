@@ -137,6 +137,14 @@ def build_parser() -> argparse.ArgumentParser:
     select.add_argument("--channel", type=int, default=1, help="1-based MIDI channel for Program Change, default 1.")
     select.set_defaults(func=cmd_patch_select)
 
+    clone = patch_subcommands.add_parser("clone", help="Clone one persistent user patch slot to another.")
+    clone.add_argument("source_slot", help="Source user slot such as U10-1.")
+    clone.add_argument("destination_slot", help="Destination user slot such as U10-2.")
+    clone.add_argument("--live", action="store_true", help="Required because this reads and writes persistent GT-1000 user slots.")
+    clone.add_argument("--verify", action="store_true", help="Re-read every written clone record and compare exact bytes.")
+    clone.add_argument("--timeout", type=float, default=20.0, help="Read/verification timeout in seconds.")
+    clone.set_defaults(func=cmd_patch_clone)
+
     block = patch_subcommands.add_parser("block", help="Show one block's detailed parameters.")
     add_input_options(block)
     block.add_argument("block_id", nargs="?", help="Block id such as preamp1 or delay1.")
@@ -451,10 +459,7 @@ def assign_target_for_block_parameter(block_id: str, parameter_id: str) -> dict[
 
 
 def user_patch_zero_based_index(slot: str) -> int:
-    normalized = live.normalize_user_slot(slot)
-    bank = int(normalized[1:3])
-    number = int(normalized.split("-", 1)[1])
-    return (bank - 1) * live.USER_PATCHES_PER_BANK + (number - 1)
+    return live.user_patch_zero_based_index(slot)
 
 
 def decode_patch_stompbox_section(data: list[int], definitions: list[dict[str, str | None]], *, size: list[int]) -> dict[str, Any]:
@@ -696,6 +701,26 @@ def cmd_patch_select(args: argparse.Namespace) -> Any:
     }
 
 
+def cmd_patch_clone(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch clone requires --live because it reads and writes persistent GT-1000 user slots", 64)
+    try:
+        source = live.normalize_user_slot(args.source_slot)
+        destination = live.normalize_user_slot(args.destination_slot)
+        if source == destination:
+            raise ValueError("source and destination slots must be different")
+        source_data = live.read_data_sets(timeout=args.timeout, requests=patch_edit.clone_read_requests(source))
+        plan = patch_edit.build_clone_plan(source, destination, source_data)
+        result = patch_edit.apply_plan(plan, timeout=args.timeout, verify=args.verify)
+        result["sourceSlot"] = source
+        result["destinationSlot"] = destination
+        return result
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
 def cmd_patch_block(args: argparse.Namespace) -> Any:
     if (args.block_id is None) == (args.position is None):
         raise CLIError("patch block requires exactly one selector: block_id or --position", 64)
@@ -784,13 +809,10 @@ def cmd_patch_stompbox(args: argparse.Namespace) -> Any:
     ]
     if args.user_slot:
         source_slot = live.normalize_user_slot(args.user_slot)
-        patch_index = user_patch_zero_based_index(source_slot)
-        patch2_base = live.seven_bit_address(live.seven_bit_address_value(live.USER_PATCH2_1) + patch_index * live.USER_PATCH_STRIDE)
-        patch3_base = live.seven_bit_address(live.seven_bit_address_value(live.USER_PATCH3_1) + patch_index * live.USER_PATCH_STRIDE)
         records = [
             (records[0][0], records[0][1], live.remap_temporary_patch_address(records[0][2], live.user_patch_base(source_slot)), records[0][3], records[0][4]),
-            (records[1][0], records[1][1], patch2_base, records[1][3], records[1][4]),
-            (records[2][0], records[2][1], patch3_base, records[2][3], records[2][4]),
+            (records[1][0], records[1][1], live.user_patch2_base(source_slot), records[1][3], records[1][4]),
+            (records[2][0], records[2][1], live.user_patch3_base(source_slot), records[2][3], records[2][4]),
         ]
     requests = [
         live.PatchReadRequest(label, address, size)

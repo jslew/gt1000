@@ -16,6 +16,11 @@ class UserPatchReadTests(unittest.TestCase):
     def test_user_bank_slots_are_normalized(self):
         self.assertEqual(live.user_bank_slots("u1"), ["U01-1", "U01-2", "U01-3", "U01-4", "U01-5"])
 
+    def test_master_delay_live_record_size_matches_device_response(self):
+        master_delay = next(block for block in live.SUMMARY_BLOCKS if block.id == "masterDelay")
+
+        self.assertEqual(master_delay.size, 28)
+
     def test_temporary_patch_addresses_remap_to_user_slot(self):
         base = live.user_patch_base("U01-2")
 
@@ -243,6 +248,37 @@ class UserPatchReadTests(unittest.TestCase):
         ])
         self.assertEqual(result["selectedSlot"], "U26-4")
         self.assertEqual(result["messagesHex"], ["B1 00 01", "B1 20 00", "C1 00"])
+
+    def test_patch_clone_command_reads_source_and_applies_clone_plan(self):
+        args = agent_cli.build_parser().parse_args(["patch", "clone", "U03-2", "U10-1", "--live", "--verify"])
+        requests = agent_cli.patch_edit.clone_read_requests("U03-2")
+        source_data = {
+            agent_cli.live.address_key(request.address): [index % 0x80] * agent_cli.live.seven_bit_address_value(request.size)
+            for index, request in enumerate(requests)
+        }
+
+        with mock.patch.object(agent_cli.live, "read_data_sets", return_value=source_data) as read_data_sets:
+            with mock.patch.object(agent_cli.patch_edit, "apply_plan", return_value={"plan": "clone:U03-2:U10-1", "writeCount": len(requests), "verified": True}) as apply_plan:
+                result = agent_cli.cmd_patch_clone(args)
+
+        read_data_sets.assert_called_once()
+        self.assertEqual(read_data_sets.call_args.kwargs["timeout"], 20.0)
+        self.assertEqual(read_data_sets.call_args.kwargs["requests"][0].address, [0x20, 0x0B, 0x00, 0x00])
+        plan = apply_plan.call_args.args[0]
+        self.assertEqual(plan.id, "clone:U03-2:U10-1")
+        self.assertEqual(plan.writes[0].address, [0x20, 0x2D, 0x00, 0x00])
+        self.assertTrue(apply_plan.call_args.kwargs["verify"])
+        self.assertEqual(result["sourceSlot"], "U03-2")
+        self.assertEqual(result["destinationSlot"], "U10-1")
+
+    def test_patch_clone_rejects_same_slot_before_live_read(self):
+        args = agent_cli.build_parser().parse_args(["patch", "clone", "U03-2", "u03-2", "--live"])
+
+        with mock.patch.object(agent_cli.live, "read_data_sets") as read_data_sets:
+            with self.assertRaises(agent_cli.CLIError):
+                agent_cli.cmd_patch_clone(args)
+
+        read_data_sets.assert_not_called()
 
     def test_control_change_message_is_typed_and_bounded(self):
         self.assertEqual(agent_cli.control_change_message(80, 127, 1), [0xB0, 80, 127])

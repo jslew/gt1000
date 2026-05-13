@@ -134,6 +134,42 @@ def user_slot_base(slot: str) -> list[int]:
     return live.user_patch_base(slot)
 
 
+def clone_read_requests(slot: str) -> list[live.PatchReadRequest]:
+    return [
+        live.PatchReadRequest(
+            definition.label,
+            remap_clone_address(definition.address, slot),
+            definition.size,
+        )
+        for definition in clone_record_definitions()
+    ]
+
+
+def build_clone_plan(source_slot: str, destination_slot: str, source_data: dict[str, list[int]]) -> PatchPlan:
+    source = live.normalize_user_slot(source_slot)
+    destination = live.normalize_user_slot(destination_slot)
+    if source == destination:
+        raise ValueError("source and destination slots must be different")
+
+    writes = []
+    for definition in clone_record_definitions():
+        source_address = remap_clone_address(definition.address, source)
+        destination_address = remap_clone_address(definition.address, destination)
+        data = source_data.get(live.address_key(source_address))
+        if data is None:
+            raise ValueError(f"missing source data for {definition.label} at {live.hex_string(source_address)}")
+        expected_size = live.seven_bit_address_value(definition.size)
+        if len(data) != expected_size:
+            raise ValueError(f"{definition.label} expected {expected_size} bytes but read {len(data)}")
+        writes.append(live.PatchWrite(f"Clone {definition.label}", destination_address, data))
+
+    return PatchPlan(
+        id=f"clone:{source}:{destination}",
+        description=f"Clone known patch records from {source} to {destination}.",
+        writes=writes,
+    )
+
+
 def apply_plan(plan: PatchPlan, *, timeout: float, verify: bool) -> dict[str, Any]:
     live.write_data_sets(plan.writes)
     result: dict[str, Any] = {"plan": plan.id, "writeCount": len(plan.writes), "verified": None}
@@ -328,6 +364,36 @@ def verify_plan(plan: PatchPlan, *, timeout: float) -> dict[str, Any]:
             "actualHex": live.hex_string(actual or []),
         })
     return {"ok": all(check["ok"] for check in checks), "checks": checks}
+
+
+def clone_record_definitions() -> list[live.PatchReadRequest]:
+    return [
+        live.PatchReadRequest("Patch Common", live.TEMPORARY_PATCH_COMMON, [0x00, 0x00, 0x00, 0x7E]),
+        live.PatchReadRequest("Patch Stompbox", live.TEMPORARY_PATCH_STOMPBOX, [0x00, 0x00, 0x00, 0x68]),
+        *[
+            live.PatchReadRequest(
+                f"Assign {number}",
+                live.address_adding(live.ASSIGN_BASE, (number - 1) * live.ASSIGN_STRIDE),
+                [0x00, 0x00, 0x00, 0x2C],
+            )
+            for number in range(1, 17)
+        ],
+        live.PatchReadRequest("Patch Effect", live.TEMPORARY_PATCH_EFFECT, [0x00, 0x00, 0x01, 0x1C]),
+        *[
+            live.PatchReadRequest(block.display_name, block.address, live.seven_bit_address(block.size))
+            for block in live.SUMMARY_BLOCKS
+        ],
+        live.PatchReadRequest("Patch Stompbox 2", live.TEMPORARY_PATCH2_STOMPBOX, [0x00, 0x00, 0x00, 0x11]),
+        live.PatchReadRequest("Patch Stompbox 3", live.TEMPORARY_PATCH3_STOMPBOX, [0x00, 0x00, 0x00, 0x25]),
+    ]
+
+
+def remap_clone_address(address: list[int], slot: str) -> list[int]:
+    if address == live.TEMPORARY_PATCH2_STOMPBOX:
+        return live.user_patch2_base(slot)
+    if address == live.TEMPORARY_PATCH3_STOMPBOX:
+        return live.user_patch3_base(slot)
+    return live.remap_temporary_patch_address(address, live.user_patch_base(slot))
 
 
 def patch_name_data(name: str) -> list[int]:

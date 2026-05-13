@@ -84,6 +84,40 @@ class PatchEditTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             patch_edit.plan_for_user_slot(plan, "U51-1")
 
+    def test_clone_read_requests_and_plan_copy_known_patch_records(self):
+        requests = patch_edit.clone_read_requests("U03-2")
+
+        self.assertEqual(requests[0].label, "Patch Common")
+        self.assertEqual(requests[0].address, [0x20, 0x0B, 0x00, 0x00])
+        self.assertEqual(requests[1].label, "Patch Stompbox")
+        self.assertEqual(requests[1].address, [0x20, 0x0B, 0x01, 0x00])
+        self.assertEqual(requests[-2].label, "Patch Stompbox 2")
+        self.assertEqual(requests[-2].address, [0x22, 0x05, 0x00, 0x00])
+        self.assertEqual(requests[-1].label, "Patch Stompbox 3")
+        self.assertEqual(requests[-1].address, [0x23, 0x7F, 0x00, 0x00])
+
+        source_data = {
+            live.address_key(request.address): [index % 0x80] * live.seven_bit_address_value(request.size)
+            for index, request in enumerate(requests)
+        }
+        plan = patch_edit.build_clone_plan("U03-2", "U10-1", source_data)
+
+        self.assertEqual(plan.id, "clone:U03-2:U10-1")
+        self.assertEqual(len(plan.writes), len(requests))
+        self.assertEqual(plan.writes[0].address, [0x20, 0x2D, 0x00, 0x00])
+        self.assertEqual(plan.writes[1].address, [0x20, 0x2D, 0x01, 0x00])
+        self.assertEqual(plan.writes[-2].address, [0x22, 0x27, 0x00, 0x00])
+        self.assertEqual(plan.writes[-1].address, [0x24, 0x21, 0x00, 0x00])
+        self.assertEqual(plan.writes[0].data, source_data[live.address_key(requests[0].address)])
+
+        with self.assertRaises(ValueError):
+            patch_edit.build_clone_plan("U03-2", "U03-2", source_data)
+
+        incomplete_data = dict(source_data)
+        incomplete_data.pop(live.address_key(requests[0].address))
+        with self.assertRaises(ValueError):
+            patch_edit.build_clone_plan("U03-2", "U10-1", incomplete_data)
+
     def test_parameter_set_plan_encodes_nibbles_and_user_slot(self):
         plan = patch_edit.build_parameter_set_plan("delay1", "time", "420", slot="U03-2")
 

@@ -8,6 +8,8 @@
 - Main command surface is `scripts/gt1000-agent`.
 - Useful checks:
   - `python3 -m unittest discover -s tests -q`
+  - `GT1000_LIVE=1 python3 -m unittest tests.test_live_skill -q`
+  - `GT1000_LIVE=1 GT1000_ALLOW_DESTRUCTIVE=1 python3 -m unittest tests.test_live_skill -q`
   - `scripts/gt1000-agent --pretty ports --live`
   - `scripts/gt1000-agent --pretty patch overview --live --timeout 8`
   - `scripts/gt1000-agent --pretty patch chain --live --timeout 8`
@@ -56,6 +58,7 @@
   - `scripts/gt1000-agent --pretty patch apply default --live --user-slot U10-1 --verify --timeout 20`
   - `scripts/gt1000-agent --pretty patch apply 4cm-template --live --user-slot U10-2 --verify --timeout 20`
   - `scripts/gt1000-agent --pretty patch set delay1 time 380 --live --user-slot U10-3 --verify`
+  - `scripts/gt1000-agent --pretty patch clone U10-4 U11-1 --live --verify --timeout 20`
 
 ## Agent-Control Direction
 

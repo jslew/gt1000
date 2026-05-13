@@ -83,6 +83,8 @@ Additional temporary patch STOMPBOX selection records:
 
 Physical control mappings require extra reads of `PatchCommon`, `SystemControl`, and Assign blocks. See [Patch Controls](patch-controls.md).
 
+`scripts/gt1000-agent patch clone <source> <destination> --live` copies the known writable patch records used by the CLI: `PatchCommon`, `PatchStompBox`, Assign 1...16, `PatchEfct`, decoded effect block records, `PatchStompBox2`, and `PatchStompBox3`. It does not guess undocumented record sizes such as `PatchLed`.
+
 ## System Common Known Offsets
 
 Offsets below are relative to `System Common` address `00 00 00 00`.
