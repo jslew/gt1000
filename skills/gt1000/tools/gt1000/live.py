@@ -20,6 +20,7 @@ TEMPORARY_PATCH_MASTER_BPM = [0x10, 0x00, 0x10, 0x61]
 TEMPORARY_PATCH_EFFECT = [0x10, 0x00, 0x10, 0x00]
 TEMPORARY_PATCH_COMMON = [0x10, 0x00, 0x00, 0x00]
 TEMPORARY_PATCH_STOMPBOX = [0x10, 0x00, 0x01, 0x00]
+TEMPORARY_PATCH_LED = [0x10, 0x00, 0x02, 0x00]
 TEMPORARY_PATCH2_STOMPBOX = [0x10, 0x01, 0x00, 0x00]
 TEMPORARY_PATCH3_STOMPBOX = [0x10, 0x02, 0x00, 0x00]
 SYSTEM_COMMON = [0x00, 0x00, 0x00, 0x00]
@@ -38,9 +39,11 @@ ASSIGN_STRIDE = 0x40
 USER_PATCH_1 = [0x20, 0x00, 0x00, 0x00]
 USER_PATCH2_1 = [0x21, 0x7A, 0x00, 0x00]
 USER_PATCH3_1 = [0x23, 0x74, 0x00, 0x00]
+PRESET_PATCH_1 = [0x30, 0x00, 0x00, 0x00]
 USER_PATCH_STRIDE = 0x4000
 USER_BANK_COUNT = 50
 USER_PATCHES_PER_BANK = 5
+DEFAULT_REQUEST_DELAY = 0.05
 
 
 class LiveMIDIError(Exception):
@@ -120,6 +123,21 @@ MASTER_DELAY_TYPES = [
     "REVERSE", "SHIMMER", "DUAL", "WARP", "TWIST",
 ]
 CHORUS_TYPES = ["MONO", "STEREO 1", "STEREO 2", "DUAL"]
+EQ_TYPES = ["PARAMETRIC", "GRAPHIC"]
+FX_TYPES = [
+    "AC GUITAR SIM", "AC RESONANCE", "AUTO WAH", "CHORUS", "CLASSIC-VIBE",
+    "COMPRESSOR", "DEFRETTER", "FEEDBACKER", "FLANGER", "HARMONIST",
+    "HUMANIZER", "OCTAVE", "OVERTONE", "PAN", "PHASER", "PITCH SHIFTER",
+    "RING MOD", "ROTARY", "SITAR SIM", "SLICER", "SLOW GEAR", "SOUND HOLD",
+    "S-BEND", "TOUCH WAH", "TREMOLO", "VIBRATO",
+]
+MASTER_DELAY_DUAL_TYPES = ["MONO", "PAN", "ANALOG", "TAPE"]
+MASTER_DELAY_DUAL_MODES = ["SERIES", "PARALLEL", "L/R"]
+MASTER_DELAY_TWIST_MODES = ["RISE->FALL", "RISE->FADE"]
+REVERB_TYPES = ["HALL1", "HALL2", "PLATE", "ROOM1", "ROOM2", "AMBIENCE", "SPRING", "SHIMMER", "DUAL", "TERA ECHO"]
+REVERB_DUAL_TYPES = ["HALL", "PLATE", "ROOM"]
+PEDAL_FX_TYPES = ["PEDAL BEND", "WAH"]
+PEDAL_WAH_TYPES = ["CRY WAH", "VO WAH", "FAT WAH", "LIGHT WAH", "7STRING WAH", "RESO WAH"]
 
 DISTORTION_PARAMETERS = (
     switch("sw", "SW", 0), type_param("type", "TYPE", 1, DISTORTION_TYPES),
@@ -135,8 +153,18 @@ PREAMP_PARAMETERS = (
     byte("gainSw", "GAIN SW", 11), switch("soloSw", "SOLO SW", 12), byte("soloLevel", "SOLO LEVEL", 13),
 )
 EQ_PARAMETERS = (
-    switch("sw", "SW", 0), byte("type", "TYPE", 1), byte("lowGain", "LOW GAIN", 2),
-    byte("highGain", "HIGH GAIN", 3), byte("level", "LEVEL", 13),
+    switch("sw", "SW", 0), type_param("type", "TYPE", 1, EQ_TYPES),
+    byte("lowGain", "LOW GAIN", 2), byte("highGain", "HIGH GAIN", 3),
+    byte("lowMidFreq", "LOW-MID FREQ", 5), byte("lowMidQ", "LOW-MID Q", 6),
+    byte("lowMidGain", "LOW-MID GAIN", 7), byte("highMidFreq", "HIGH-MID FREQ", 8),
+    byte("highMidQ", "HIGH-MID Q", 9), byte("highMidGain", "HIGH-MID GAIN", 10),
+    byte("lowCut", "LOW CUT", 11), byte("highCut", "HIGH CUT", 12),
+    byte("level", "LEVEL", 13), byte("geq31_5Hz", "GEQ 31.5Hz", 14),
+    byte("geq63Hz", "GEQ 63Hz", 15), byte("geq125Hz", "GEQ 125Hz", 16),
+    byte("geq250Hz", "GEQ 250Hz", 17), byte("geq500Hz", "GEQ 500Hz", 18),
+    byte("geq1kHz", "GEQ 1kHz", 19), byte("geq2kHz", "GEQ 2kHz", 20),
+    byte("geq4kHz", "GEQ 4kHz", 21), byte("geq8kHz", "GEQ 8kHz", 22),
+    byte("geq16kHz", "GEQ 16kHz", 23), byte("geqLevel", "GEQ LEVEL", 13),
 )
 DELAY_PARAMETERS = (
     switch("sw", "SW", 0), nibble_param("time", "TIME", 1, 4),
@@ -147,8 +175,19 @@ MASTER_DELAY_PARAMETERS = (
     switch("sw", "SW", 0), type_param("type", "TYPE", 1, MASTER_DELAY_TYPES),
     nibble_param("time", "TIME", 2, 4), byte("feedback", "FEEDBACK", 6),
     byte("highCut", "HIGH CUT", 7), byte("effectLevel", "EFFECT LEVEL", 8),
-    byte("modRate", "MOD RATE", 9), byte("modDepth", "MOD DEPTH", 10),
-    byte("directLevel", "DIRECT LEVEL", 14),
+    byte("modRate", "MOD RATE", 9), byte("modDepth", "MOD DEPTH", 10), byte("duckSens", "DUCK SENS", 11),
+    byte("duckPreDepth", "DUCK PRE DEPTH", 12), byte("duckPostDepth", "DUCK POST DEPTH", 13),
+    byte("directLevel", "DIRECT LEVEL", 14), byte("pitch", "PITCH", 15), byte("pitchBal", "PITCH BAL", 16),
+    byte("pitchFeedback", "PITCH FEEDBACK", 17), type_param("dualMode", "DUAL:MODE", 18, MASTER_DELAY_DUAL_MODES),
+    type_param("d1Type", "D1 TYPE", 19, MASTER_DELAY_DUAL_TYPES), nibble_param("d1Time", "D1 TIME", 20, 4),
+    byte("d1Feedback", "D1 FEEDBACK", 24), byte("d1HighCut", "D1 HIGH CUT", 25),
+    byte("d1EffectLevel", "D1 EFFECT LEVEL", 26), type_param("d2Type", "D2 TYPE", 27, MASTER_DELAY_DUAL_TYPES),
+    nibble_param("d2Time", "D2 TIME", 28, 4), byte("d2Feedback", "D2 FEEDBACK", 32),
+    byte("d2HighCut", "D2 HIGH CUT", 33), byte("d2EffectLevel", "D2 EFFECT LEVEL", 34),
+    type_param("twistMode", "TWIST:MODE", 35, MASTER_DELAY_TWIST_MODES), switch("trigger", "TRIGGER", 36),
+    byte("riseTime", "RISE TIME", 37), byte("fallTime", "FALL TIME", 38), byte("level", "LEVEL", 39),
+    byte("stage", "STAGE", 40), byte("head", "HEAD", 41), byte("fadeTime", "FADE TIME", 42),
+    byte("tapTime", "TAP TIME", 43),
 )
 CHORUS_PARAMETERS = (
     switch("sw", "SW", 0), type_param("type", "TYPE", 1, CHORUS_TYPES),
@@ -156,12 +195,22 @@ CHORUS_PARAMETERS = (
     byte("effectLevel", "EFFECT LEVEL", 5), byte("waveform", "WAVEFORM", 6),
     byte("lowCut", "LOW CUT", 7), byte("highCut", "HIGH CUT", 8),
 )
-FX_PARAMETERS = (switch("sw", "SW", 0), byte("type", "TYPE", 1))
+FX_PARAMETERS = (switch("sw", "SW", 0), type_param("type", "TYPE", 1, FX_TYPES))
 REVERB_PARAMETERS = (
-    switch("sw", "SW", 0), byte("type", "TYPE", 1), byte("time", "TIME", 2),
-    byte("tone", "TONE", 3), byte("density", "DENSITY", 4), byte("effectLevel", "EFFECT LEVEL", 5),
-    byte("preDelay", "PRE-DELAY", 6), byte("lowCut", "LOW CUT", 7), byte("highCut", "HIGH CUT", 8),
-    byte("directLevel", "DIRECT LEVEL", 16),
+    switch("sw", "SW", 0), type_param("type", "TYPE", 1, REVERB_TYPES), byte("directLevel", "DIRECT LEVEL", 2),
+    byte("lowDamp", "LOW DAMP", 3), byte("highDamp", "HIGH DAMP", 4), byte("modRate", "MOD RATE", 5),
+    byte("modDepth", "MOD DEPTH", 6), byte("duckSens", "DUCK SENS", 7), byte("duckPreDepth", "DUCK PRE DEPTH", 8),
+    byte("duckPostDepth", "DUCK POST DEPTH", 9), byte("time", "TIME", 10), byte("tone", "TONE", 11),
+    byte("effectLevel", "EFFECT LEVEL", 12), byte("density", "DENSITY", 13), nibble_param("preDelay", "PRE-DELAY", 14, 2),
+    byte("lowCut", "LOW CUT", 16), byte("highCut", "HIGH CUT", 17), byte("pitch1", "PITCH 1", 18),
+    byte("level1", "LEVEL 1", 19), type_param("type1", "TYPE 1", 20, REVERB_DUAL_TYPES),
+    byte("time1", "TIME 1", 21), byte("tone1", "TONE 1", 22), byte("effectLevel1", "EFFECT LEVEL 1", 23),
+    byte("density1", "DENSITY 1", 24), nibble_param("preDelay1", "PRE-DELAY 1", 25, 2),
+    byte("lowCut1", "LOW CUT 1", 27), byte("highCut1", "HIGH CUT 1", 28), byte("pitch2", "PITCH 2", 29),
+    byte("level2", "LEVEL 2", 30), type_param("type2", "TYPE 2", 31, REVERB_DUAL_TYPES),
+    byte("time2", "TIME 2", 32), byte("tone2", "TONE 2", 33), byte("effectLevel2", "EFFECT LEVEL 2", 34),
+    byte("density2", "DENSITY 2", 35), nibble_param("preDelay2", "PRE-DELAY 2", 36, 2),
+    byte("lowCut2", "LOW CUT 2", 38), byte("highCut2", "HIGH CUT 2", 39),
 )
 
 SUMMARY_BLOCKS = [
@@ -189,10 +238,178 @@ SUMMARY_BLOCKS = [
     BlockDefinition("fx2", "FX 2", 8, [0x10, 0x00, 0x3E, 0x00], 2, FX_PARAMETERS),
     BlockDefinition("fx3", "FX 3", 9, [0x10, 0x00, 0x59, 0x00], 2, FX_PARAMETERS),
     BlockDefinition("reverb", "REVERB", 21, [0x10, 0x00, 0x74, 0x00], 42, REVERB_PARAMETERS),
-    BlockDefinition("pedalFx", "PEDAL FX", 23, [0x10, 0x00, 0x75, 0x00], 5, (
-        switch("sw", "SW", 0), byte("type", "TYPE", 1), byte("effectLevel", "EFFECT LEVEL", 3), byte("directMix", "DIRECT MIX", 4),
+    BlockDefinition("pedalFx", "PEDAL FX", 23, [0x10, 0x00, 0x75, 0x00], 22, (
+        switch("sw", "SW", 0), type_param("type", "TYPE", 1, PEDAL_FX_TYPES),
+        byte("pitch", "PITCH", 2), byte("effectLevel", "EFFECT LEVEL", 3), byte("directMix", "DIRECT MIX", 4),
+        type_param("wahType", "WAH TYPE", 5, PEDAL_WAH_TYPES), nibble_param("pedalMin", "PEDAL MIN", 6, 4),
+        nibble_param("pedalMax", "PEDAL MAX", 10, 4), nibble_param("wahPedalPosition", "WAH:PEDAL POSITION", 14, 4),
+        nibble_param("pedalBendPedalPosition", "PEDAL BEND:PEDAL POSITION", 18, 4),
     )),
+    BlockDefinition("fx4", "FX 4", 31, [0x10, 0x02, 0x01, 0x00], 2, FX_PARAMETERS),
 ]
+
+
+def parameter_id(display_name: str) -> str:
+    text = display_name.lower().replace("#", " number ").replace("+", " plus ")
+    if text.startswith("-"):
+        text = "minus " + text[1:]
+    text = text.replace("-", " ")
+    parts = ["".join(ch for ch in part if ch.isalnum()) for part in text.replace(":", " ").split()]
+    parts = [part for part in parts if part]
+    if not parts:
+        return "parameter"
+    return parts[0] + "".join(part[:1].upper() + part[1:] for part in parts[1:])
+
+
+def fx_param(offset: int, display_name: str, kind: str = "byte", byte_count: int = 1) -> Parameter:
+    id_ = parameter_id(display_name)
+    if kind == "bool":
+        return switch(id_, display_name, offset)
+    if kind == "nibbles":
+        return nibble_param(id_, display_name, offset, byte_count)
+    return byte(id_, display_name, offset)
+
+
+FX_ALGORITHM_TEMPLATES: list[tuple[str, str, int, tuple[Parameter, ...]]] = [
+    ("AGSim", "AC GUITAR SIM", 4, tuple(fx_param(offset, name) for offset, name in [
+        (0, "BODY"), (1, "LOW"), (2, "HIGH"), (3, "LEVEL"),
+    ])),
+    ("AcReso", "AC RESONANCE", 4, tuple(fx_param(offset, name) for offset, name in [
+        (0, "TYPE"), (1, "RESONANCE"), (2, "TONE"), (3, "LEVEL"),
+    ])),
+    ("AWah", "AUTO WAH", 8, (
+        fx_param(0, "FILTER MODE"), fx_param(1, "RATE"), fx_param(2, "DEPTH"),
+        fx_param(3, "EFFECT LEVEL"), fx_param(4, "FREQUENCY"), fx_param(5, "RESONANCE"),
+        fx_param(6, "WAVEFORM", "bool"), fx_param(7, "DIRECT MIX"),
+    )),
+    ("Chorus", "CHORUS", 29, tuple(
+        fx_param(offset, name, "bool" if name in {"OUTPUT MODE", "PREAMP SW", "WAVEFORM", "WAVEFORM 1", "WAVEFORM 2"} else "byte")
+        for offset, name in [
+            (0, "TYPE"), (1, "DIRECT LEVEL"), (2, "OUTPUT MODE"), (3, "SWEETNESS"),
+            (4, "BELL"), (5, "PREAMP SW"), (6, "PREAMP GAIN"), (7, "PREAMP LEVEL"),
+            (8, "RATE"), (9, "DEPTH"), (10, "PRE-DELAY"), (11, "EFFECT LEVEL"),
+            (12, "WAVEFORM"), (13, "LOW CUT"), (14, "HIGH CUT"), (15, "RATE 1"),
+            (16, "DEPTH 1"), (17, "PRE-DELAY 1"), (18, "EFFECT LEVEL 1"),
+            (19, "WAVEFORM 1"), (20, "LOW CUT 1"), (21, "HIGH CUT 1"), (22, "RATE 2"),
+            (23, "DEPTH 2"), (24, "PRE-DELAY 2"), (25, "EFFECT LEVEL 2"),
+            (26, "WAVEFORM 2"), (27, "LOW CUT 2"), (28, "HIGH CUT 2"),
+        ]
+    )),
+    ("CVibe", "CLASSIC-VIBE", 4, (
+        fx_param(0, "MODE", "bool"), fx_param(1, "RATE"), fx_param(2, "DEPTH"), fx_param(3, "EFFECT LEVEL"),
+    )),
+    ("Comp", "COMPRESSOR", 7, tuple(fx_param(offset, name) for offset, name in [
+        (0, "TYPE"), (1, "SUSTAIN"), (2, "ATTACK"), (3, "LEVEL"), (4, "TONE"), (5, "RATIO"), (6, "DIRECT MIX"),
+    ])),
+    ("Defretter", "DEFRETTER", 7, tuple(fx_param(offset, name) for offset, name in [
+        (0, "SENS"), (1, "DEPTH"), (2, "TONE"), (3, "EFFECT LEVEL"), (4, "ATTACK"), (5, "RESONANCE"), (6, "DIRECT MIX"),
+    ])),
+    ("Feedbacker", "FEEDBACKER", 9, (
+        fx_param(0, "MODE", "bool"), fx_param(1, "TRIGGER", "bool"), fx_param(2, "DEPTH"),
+        fx_param(3, "RISE TIME"), fx_param(4, "OCT RISE TIME"), fx_param(5, "FEEDBACK"),
+        fx_param(6, "OCT FEEDBACK"), fx_param(7, "VIB RATE"), fx_param(8, "VIB DEPTH"),
+    )),
+    ("Flanger", "FLANGER", 16, (
+        fx_param(0, "RATE"), fx_param(1, "DEPTH"), fx_param(2, "RESONANCE"),
+        fx_param(3, "MANUAL"), fx_param(4, "TURBO", "bool"), fx_param(5, "WAVEFORM", "bool"),
+        fx_param(6, "STEP RATE"), fx_param(7, "SEPARATION"), fx_param(8, "EFFECT LEVEL"),
+        fx_param(9, "LOW DAMP", "nibbles", 2), fx_param(11, "HIGH DAMP", "nibbles", 2),
+        fx_param(13, "LOW CUT"), fx_param(14, "HIGH CUT"), fx_param(15, "DIRECT MIX"),
+    )),
+    ("Harmonist", "HARMONIST", 39, tuple([
+        fx_param(0, "VOICE"), fx_param(1, "HR1:HARMONY"), fx_param(2, "HR2:HARMONY"),
+        fx_param(3, "HR1:LEVEL"), fx_param(4, "HR1:PRE-DELAY", "nibbles", 4),
+        fx_param(8, "HR1:FEEDBACK"), fx_param(9, "DIRECT LEVEL"), fx_param(10, "HR2:LEVEL"),
+        fx_param(11, "HR2:PRE-DELAY", "nibbles", 4),
+        *[fx_param(offset, f"HR1:{note}") for offset, note in enumerate(["C", "Db", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"], 15)],
+        *[fx_param(offset, f"HR2:{note}") for offset, note in enumerate(["C", "Db", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"], 27)],
+    ])),
+    ("Humanizer", "HUMANIZER", 8, tuple(fx_param(offset, name, "bool" if name == "MODE" else "byte") for offset, name in [
+        (0, "MODE"), (1, "VOWEL1"), (2, "VOWEL2"), (3, "SENS"), (4, "RATE"), (5, "DEPTH"), (6, "MANUAL"), (7, "LEVEL"),
+    ])),
+    ("Octave", "OCTAVE", 6, tuple(fx_param(offset, name, "bool" if name == "TYPE" else "byte") for offset, name in [
+        (0, "TYPE"), (1, "-2OCT"), (2, "-1OCT"), (3, "DIRECT LEVEL"), (4, "RANGE"), (5, "OCTAVE LEVEL"),
+    ])),
+    ("Overtone", "OVERTONE", 8, tuple(fx_param(offset, name, "bool" if name == "OUTPUT MODE" else "byte") for offset, name in [
+        (0, "LOWER LEVEL"), (1, "UPPER LEVEL"), (2, "UNISON LEVEL"), (3, "DIRECT LEVEL"),
+        (4, "DETUNE"), (5, "OUTPUT MODE"), (6, "LOW"), (7, "HIGH"),
+    ])),
+    ("Pan", "PAN", 5, tuple(fx_param(offset, name) for offset, name in [
+        (0, "RATE"), (1, "DEPTH"), (2, "WAVEFORM"), (3, "EFFECT LEVEL"), (4, "DIRECT MIX"),
+    ])),
+    ("Phaser", "PHASER", 18, (
+        fx_param(0, "TYPE", "bool"), fx_param(1, "STAGE"), fx_param(2, "RATE"),
+        fx_param(3, "DEPTH"), fx_param(4, "RESONANCE"), fx_param(5, "MANUAL"),
+        fx_param(6, "WAVEFORM", "bool"), fx_param(7, "STEP RATE"), fx_param(8, "BI-PHASE", "bool"),
+        fx_param(9, "SEPARATION"), fx_param(10, "LOW DAMP", "nibbles", 2),
+        fx_param(12, "HIGH DAMP", "nibbles", 2), fx_param(14, "LOW CUT"),
+        fx_param(15, "HIGH CUT"), fx_param(16, "EFFECT LEVEL"), fx_param(17, "DIRECT MIX"),
+    )),
+    ("PitchShift", "PITCH SHIFTER", 19, (
+        fx_param(0, "VOICE"), fx_param(1, "PS1:PITCH"), fx_param(2, "PS2:PITCH"),
+        fx_param(3, "DIRECT LEVEL"), fx_param(4, "PS1:MODE"), fx_param(5, "PS1:FINE"),
+        fx_param(6, "PS1:PRE-DELAY", "nibbles", 4), fx_param(10, "PS1:LEVEL"),
+        fx_param(11, "PS1:FEEDBACK"), fx_param(12, "PS2:MODE"), fx_param(13, "PS2:FINE"),
+        fx_param(14, "PS2:PRE-DELAY", "nibbles", 4), fx_param(18, "PS2:LEVEL"),
+    )),
+    ("RingMod", "RING MOD", 6, tuple(fx_param(offset, name, "bool" if name == "INTELLIGENT" else "byte") for offset, name in [
+        (0, "INTELLIGENT"), (1, "FREQUENCY"), (2, "FREQ MOD RATE"), (3, "FREQ MOD DEPTH"), (4, "EFFECT LEVEL"), (5, "DIRECT MIX"),
+    ])),
+    ("Rotary", "ROTARY", 10, tuple(fx_param(offset, name, "bool" if name == "SPEED SELECT" else "byte") for offset, name in [
+        (0, "SPEED SELECT"), (1, "SLOW RATE"), (2, "FAST RATE"), (3, "EFFECT LEVEL"), (4, "RISE TIME"),
+        (5, "FALL TIME"), (6, "MIC DISTANCE"), (7, "ROTOR/HORN"), (8, "DRIVE"), (9, "DIRECT MIX"),
+    ])),
+    ("SitarSim", "SITAR SIM", 7, tuple(fx_param(offset, name) for offset, name in [
+        (0, "SENS"), (1, "DEPTH"), (2, "TONE"), (3, "EFFECT LEVEL"), (4, "RESONANCE"), (5, "BUZZ"), (6, "DIRECT MIX"),
+    ])),
+    ("Slicer", "SLICER", 7, (
+        fx_param(0, "PATTERN"), fx_param(1, "RATE"), fx_param(2, "TRIGGER", "bool"),
+        fx_param(3, "EFFECT LEVEL"), fx_param(4, "ATTACK"), fx_param(5, "DUTY"), fx_param(6, "DIRECT MIX"),
+    )),
+    ("SlowGear", "SLOW GEAR", 3, tuple(fx_param(offset, name) for offset, name in [(0, "SENS"), (1, "RISE TIME"), (2, "LEVEL")])),
+    ("SoundHold", "SOUND HOLD", 3, (fx_param(0, "TRIGGER", "bool"), fx_param(1, "RISE TIME"), fx_param(2, "EFFECT LEVEL"))),
+    ("SBend", "S-BEND", 4, (fx_param(0, "TRIGGER", "bool"), fx_param(1, "PITCH"), fx_param(2, "RISE TIME"), fx_param(3, "FALL TIME"))),
+    ("Tremolo", "TREMOLO", 7, tuple(fx_param(offset, name, "bool" if name == "TRIGGER" else "byte") for offset, name in [
+        (0, "RATE"), (1, "DEPTH"), (2, "WAVEFORM"), (3, "EFFECT LEVEL"), (4, "TRIGGER"), (5, "RISE TIME"), (6, "DIRECT MIX"),
+    ])),
+    ("TWah", "TOUCH WAH", 8, tuple(fx_param(offset, name, "bool" if name == "POLARITY" else "byte") for offset, name in [
+        (0, "FILTER MODE"), (1, "POLARITY"), (2, "SENS"), (3, "FREQUENCY"), (4, "RESONANCE"),
+        (5, "DECAY"), (6, "EFFECT LEVEL"), (7, "DIRECT MIX"),
+    ])),
+    ("Vibrato", "VIBRATO", 7, tuple(fx_param(offset, name, "bool" if name == "TRIGGER" else "byte") for offset, name in [
+        (0, "RATE"), (1, "DEPTH"), (2, "COLOR"), (3, "EFFECT LEVEL"), (4, "TRIGGER"), (5, "RISE TIME"), (6, "DIRECT MIX"),
+    ])),
+]
+
+
+def fx_algorithm_blocks() -> list[BlockDefinition]:
+    def add_offset(address: list[int], offset: int) -> list[int]:
+        value = 0
+        for byte_value in address:
+            value = (value << 7) | byte_value
+        value += offset
+        return [(value >> shift) & 0x7F for shift in (21, 14, 7, 0)]
+
+    blocks: list[BlockDefinition] = []
+    for fx_number, base, chain_value in [
+        (1, [0x10, 0x00, 0x24, 0x00], 7),
+        (2, [0x10, 0x00, 0x3F, 0x00], 8),
+        (3, [0x10, 0x00, 0x5A, 0x00], 9),
+        (4, [0x10, 0x02, 0x02, 0x00], 31),
+    ]:
+        for index, (suffix, display_name, size, parameters) in enumerate(FX_ALGORITHM_TEMPLATES):
+            blocks.append(BlockDefinition(
+                f"fx{fx_number}{suffix}",
+                f"FX {fx_number} {display_name}",
+                chain_value,
+                add_offset(base, index * 0x80),
+                size,
+                parameters,
+            ))
+    return blocks
+
+
+FX_ALGORITHM_BLOCKS = fx_algorithm_blocks()
 
 
 def divider_parameters(offset: int) -> tuple[Parameter, ...]:
@@ -420,9 +637,33 @@ def read_user_patch(slot: str, timeout: float, requests: list[PatchReadRequest] 
     return snapshot
 
 
+def read_preset_patch(slot: str, timeout: float, requests: list[PatchReadRequest] | None = None) -> dict[str, Any]:
+    patch_base = preset_patch_base(slot)
+    source_requests = requests or READ_PLAN
+    remapped_requests = [
+        PatchReadRequest(request.label, remap_temporary_patch_address(request.address, patch_base), request.size)
+        for request in source_requests
+    ]
+    raw = read_data_sets(timeout=timeout, requests=remapped_requests)
+    snapshot = empty_snapshot()
+    for source_request, remapped_request in zip(source_requests, remapped_requests):
+        data = raw.get(address_key(remapped_request.address))
+        if data is not None:
+            apply_data_set(snapshot, source_request.address, data)
+    snapshot["sourceSlot"] = normalize_preset_slot(slot)
+    snapshot["sourceAddress"] = hex_bytes(patch_base)
+    snapshot["sourceType"] = "preset"
+    return snapshot
+
+
 def user_patch_base(slot: str) -> list[int]:
     normalized = normalize_user_slot(slot)
     return seven_bit_address(seven_bit_address_value(USER_PATCH_1) + user_patch_zero_based_index(normalized) * USER_PATCH_STRIDE)
+
+
+def preset_patch_base(slot: str) -> list[int]:
+    normalized = normalize_preset_slot(slot)
+    return seven_bit_address(seven_bit_address_value(PRESET_PATCH_1) + preset_patch_zero_based_index(normalized) * USER_PATCH_STRIDE)
 
 
 def user_patch2_base(slot: str) -> list[int]:
@@ -437,6 +678,14 @@ def user_patch3_base(slot: str) -> list[int]:
 
 def user_patch_zero_based_index(slot: str) -> int:
     normalized = normalize_user_slot(slot)
+    bank_text, number_text = normalized[1:].split("-", 1)
+    bank = int(bank_text)
+    number = int(number_text)
+    return (bank - 1) * USER_PATCHES_PER_BANK + (number - 1)
+
+
+def preset_patch_zero_based_index(slot: str) -> int:
+    normalized = normalize_preset_slot(slot)
     bank_text, number_text = normalized[1:].split("-", 1)
     bank = int(bank_text)
     number = int(number_text)
@@ -458,6 +707,23 @@ def normalize_user_slot(slot: str) -> str:
     if not 1 <= number <= USER_PATCHES_PER_BANK:
         raise ValueError("user patch number must be 1...5")
     return f"U{bank:02d}-{number}"
+
+
+def normalize_preset_slot(slot: str) -> str:
+    text = slot.strip().upper()
+    if not text.startswith("P") or "-" not in text:
+        raise ValueError("preset slot must look like P01-1")
+    bank_text, number_text = text[1:].split("-", 1)
+    try:
+        bank = int(bank_text)
+        number = int(number_text)
+    except ValueError as error:
+        raise ValueError("preset slot must look like P01-1") from error
+    if not 1 <= bank <= USER_BANK_COUNT:
+        raise ValueError(f"preset bank must be P01...P{USER_BANK_COUNT:02d}")
+    if not 1 <= number <= USER_PATCHES_PER_BANK:
+        raise ValueError("preset patch number must be 1...5")
+    return f"P{bank:02d}-{number}"
 
 
 def normalize_user_bank(bank: str) -> str:
@@ -488,6 +754,11 @@ def remap_temporary_patch_address(address: list[int], patch_base: list[int]) -> 
 
 def read_data_sets(timeout: float, requests: list[PatchReadRequest]) -> dict[str, list[int]]:
     state = transact_requests(timeout=timeout, requests=requests)
+    return dict(state.data_sets)
+
+
+def read_data_sets_lenient(timeout: float, requests: list[PatchReadRequest]) -> dict[str, list[int]]:
+    state = transact_requests(timeout=timeout, requests=requests, require_all=False)
     return dict(state.data_sets)
 
 
@@ -566,7 +837,7 @@ def send_channel_voice(message: list[int], delay: float = 0.1) -> None:
             midi.cm.MIDIClientDispose(client)
 
 
-def transact_requests(timeout: float, requests: list[PatchReadRequest]) -> "PatchReadState":
+def transact_requests(timeout: float, requests: list[PatchReadRequest], *, require_all: bool = True) -> "PatchReadState":
     midi = CoreMIDI()
     state = PatchReadState()
 
@@ -603,20 +874,29 @@ def transact_requests(timeout: float, requests: list[PatchReadRequest]) -> "Patc
 
     try:
         wait_for_quiet_input(state)
-        deadline = time.monotonic() + timeout
-        
-        # Send all requests in a burst with small inter-message delays
-        for request in requests:
-            send_message(midi, output_port.value, destination, request.message)
-            time.sleep(0.01) # Small delay to avoid clogging the buffer
 
-        # Wait for the full set of replies
-        while time.monotonic() < deadline:
-            if state.has_expected_responses():
-                return state
-            time.sleep(0.05)
+        request_delay = float(os.environ.get("GT1000_REQUEST_DELAY", str(DEFAULT_REQUEST_DELAY)))
+        request_retries = int(os.environ.get("GT1000_REQUEST_RETRIES", "1"))
+        # Send requests one at a time. Large RQ1 bursts can leave the tested unit
+        # visible to CoreMIDI but no longer replying to SysEx.
+        for request in requests:
+            for _attempt in range(request_retries + 1):
+                if state.has_response(request.address):
+                    break
+                send_message(midi, output_port.value, destination, request.message)
+                time.sleep(request_delay)
+                request_deadline = time.monotonic() + timeout
+                while time.monotonic() < request_deadline and not state.has_response(request.address):
+                    time.sleep(0.01)
+            if not state.has_response(request.address):
+                if not require_all:
+                    continue
+                missing = address_key(request.address)
+                raise LiveMIDIError(f"Timed out waiting for GT-1000 patch replies. Missing: ['{missing}']\nPartial snapshot:\n{snapshot_text_summary(state.snapshot)}")
 
         if state.has_expected_responses():
+            return state
+        if not require_all:
             return state
         raise LiveMIDIError(f"Timed out waiting for GT-1000 patch replies. Missing: {list(state.expected - state.received)}\nPartial snapshot:\n{snapshot_text_summary(state.snapshot)}")
     finally:
@@ -745,10 +1025,13 @@ def packets_from_packet_list(packet_list: ctypes.POINTER(MIDIPacketList)) -> lis
 
 
 def find_endpoint(midi: CoreMIDI, count_fn: Callable[[], int], endpoint_fn: Callable[[int], int]) -> int | None:
-    for index in range(count_fn()):
-        endpoint = endpoint_fn(index)
-        if is_default_gt1000_endpoint(midi.endpoint_name(endpoint)):
-            return endpoint
+    for attempt in range(20):
+        for index in range(count_fn()):
+            endpoint = endpoint_fn(index)
+            if is_default_gt1000_endpoint(midi.endpoint_name(endpoint)):
+                return endpoint
+        if attempt < 19:
+            time.sleep(0.25)
     return None
 
 
@@ -857,7 +1140,7 @@ def apply_data_set(snapshot: dict[str, Any], address: list[int], data: list[int]
     elif address == TEMPORARY_PATCH_EFFECT:
         apply_patch_effect(snapshot, data)
     else:
-        definition = next((block for block in SUMMARY_BLOCKS if block.address == address), None)
+        definition = next((block for block in list(SUMMARY_BLOCKS) + list(FX_ALGORITHM_BLOCKS) if block.address == address), None)
         if definition:
             apply_block_summary(snapshot, definition, data)
         elif is_assign_address(address):
@@ -955,6 +1238,21 @@ def block_from_definition(
             "rawValue": raw_value,
             "displayValue": display_parameter_value(parameter, raw_value),
         })
+    named_offsets = {
+        offset
+        for parameter in definition.parameters
+        for offset in range(parameter.offset, parameter.offset + parameter.byte_count)
+    }
+    raw_parameters = [
+        {
+            "id": f"param{offset}",
+            "displayName": f"PARAM {offset}",
+            "offset": offset,
+            "rawValue": value,
+            "isNamed": offset in named_offsets,
+        }
+        for offset, value in enumerate(data)
+    ]
     sw = next((param for param in parameters if param["id"] == "sw"), None)
     type_value = next((param for param in parameters if param["id"] == "type"), None)
     chain_values = {element["rawValue"] for element in snapshot["signalChainElements"]}
@@ -968,6 +1266,7 @@ def block_from_definition(
         "isEnabled": (sw["rawValue"] == 1) if sw else None,
         "typeName": type_value["displayValue"] if type_value else None,
         "parameters": parameters,
+        "rawParameters": raw_parameters,
         "rawDataHex": hex_string(data),
     }
 

@@ -29,6 +29,7 @@
 | `30 00 00 00` | Preset patch 1, read-only |
 
 User patch addresses advance by Roland 7-bit address arithmetic, not simple 8-bit addition.
+Preset primary patch addresses use the same stride from documented base `30 00 00 00`; preset extra STOMPBOX record bases are not currently documented in this repo. During destructive live validation on the tested GT-1000, direct preset-memory reads at `30 00 00 00` did not reply, so preset-memory workflows need renewed live validation before relying on them for recovery.
 
 ## Temporary Patch Subrecords
 
@@ -66,12 +67,49 @@ All offsets below are relative to temporary patch base `10 00 00 00`.
 | `00 74 00` | `10 00 74 00` | Reverb | Effect block summary address |
 | `00 75 00` | `10 00 75 00` | Pedal FX | Effect block summary address |
 
+FX algorithm-specific records live in contiguous `00 80` address steps after each FX selector record. FX1-FX3 live in the primary PatchEfct allocation; FX4 lives in the GT-1000-only Patch3 allocation:
+
+| FX block | First algorithm record | Last algorithm record |
+|---|---|---|
+| FX 1 | `10 00 24 00` (`fx1AGSim`) | `10 00 3D 00` (`fx1Vibrato`) |
+| FX 2 | `10 00 3F 00` (`fx2AGSim`) | `10 00 58 00` (`fx2Vibrato`) |
+| FX 3 | `10 00 5A 00` (`fx3AGSim`) | `10 00 73 00` (`fx3Vibrato`) |
+| FX 4 | `10 02 02 00` (`fx4AGSim`) | `10 02 1D 00` (`fx4Vibrato`) |
+
+The CLI exposes these as named schema/edit blocks and preserves them in clone/copy/export/import/exchange/insert operations.
+
 Additional temporary patch STOMPBOX selection records:
 
 | Address | Record | Size |
 |---|---|---|
 | `10 01 00 00` | PatchStompBox2 | `00 00 00 11` |
 | `10 02 00 00` | PatchStompBox3 | `00 00 00 25` |
+
+Patch2 also contains GT-1000-specific Bass Mode support records documented in the current MIDI implementation:
+
+| Address | Record |
+|---|---|
+| `10 01 01 00` | FX1 Chorus Bass |
+| `10 01 02 00` | FX1 Flanger Bass |
+| `10 01 03 00` | FX2 Chorus Bass |
+| `10 01 04 00` | FX2 Flanger Bass |
+| `10 01 05 00` | FX3 Chorus Bass |
+| `10 01 06 00` | FX3 Flanger Bass |
+| `10 01 0A 00` | PatchEfct2 |
+
+Patch3 contains GT-1000-only FX4 and Bass Distortion support records:
+
+| Address | Record |
+|---|---|
+| `10 02 01 00` | FX4 selector |
+| `10 02 02 00`...`10 02 1D 00` | FX4 algorithm records |
+| `10 02 1F 00` | FX1 Distortion Bass |
+| `10 02 20 00` | FX2 Distortion Bass |
+| `10 02 21 00` | FX3 Distortion Bass |
+| `10 02 22 00` | FX4 Distortion Bass |
+
+The CLI uses these Patch2/Patch3 addresses for supported GT-1000 Tone Studio `.tsl` import planning. GT-1000CORE compatibility should be handled conservatively because the MIDI implementation marks FX4 and some Patch2/Patch3 records as GT-1000-only.
+FX4 is also exposed through `patch schema fx4`, `patch schema fx4<Algorithm>`, `patch set`, `patch raw-set`, and Assign target aliases such as `fx4Chorus.effectLevel2`.
 
 ## Current CLI Read Plan
 
@@ -83,7 +121,31 @@ Additional temporary patch STOMPBOX selection records:
 
 Physical control mappings require extra reads of `PatchCommon`, `SystemControl`, and Assign blocks. See [Patch Controls](patch-controls.md).
 
-`scripts/gt1000-agent patch clone <source> <destination> --live` copies the known writable patch records used by the CLI: `PatchCommon`, `PatchStompBox`, Assign 1...16, `PatchEfct`, decoded effect block records, `PatchStompBox2`, and `PatchStompBox3`. It does not guess undocumented record sizes such as `PatchLed`.
+`scripts/gt1000-agent patch clone <source> <destination> --live` copies the known writable user patch records used by the CLI: `PatchCommon`, `PatchStompBox`, `PatchLed`, Assign 1...16, `PatchEfct`, decoded effect block records, `PatchStompBox2`, and `PatchStompBox3`.
+
+`scripts/gt1000-agent patch restore-preset <preset> <destination> --live` copies only the documented primary preset patch records: `PatchCommon`, `PatchStompBox`, `PatchLed`, Assign 1...16, `PatchEfct`, and decoded effect block records. It does not copy preset extra STOMPBOX records because their preset address bases are not documented here. On the tested GT-1000, preset memory does not consistently answer FX4 algorithm-record addresses with the same sizes as user-patch memory, so FX4 algorithm records are skipped for preset restore. Direct preset-memory reads at `30 00 00 00` also did not reply during destructive live validation and need renewed live validation after the unit resumes SysEx replies.
+
+## Patch LED
+
+`PatchLed` starts at temporary address `10 00 02 00` and has size `00 00 00 1E`.
+
+Known color offsets:
+
+| Offset | Field | Range |
+|---:|---|---|
+| `00`/`01` | NUM1 off/on color | off `0`...`10`, on `0`...`21` |
+| `02`/`03` | NUM2 off/on color | off `0`...`10`, on `0`...`21` |
+| `04`/`05` | NUM3 off/on color | off `0`...`10`, on `0`...`21` |
+| `06`/`07` | NUM4 off/on color | off `0`...`10`, on `0`...`21` |
+| `08`/`09` | NUM5 off/on color | off `0`...`10`, on `0`...`21` |
+| `0A`/`0B` | BANK DOWN off/on color | off `0`...`10`, on `0`...`21` |
+| `0C`/`0D` | BANK UP off/on color | off `0`...`10`, on `0`...`21` |
+| `0E`/`0F` | CTL1 off/on color | off `0`...`10`, on `0`...`21` |
+| `10`/`11` | CTL2 off/on color | off `0`...`10`, on `0`...`21` |
+| `12`/`13` | CTL3 off/on color | off `0`...`10`, on `0`...`21` |
+| `14`/`15` | EXP1 SW off/on color | off `0`...`10`, on `0`...`21` |
+
+Color values `0`...`10` are `OFF`, `RED`, `BLUE`, `LIGHT BLUE`, `ORANGE`, `GREEN`, `YELLOW`, `WHITE`, `PURPLE`, `PINK`, and `CYAN`. On-color fields additionally support `AUTO` and `AUTO <color>` values `11`...`21`.
 
 ## System Common Known Offsets
 

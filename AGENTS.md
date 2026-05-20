@@ -6,11 +6,12 @@
 - Main code lives in `skills/gt1000/tools/gt1000`.
 - Top-level `tools/gt1000` files are compatibility wrappers only.
 - Main command surface is `scripts/gt1000-agent`.
+- Every CLI command should have unit test coverage and an explicit live test verification path. For commands that write, the live verification must use the command's validated/read-back verification flow where practical.
 - Useful checks:
-  - `python3 -m unittest discover -s tests -q`
-  - `GT1000_LIVE=1 python3 -m unittest tests.test_live_skill -q`
-  - `GT1000_LIVE=1 GT1000_ALLOW_DESTRUCTIVE=1 python3 -m unittest tests.test_live_skill -q`
-  - `scripts/gt1000-agent --pretty ports --live`
+  - `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -q`
+  - `GT1000_LIVE=1 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_live_skill -q`
+  - `GT1000_LIVE=1 GT1000_ALLOW_DESTRUCTIVE=1 GT1000_LIVE_BACKUP_DIR=/tmp/gt1000-live-backups PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_live_skill -q`
+  - `scripts/gt1000-agent --pretty ports --live --timeout 8`
   - `scripts/gt1000-agent --pretty patch overview --live --timeout 8`
   - `scripts/gt1000-agent --pretty patch chain --live --timeout 8`
   - `scripts/gt1000-agent --pretty patch plan default`
@@ -41,6 +42,8 @@
 - `skills/gt1000/tools/gt1000/live.py` uses Python `ctypes` against CoreMIDI.
 - CoreMIDI callbacks run on CoreMIDI-owned threads. Copy packet bytes in the callback, then update guarded Python state.
 - Run live patch reads sequentially. Separate CLI processes can interleave GT-1000 replies on the same MIDI source.
+- If `ports --live` itself hangs or times out, stop live testing and recover CoreMIDI/the USB connection before continuing. Quit BOSS Tone Studio if it is open, then power-cycle or reconnect the GT-1000. If USB still shows `GT-1000` but CoreMIDI `MIDIGetNumberOfDestinations()` hangs, restart macOS before more live verification.
+- If `ports --live` still lists the normal `GT-1000` endpoints but known-good SysEx reads such as `system controls --live` time out, stop live write testing and power-cycle or reconnect the GT-1000 before continuing. Repeated large reads can leave the tested unit visible to CoreMIDI but not replying to SysEx.
 - A quick endpoint inventory should usually show:
   - Destination: `GT-1000`
   - Destination: `GT-1000 DAW CTRL`
@@ -52,6 +55,7 @@
 - Temporary patch writes are allowed through validated CLI plans and should be read-back verified.
 - While developing the skill, agent-run user-slot writes are restricted to `U10-1` through `U11-5`; do not touch the lower banks unless explicitly instructed. The skill/CLI itself should support any valid user slot.
 - Use `--verify` for live write commands so every written range is re-read and compared.
+- The destructive live test suite requires `GT1000_LIVE_BACKUP_DIR`, backs up `U10-1` through `U11-2` plus the System Control section, and restores them afterward. It also exercises MIDI CC, Bank Select, Program Change, and `patch select`, ending that command group by selecting `U10-1`. Keep the backup directory so the slot liveset backup and System Control JSON backup remain available for manual recovery if the run is interrupted.
 - Current proven commands:
   - `scripts/gt1000-agent --pretty patch apply default --live --verify --timeout 20`
   - `scripts/gt1000-agent --pretty patch apply 4cm-template --live --verify --timeout 20`

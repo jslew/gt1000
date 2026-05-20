@@ -32,7 +32,7 @@ The Parameter Guide defines dedicated sections for:
 | Delay 1-4 | Individual delay blocks |
 | Master Delay | Global/primary delay block with multiple delay types |
 | Chorus | Dedicated chorus block |
-| FX1-FX3 | Multi-effect slots with many effect algorithms |
+| FX1-FX4 | Multi-effect slots with many effect algorithms; FX4 is a GT-1000-specific Patch3 block |
 | Reverb | Space/ambience |
 | Pedal FX | Wah/pedal-controlled effects |
 | Foot Volume | Volume pedal point in the chain |

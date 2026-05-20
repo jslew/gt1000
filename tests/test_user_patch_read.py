@@ -1,5 +1,7 @@
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 sys.dont_write_bytecode = True
@@ -12,6 +14,11 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(live.user_patch_base("U01-1"), [0x20, 0x00, 0x00, 0x00])
         self.assertEqual(live.user_patch_base("u01-5"), [0x20, 0x04, 0x00, 0x00])
         self.assertEqual(live.user_patch_base("U03-1"), [0x20, 0x0A, 0x00, 0x00])
+
+    def test_preset_slot_addresses_use_documented_primary_base(self):
+        self.assertEqual(live.preset_patch_base("P01-1"), [0x30, 0x00, 0x00, 0x00])
+        self.assertEqual(live.preset_patch_base("p01-5"), [0x30, 0x04, 0x00, 0x00])
+        self.assertEqual(live.preset_patch_base("P03-1"), [0x30, 0x0A, 0x00, 0x00])
 
     def test_user_bank_slots_are_normalized(self):
         self.assertEqual(live.user_bank_slots("u1"), ["U01-1", "U01-2", "U01-3", "U01-4", "U01-5"])
@@ -63,6 +70,32 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(result["masterPatchLevel"], 90)
         self.assertTrue(result["masterCarryoverEnabled"])
         self.assertEqual(result["controlAssignInputSensitivity"], 100)
+
+    def test_patch_preset_command_reads_preset_snapshot(self):
+        snapshot = {
+            "sourceSlot": "P01-1",
+            "sourceAddress": ["30", "00", "00", "00"],
+            "sourceType": "preset",
+            "patchName": "PRESET",
+            "masterBPM": 120.0,
+            "masterPatchLevel": 90,
+            "masterKey": "C(Am)",
+            "ampControl1Enabled": False,
+            "ampControl2Enabled": False,
+            "masterCarryoverEnabled": True,
+            "controlAssignTempoHoldEnabled": False,
+            "controlAssignInputSensitivity": 100,
+            "signalChainElements": [],
+            "blocks": [],
+        }
+        args = agent_cli.build_parser().parse_args(["patch", "preset", "P01-1", "--live", "--view", "overview"])
+
+        with mock.patch.object(agent_cli, "read_preset_slot_snapshot", return_value=snapshot) as read_slot:
+            result = agent_cli.cmd_patch_preset(args)
+
+        read_slot.assert_called_once_with("P01-1", 8.0, view="overview")
+        self.assertEqual(result["patchName"], "PRESET")
+        self.assertEqual(result["masterPatchLevel"], 90)
 
     def test_patch_bank_command_reads_five_slots_sequentially(self):
         def fake_read(slot: str, timeout: float, *, view: str) -> dict:
@@ -257,13 +290,20 @@ class UserPatchReadTests(unittest.TestCase):
             for index, request in enumerate(requests)
         }
 
-        with mock.patch.object(agent_cli.live, "read_data_sets", return_value=source_data) as read_data_sets:
-            with mock.patch.object(agent_cli.patch_edit, "apply_plan", return_value={"plan": "clone:U03-2:U10-1", "writeCount": len(requests), "verified": True}) as apply_plan:
+        def fake_read_patch_records(label, timeout, requests):
+            return {
+                agent_cli.live.address_key(request.address): source_data[agent_cli.live.address_key(request.address)]
+                for request in requests
+            }
+
+        with mock.patch.object(agent_cli, "read_patch_records_lenient_with_timeout", side_effect=fake_read_patch_records) as read_patch_records:
+            with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"plan": "clone:U03-2:U10-1", "writeCount": len(requests), "verified": True}) as apply_plan:
                 result = agent_cli.cmd_patch_clone(args)
 
-        read_data_sets.assert_called_once()
-        self.assertEqual(read_data_sets.call_args.kwargs["timeout"], 20.0)
-        self.assertEqual(read_data_sets.call_args.kwargs["requests"][0].address, [0x20, 0x0B, 0x00, 0x00])
+        self.assertEqual(read_patch_records.call_count, 1)
+        self.assertEqual(read_patch_records.call_args_list[0].args[0], "patch clone U03-2 --live core records")
+        self.assertEqual(read_patch_records.call_args_list[0].args[1], 20.0)
+        self.assertEqual(read_patch_records.call_args_list[0].args[2][0].address, [0x20, 0x0B, 0x00, 0x00])
         plan = apply_plan.call_args.args[0]
         self.assertEqual(plan.id, "clone:U03-2:U10-1")
         self.assertEqual(plan.writes[0].address, [0x20, 0x2D, 0x00, 0x00])
@@ -279,6 +319,43 @@ class UserPatchReadTests(unittest.TestCase):
                 agent_cli.cmd_patch_clone(args)
 
         read_data_sets.assert_not_called()
+
+    def test_patch_export_uses_guarded_slot_reads(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "patches.json"
+            args = agent_cli.build_parser().parse_args(["patch", "export", "U03-2", "U03-3", "--output", str(output), "--live"])
+
+            def fake_read_records(label, timeout, requests):
+                return {
+                    agent_cli.live.address_key(request.address): [index % 0x80] * agent_cli.live.seven_bit_address_value(request.size)
+                    for index, request in enumerate(requests)
+                }
+
+            with mock.patch.object(agent_cli, "read_patch_records_lenient_with_timeout", side_effect=fake_read_records) as read_records:
+                result = agent_cli.cmd_patch_export(args)
+
+            self.assertEqual(read_records.call_count, 2)
+            self.assertTrue(all(call.args[1] == 20.0 for call in read_records.call_args_list))
+            self.assertEqual(read_records.call_args_list[0].args[2][0].address, [0x20, 0x0B, 0x00, 0x00])
+            self.assertEqual(read_records.call_args_list[1].args[2][0].address, [0x20, 0x0C, 0x00, 0x00])
+            self.assertEqual(result["format"], "gt1000-agent-liveset-v1")
+            self.assertEqual(result["patchCount"], 2)
+            self.assertTrue(output.is_file())
+
+    def test_persistent_master_set_reads_and_writes_full_patch_effect_record(self):
+        args = agent_cli.build_parser().parse_args(["patch", "master-set", "level", "95", "--live", "--user-slot", "U03-2", "--verify"])
+        record = [0] * agent_cli.live.seven_bit_address_value([0x00, 0x00, 0x01, 0x1C])
+
+        with mock.patch.object(agent_cli.live, "read_data_sets", return_value={"20 0B 10 00": record}) as read_data_sets:
+            with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"plan": "master-set:level:U03-2", "writeCount": 1, "verified": True}) as apply_plan:
+                result = agent_cli.cmd_patch_master_set(args)
+
+        self.assertEqual(read_data_sets.call_args.kwargs["requests"][0].address, [0x20, 0x0B, 0x10, 0x00])
+        plan = apply_plan.call_args.args[0]
+        self.assertEqual(plan.writes[0].address, [0x20, 0x0B, 0x10, 0x00])
+        self.assertEqual(plan.writes[0].data[0x5F:0x61], [0x05, 0x0F])
+        self.assertTrue(apply_plan.call_args.kwargs["verify"])
+        self.assertEqual(result["plan"], "master-set:level:U03-2")
 
     def test_control_change_message_is_typed_and_bounded(self):
         self.assertEqual(agent_cli.control_change_message(80, 127, 1), [0xB0, 80, 127])
@@ -304,7 +381,7 @@ class UserPatchReadTests(unittest.TestCase):
     def test_patch_set_bpm_command_applies_typed_plan(self):
         args = agent_cli.build_parser().parse_args(["patch", "set-bpm", "120.0", "--live", "--verify"])
 
-        with mock.patch.object(agent_cli.patch_edit, "apply_plan", return_value={"verified": True}) as apply:
+        with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"verified": True}) as apply:
             result = agent_cli.cmd_patch_set_bpm(args)
 
         plan = apply.call_args.args[0]
@@ -317,7 +394,7 @@ class UserPatchReadTests(unittest.TestCase):
     def test_patch_enable_command_applies_typed_switch_plan(self):
         args = agent_cli.build_parser().parse_args(["patch", "enable", "delay1", "--live", "--verify"])
 
-        with mock.patch.object(agent_cli.patch_edit, "apply_plan", return_value={"verified": True}) as apply:
+        with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"verified": True}) as apply:
             result = agent_cli.cmd_patch_enable(args)
 
         plan = apply.call_args.args[0]
@@ -330,7 +407,7 @@ class UserPatchReadTests(unittest.TestCase):
     def test_patch_disable_command_resolves_alias_and_user_slot(self):
         args = agent_cli.build_parser().parse_args(["patch", "disable", "ds1", "--live", "--user-slot", "U03-2"])
 
-        with mock.patch.object(agent_cli.patch_edit, "apply_plan", return_value={"verified": None}) as apply:
+        with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"verified": None}) as apply:
             result = agent_cli.cmd_patch_enable(args)
 
         plan = apply.call_args.args[0]
@@ -343,7 +420,7 @@ class UserPatchReadTests(unittest.TestCase):
     def test_patch_type_command_applies_typed_type_plan(self):
         args = agent_cli.build_parser().parse_args(["patch", "type", "ds1", "T-SCREAM", "--live", "--verify"])
 
-        with mock.patch.object(agent_cli.patch_edit, "apply_plan", return_value={"verified": True}) as apply:
+        with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"verified": True}) as apply:
             result = agent_cli.cmd_patch_type(args)
 
         plan = apply.call_args.args[0]
@@ -364,7 +441,7 @@ class UserPatchReadTests(unittest.TestCase):
         args = agent_cli.build_parser().parse_args(["patch", "move", "delay1", "--before", "chorus", "--live", "--verify"])
 
         with mock.patch.object(agent_cli, "read_live_snapshot", return_value=snapshot) as read_live:
-            with mock.patch.object(agent_cli.patch_edit, "apply_plan", return_value={"verified": True}) as apply:
+            with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"verified": True}) as apply:
                 result = agent_cli.cmd_patch_move(args)
 
         read_live.assert_called_once()
@@ -386,7 +463,7 @@ class UserPatchReadTests(unittest.TestCase):
         args = agent_cli.build_parser().parse_args(["patch", "move", "delay1", "--after", "chorus", "--live", "--user-slot", "U03-2"])
 
         with mock.patch.object(agent_cli, "read_user_slot_snapshot", return_value=snapshot) as read_slot:
-            with mock.patch.object(agent_cli.patch_edit, "apply_plan", return_value={"verified": None}) as apply:
+            with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"verified": None}) as apply:
                 result = agent_cli.cmd_patch_move(args)
 
         read_slot.assert_called_once_with("U03-2", 12.0, view="chain")
@@ -401,7 +478,7 @@ class UserPatchReadTests(unittest.TestCase):
             "patch", "assign-cc", "3", "delay1", "sw", "--cc", "80", "--mode", "moment", "--live", "--verify",
         ])
 
-        with mock.patch.object(agent_cli.patch_edit, "apply_plan", return_value={"verified": True}) as apply:
+        with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"verified": True}) as apply:
             result = agent_cli.cmd_patch_assign_cc(args)
 
         plan = apply.call_args.args[0]
@@ -425,7 +502,7 @@ class UserPatchReadTests(unittest.TestCase):
     def test_patch_tuner_assign_command_applies_typed_plan(self):
         args = agent_cli.build_parser().parse_args(["patch", "tuner-assign", "--live", "--verify"])
 
-        with mock.patch.object(agent_cli.patch_edit, "apply_plan", return_value={"verified": True}) as apply:
+        with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"verified": True}) as apply:
             result = agent_cli.cmd_patch_tuner_assign(args)
 
         plan = apply.call_args.args[0]
@@ -850,12 +927,33 @@ class UserPatchReadTests(unittest.TestCase):
         fx1 = next(block for block in live.SUMMARY_BLOCKS if block.id == "fx1")
         fx2 = next(block for block in live.SUMMARY_BLOCKS if block.id == "fx2")
         fx3 = next(block for block in live.SUMMARY_BLOCKS if block.id == "fx3")
+        fx4 = next(block for block in live.SUMMARY_BLOCKS if block.id == "fx4")
 
         self.assertEqual(fx1.size, 2)
         self.assertEqual(fx2.size, 2)
         self.assertEqual(fx3.size, 2)
+        self.assertEqual(fx4.address, [0x10, 0x02, 0x01, 0x00])
+        self.assertEqual(fx4.size, 2)
         self.assertEqual([parameter.id for parameter in fx1.parameters], ["sw", "type"])
         self.assertEqual(live.chain_element_name(20), "(RESERVED)")
+
+    def test_fx_algorithm_blocks_expose_named_records_without_changing_summary_reads(self):
+        fx1_chorus = next(block for block in live.FX_ALGORITHM_BLOCKS if block.id == "fx1Chorus")
+        fx2_pitch_shift = next(block for block in live.FX_ALGORITHM_BLOCKS if block.id == "fx2PitchShift")
+        fx1_tremolo = next(block for block in live.FX_ALGORITHM_BLOCKS if block.id == "fx1Tremolo")
+        fx1_touch_wah = next(block for block in live.FX_ALGORITHM_BLOCKS if block.id == "fx1TWah")
+        fx3_vibrato = next(block for block in live.FX_ALGORITHM_BLOCKS if block.id == "fx3Vibrato")
+        fx4_chorus = next(block for block in live.FX_ALGORITHM_BLOCKS if block.id == "fx4Chorus")
+
+        self.assertEqual(fx1_chorus.address, [0x10, 0x00, 0x27, 0x00])
+        self.assertEqual(fx1_chorus.size, 29)
+        self.assertIn("effectLevel2", [parameter.id for parameter in fx1_chorus.parameters])
+        self.assertEqual(fx2_pitch_shift.address, [0x10, 0x00, 0x4E, 0x00])
+        self.assertIn("ps1PreDelay", [parameter.id for parameter in fx2_pitch_shift.parameters])
+        self.assertEqual(fx1_tremolo.address, [0x10, 0x00, 0x3B, 0x00])
+        self.assertEqual(fx1_touch_wah.address, [0x10, 0x00, 0x3C, 0x00])
+        self.assertEqual(fx3_vibrato.address, [0x10, 0x00, 0x73, 0x00])
+        self.assertEqual(fx4_chorus.address, [0x10, 0x02, 0x05, 0x00])
 
 
 if __name__ == "__main__":

@@ -5,9 +5,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing
+import os
+import pickle
 import sys
+import tempfile
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 try:
     from tools.gt1000 import live, patch_edit
@@ -50,6 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     ports = subcommands.add_parser("ports", help="List live MIDI ports.")
     ports.add_argument("--live", action="store_true", help="Required for live MIDI port reads.")
+    ports.add_argument("--timeout", type=float, default=8.0, help="Live CoreMIDI port inventory timeout in seconds.")
     ports.set_defaults(func=cmd_ports)
 
     midi = subcommands.add_parser("midi", help="Send typed MIDI channel-voice messages.")
@@ -124,12 +130,24 @@ def build_parser() -> argparse.ArgumentParser:
     slot.add_argument("--timeout", type=float, default=8.0, help="Live read timeout in seconds.")
     slot.set_defaults(func=cmd_patch_slot)
 
+    preset = patch_subcommands.add_parser("preset", help="Read one preset patch's documented primary records without selecting it.")
+    preset.add_argument("slot", help="Preset slot such as P01-1.")
+    preset.add_argument("--live", action="store_true", help="Required because preset slots are read from the connected GT-1000.")
+    preset.add_argument("--view", choices=["overview", "chain", "controls", "summary", "full"], default="summary")
+    preset.add_argument("--timeout", type=float, default=8.0, help="Live read timeout in seconds.")
+    preset.set_defaults(func=cmd_patch_preset)
+
     bank = patch_subcommands.add_parser("bank", help="Read all five patches in a persistent user bank.")
     bank.add_argument("bank", help="User bank such as U01.")
     bank.add_argument("--live", action="store_true", help="Required because user banks are read from the connected GT-1000.")
     bank.add_argument("--view", choices=["overview", "chain", "controls", "summary", "full"], default="summary")
     bank.add_argument("--timeout", type=float, default=8.0, help="Live read timeout in seconds per slot.")
     bank.set_defaults(func=cmd_patch_bank)
+
+    schema = patch_subcommands.add_parser("schema", help="Show editable parameter schema for decoded blocks.")
+    schema.add_argument("block_id", nargs="?", help="Optional block id such as delay1, fx1, or sendReturn1.")
+    schema.add_argument("--raw", action="store_true", help="Enumerate every bounded raw-editable offset for the selected block.")
+    schema.set_defaults(func=cmd_patch_schema)
 
     select = patch_subcommands.add_parser("select", help="Select a user patch slot with typed MIDI Program Change.")
     select.add_argument("slot", help="User slot such as U01-1.")
@@ -144,6 +162,144 @@ def build_parser() -> argparse.ArgumentParser:
     clone.add_argument("--verify", action="store_true", help="Re-read every written clone record and compare exact bytes.")
     clone.add_argument("--timeout", type=float, default=20.0, help="Read/verification timeout in seconds.")
     clone.set_defaults(func=cmd_patch_clone)
+
+    copy = patch_subcommands.add_parser("copy", help="Copy one persistent user patch slot to another.")
+    copy.add_argument("source_slot", help="Source user slot such as U10-1.")
+    copy.add_argument("destination_slot", help="Destination user slot such as U10-2.")
+    copy.add_argument("--live", action="store_true", help="Required because this reads and writes persistent GT-1000 user slots.")
+    copy.add_argument("--verify", action="store_true", help="Re-read every written record and compare exact bytes.")
+    copy.add_argument("--timeout", type=float, default=20.0, help="Read/verification timeout in seconds.")
+    copy.set_defaults(func=cmd_patch_clone)
+
+    batch_copy = patch_subcommands.add_parser("batch-copy", help="Copy multiple user patch slots to a consecutive destination range.")
+    batch_copy.add_argument("source_slots", nargs="+", help="Source user slots such as U10-1 U10-2.")
+    batch_copy.add_argument("--destination-start", required=True, help="First destination user slot.")
+    batch_copy.add_argument("--live", action="store_true", help="Required because this reads and writes persistent GT-1000 user slots.")
+    batch_copy.add_argument("--verify", action="store_true", help="Re-read every written record and compare exact bytes.")
+    batch_copy.add_argument("--timeout", type=float, default=20.0, help="Read/verification timeout in seconds.")
+    batch_copy.set_defaults(func=cmd_patch_batch_copy)
+
+    export = patch_subcommands.add_parser("export", help="Export user patch slots to a validated JSON liveset file.")
+    export.add_argument("slots", nargs="+", help="User slots to export, such as U10-1 U10-2.")
+    export.add_argument("--output", type=Path, required=True, help="Destination JSON file.")
+    export.add_argument("--live", action="store_true", help="Required because this reads persistent GT-1000 user slots.")
+    export.add_argument("--timeout", type=float, default=20.0, help="Read timeout in seconds per slot.")
+    export.set_defaults(func=cmd_patch_export)
+
+    import_liveset = patch_subcommands.add_parser("import", help="Import a CLI JSON liveset file into consecutive user slots.")
+    import_liveset.add_argument("file", type=Path, help="JSON liveset file created by patch export.")
+    import_liveset.add_argument("--destination-start", required=True, help="First destination user slot.")
+    import_liveset.add_argument("--live", action="store_true", help="Required because this writes persistent GT-1000 user slots.")
+    import_liveset.add_argument("--verify", action="store_true", help="Re-read every written record and compare exact bytes.")
+    import_liveset.add_argument("--timeout", type=float, default=20.0, help="Verification timeout in seconds.")
+    import_liveset.set_defaults(func=cmd_patch_import)
+
+    tsl_export = patch_subcommands.add_parser("tsl-export", help="Wrap a CLI JSON liveset in a JSON .tsl compatibility envelope.")
+    tsl_export.add_argument("file", type=Path, help="JSON liveset file created by patch export.")
+    tsl_export.add_argument("--output", type=Path, required=True, help="Destination .tsl JSON file.")
+    tsl_export.add_argument("--name", default="GT-1000 CLI LIVESET", help="Liveset name stored in the .tsl envelope.")
+    tsl_export.add_argument("--memo", default="", help="Optional liveset memo stored in the .tsl envelope.")
+    tsl_export.set_defaults(func=cmd_patch_tsl_export)
+
+    tsl_list = patch_subcommands.add_parser("tsl-list", help="Inspect a JSON .tsl liveset file.")
+    tsl_list.add_argument("file", type=Path, help="JSON .tsl file.")
+    tsl_list.set_defaults(func=cmd_patch_tsl_list)
+
+    tsl_import = patch_subcommands.add_parser("tsl-import", help="Import an importable JSON .tsl liveset envelope into consecutive user slots.")
+    tsl_import.add_argument("file", type=Path, help="JSON .tsl file created by patch tsl-export.")
+    tsl_import.add_argument("--destination-start", required=True, help="First destination user slot.")
+    tsl_import.add_argument("--live", action="store_true", help="Required because this writes persistent GT-1000 user slots.")
+    tsl_import.add_argument("--verify", action="store_true", help="Re-read every written record and compare exact bytes.")
+    tsl_import.add_argument("--timeout", type=float, default=20.0, help="Verification timeout in seconds.")
+    tsl_import.set_defaults(func=cmd_patch_tsl_import)
+
+    liveset_list = patch_subcommands.add_parser("liveset-list", help="List patches in a CLI JSON liveset file.")
+    liveset_list.add_argument("file", type=Path, help="JSON liveset file created by patch export.")
+    liveset_list.set_defaults(func=cmd_patch_liveset_list)
+
+    liveset_move = patch_subcommands.add_parser("liveset-move", help="Move one patch inside a CLI JSON liveset file.")
+    liveset_move.add_argument("file", type=Path, help="JSON liveset file created by patch export.")
+    liveset_move.add_argument("from_index", type=int, help="1-based patch index to move.")
+    liveset_move.add_argument("to_index", type=int, help="1-based destination index.")
+    liveset_move.add_argument("--output", type=Path, required=True, help="Destination JSON liveset file.")
+    liveset_move.set_defaults(func=cmd_patch_liveset_move)
+
+    liveset_copy = patch_subcommands.add_parser("liveset-copy", help="Copy one patch inside a CLI JSON liveset file.")
+    liveset_copy.add_argument("file", type=Path, help="JSON liveset file created by patch export.")
+    liveset_copy.add_argument("from_index", type=int, help="1-based patch index to copy.")
+    liveset_copy.add_argument("to_index", type=int, help="1-based insertion index for the copy.")
+    liveset_copy.add_argument("--output", type=Path, required=True, help="Destination JSON liveset file.")
+    liveset_copy.set_defaults(func=cmd_patch_liveset_copy)
+
+    liveset_rename = patch_subcommands.add_parser("liveset-rename", help="Rename one patch inside a CLI JSON liveset file.")
+    liveset_rename.add_argument("file", type=Path, help="JSON liveset file created by patch export.")
+    liveset_rename.add_argument("index", type=int, help="1-based patch index to rename.")
+    liveset_rename.add_argument("name", help="Patch name, truncated to the GT-1000 16-byte ASCII field.")
+    liveset_rename.add_argument("--output", type=Path, required=True, help="Destination JSON liveset file.")
+    liveset_rename.set_defaults(func=cmd_patch_liveset_rename)
+
+    liveset_remove = patch_subcommands.add_parser("liveset-remove", help="Remove one patch from a CLI JSON liveset file.")
+    liveset_remove.add_argument("file", type=Path, help="JSON liveset file created by patch export.")
+    liveset_remove.add_argument("index", type=int, help="1-based patch index to remove.")
+    liveset_remove.add_argument("--output", type=Path, required=True, help="Destination JSON liveset file.")
+    liveset_remove.set_defaults(func=cmd_patch_liveset_remove)
+
+    restore_preset = patch_subcommands.add_parser("restore-preset", help="Restore a preset patch's documented primary records into a user slot.")
+    restore_preset.add_argument("preset_slot", help="Preset source slot such as P01-1.")
+    restore_preset.add_argument("destination_slot", help="Destination user slot such as U10-1.")
+    restore_preset.add_argument("--live", action="store_true", help="Required because this reads preset data and writes a persistent user slot.")
+    restore_preset.add_argument("--verify", action="store_true", help="Re-read every written primary record and compare exact bytes.")
+    restore_preset.add_argument("--timeout", type=float, default=20.0, help="Read/verification timeout in seconds.")
+    restore_preset.set_defaults(func=cmd_patch_restore_preset)
+
+    exchange = patch_subcommands.add_parser("exchange", help="Exchange two persistent user patch slots.")
+    exchange.add_argument("slot_a", help="First user slot such as U10-1.")
+    exchange.add_argument("slot_b", help="Second user slot such as U10-2.")
+    exchange.add_argument("--live", action="store_true", help="Required because this reads and writes persistent GT-1000 user slots.")
+    exchange.add_argument("--verify", action="store_true", help="Re-read every written record and compare exact bytes.")
+    exchange.add_argument("--timeout", type=float, default=20.0, help="Read/verification timeout in seconds.")
+    exchange.set_defaults(func=cmd_patch_exchange)
+
+    insert = patch_subcommands.add_parser("insert", help="Insert one patch into a bounded user-slot range.")
+    insert.add_argument("source_slot", help="Source user slot to insert.")
+    insert.add_argument("destination_slot", help="Destination slot where the source patch is inserted.")
+    insert.add_argument("--range-end", required=True, help="Last destination range slot to shift down by one.")
+    insert.add_argument("--live", action="store_true", help="Required because this reads and writes persistent GT-1000 user slots.")
+    insert.add_argument("--verify", action="store_true", help="Re-read every written record and compare exact bytes.")
+    insert.add_argument("--timeout", type=float, default=20.0, help="Read/verification timeout in seconds.")
+    insert.set_defaults(func=cmd_patch_insert)
+
+    rename = patch_subcommands.add_parser("rename", help="Rename the temporary patch or one persistent user patch slot.")
+    rename.add_argument("name", help="Patch name, truncated to the GT-1000 16-byte ASCII field.")
+    rename.add_argument("--live", action="store_true", help="Required because this writes to the connected GT-1000.")
+    rename.add_argument("--user-slot", help="Persist to a user patch slot instead of the temporary patch.")
+    rename.add_argument("--verify", action="store_true", help="Re-read the name field and compare exact bytes.")
+    rename.add_argument("--timeout", type=float, default=12.0, help="Verification read timeout in seconds.")
+    rename.set_defaults(func=cmd_patch_rename)
+
+    initialize = patch_subcommands.add_parser("initialize", help="Initialize a patch using the validated default plan.")
+    initialize.add_argument("--name", default="PY DEFAULT", help="Patch name to write.")
+    initialize.add_argument("--live", action="store_true", help="Required because this writes to the connected GT-1000.")
+    initialize.add_argument("--user-slot", help="Persist to a user patch slot instead of the temporary patch.")
+    initialize.add_argument("--verify", action="store_true", help="Re-read every written range and compare exact bytes.")
+    initialize.add_argument("--timeout", type=float, default=12.0, help="Verification read timeout in seconds.")
+    initialize.set_defaults(func=cmd_patch_initialize)
+
+    clear = patch_subcommands.add_parser("clear", help="Clear a patch using the validated default initializer.")
+    clear.add_argument("--name", default="PY DEFAULT", help="Patch name to write.")
+    clear.add_argument("--live", action="store_true", help="Required because this writes to the connected GT-1000.")
+    clear.add_argument("--user-slot", help="Persist to a user patch slot instead of the temporary patch.")
+    clear.add_argument("--verify", action="store_true", help="Re-read every written range and compare exact bytes.")
+    clear.add_argument("--timeout", type=float, default=12.0, help="Verification read timeout in seconds.")
+    clear.set_defaults(func=cmd_patch_initialize)
+
+    batch_initialize = patch_subcommands.add_parser("batch-initialize", help="Initialize multiple user patch slots.")
+    batch_initialize.add_argument("slots", nargs="+", help="User slots to initialize.")
+    batch_initialize.add_argument("--name-prefix", default="PY DEFAULT", help="Patch name prefix; slot number is appended when multiple slots are initialized.")
+    batch_initialize.add_argument("--live", action="store_true", help="Required because this writes persistent GT-1000 user slots.")
+    batch_initialize.add_argument("--verify", action="store_true", help="Re-read every written range and compare exact bytes.")
+    batch_initialize.add_argument("--timeout", type=float, default=12.0, help="Verification read timeout in seconds.")
+    batch_initialize.set_defaults(func=cmd_patch_batch_initialize)
 
     block = patch_subcommands.add_parser("block", help="Show one block's detailed parameters.")
     add_input_options(block)
@@ -193,6 +349,17 @@ def build_parser() -> argparse.ArgumentParser:
     set_param.add_argument("--timeout", type=float, default=12.0, help="Verification read timeout in seconds.")
     set_param.set_defaults(func=cmd_patch_set)
 
+    raw_set = patch_subcommands.add_parser("raw-set", help="Set one validated raw block parameter offset.")
+    raw_set.add_argument("block_id", help="Block id such as delay1, fx1, divider1, or mainSpeakerSimulatorL.")
+    raw_set.add_argument("offset", type=int, help="Zero-based byte offset within the block record.")
+    raw_set.add_argument("value", help="Raw integer value.")
+    raw_set.add_argument("--width", choices=["byte", "nibbles2", "nibbles4"], default="byte", help="Encoding width, default byte.")
+    raw_set.add_argument("--live", action="store_true", help="Required because this writes to the connected GT-1000.")
+    raw_set.add_argument("--user-slot", help="Persist to a user patch slot instead of the temporary patch.")
+    raw_set.add_argument("--verify", action="store_true", help="Re-read the written range and compare exact bytes.")
+    raw_set.add_argument("--timeout", type=float, default=12.0, help="Verification read timeout in seconds.")
+    raw_set.set_defaults(func=cmd_patch_raw_set)
+
     enable = patch_subcommands.add_parser("enable", help="Enable one validated switchable block.")
     enable.add_argument("block_id", help="Block id such as delay1 or dist1.")
     enable.add_argument("--live", action="store_true", help="Required because this writes to the connected GT-1000.")
@@ -229,6 +396,43 @@ def build_parser() -> argparse.ArgumentParser:
     move.add_argument("--timeout", type=float, default=12.0, help="Read/verification timeout in seconds.")
     move.set_defaults(func=cmd_patch_move)
 
+    control_set = patch_subcommands.add_parser("control-set", help="Set one patch-local NUM/BANK/CTL/EXP control function.")
+    control_set.add_argument("control", help="Control id such as ctl1, num1, bank-up, exp1-sw, or exp1.")
+    control_set.add_argument("function", help="Function id such as dist1, tuner, delay1-tap, foot-volume, or off.")
+    control_set.add_argument("--mode", choices=["toggle", "moment"], default="toggle", help="Switch mode for non-pedal controls.")
+    control_set.add_argument("--live", action="store_true", help="Required because this writes to the connected GT-1000.")
+    control_set.add_argument("--user-slot", help="Persist to a user patch slot instead of the temporary patch.")
+    control_set.add_argument("--verify", action="store_true", help="Re-read the written range and compare exact bytes.")
+    control_set.add_argument("--timeout", type=float, default=12.0, help="Verification read timeout in seconds.")
+    control_set.set_defaults(func=cmd_patch_control_set)
+
+    system_control_set = patch_subcommands.add_parser("system-control-set", help="Set one global/system NUM/BANK/CTL/EXP control function.")
+    system_control_set.add_argument("control", help="Control id such as ctl1, num1, bank-up, exp1-sw, or exp1.")
+    system_control_set.add_argument("function", help="Function id such as dist1, tuner, delay1-tap, foot-volume, or off.")
+    system_control_set.add_argument("--mode", choices=["toggle", "moment"], default="toggle", help="Switch mode for non-pedal controls.")
+    system_control_set.add_argument("--live", action="store_true", help="Required because this writes to the connected GT-1000 system control section.")
+    system_control_set.add_argument("--verify", action="store_true", help="Re-read the written range and compare exact bytes.")
+    system_control_set.add_argument("--timeout", type=float, default=12.0, help="Verification read timeout in seconds.")
+    system_control_set.set_defaults(func=cmd_patch_system_control_set)
+
+    control_preference = patch_subcommands.add_parser("control-preference-set", help="Set one control's PATCH/SYSTEM preference.")
+    control_preference.add_argument("control", help="Control id such as ctl1, num1, bank-up, exp1-sw, or exp1.")
+    control_preference.add_argument("preference", choices=["patch", "system"], help="Whether the control uses patch-local or system mapping.")
+    control_preference.add_argument("--live", action="store_true", help="Required because this writes to the connected GT-1000 system control section.")
+    control_preference.add_argument("--verify", action="store_true", help="Re-read the written range and compare exact bytes.")
+    control_preference.add_argument("--timeout", type=float, default=12.0, help="Verification read timeout in seconds.")
+    control_preference.set_defaults(func=cmd_patch_control_preference_set)
+
+    led_set = patch_subcommands.add_parser("led-set", help="Set one patch-local control LED color.")
+    led_set.add_argument("control", help="LED control id: num1...num5, bank-down, bank-up, ctl1...ctl3, or exp1-sw.")
+    led_set.add_argument("state", choices=["off", "on"], help="LED state color to edit.")
+    led_set.add_argument("color", help="Color name such as red, blue, cyan, auto, or auto-cyan.")
+    led_set.add_argument("--live", action="store_true", help="Required because this writes to the connected GT-1000.")
+    led_set.add_argument("--user-slot", help="Persist to a user patch slot instead of the temporary patch.")
+    led_set.add_argument("--verify", action="store_true", help="Re-read the written range and compare exact bytes.")
+    led_set.add_argument("--timeout", type=float, default=12.0, help="Verification read timeout in seconds.")
+    led_set.set_defaults(func=cmd_patch_led_set)
+
     assign_cc = patch_subcommands.add_parser("assign-cc", help="Map one Assign to a decoded target from a MIDI CC source.")
     assign_cc.add_argument("number", type=int, help="Assign number 1...16.")
     assign_cc.add_argument("block_id", help="Decoded target block id, such as delay1.")
@@ -245,6 +449,29 @@ def build_parser() -> argparse.ArgumentParser:
     assign_cc.add_argument("--timeout", type=float, default=12.0, help="Verification read timeout in seconds.")
     assign_cc.set_defaults(func=cmd_patch_assign_cc)
 
+    assign_set = patch_subcommands.add_parser("assign-set", help="Set one Assign block from raw validated fields.")
+    assign_set.add_argument("number", type=int, help="Assign number 1...16.")
+    assign_set.add_argument("--sw", choices=["on", "off"], default="on", help="Assign switch state.")
+    assign_set.add_argument("--target", required=True, help="Assign target: raw 0...16383, block.parameter, or alias such as tuner.")
+    assign_set.add_argument("--min", dest="target_min", type=int, required=True, help="Logical target minimum before +32768 encoding.")
+    assign_set.add_argument("--max", dest="target_max", type=int, required=True, help="Logical target maximum before +32768 encoding.")
+    assign_set.add_argument("--source", required=True, help="Assign source: raw 0...127, control alias such as ctl1, or MIDI CC alias such as cc80.")
+    assign_set.add_argument("--mode", choices=["toggle", "moment"], required=True, help="Assign mode.")
+    assign_set.add_argument("--active-min", type=int, default=0, help="Active range low, default 0.")
+    assign_set.add_argument("--active-max", type=int, default=127, help="Active range high, default 127.")
+    assign_set.add_argument("--midi-channel", type=int, default=0, help="Patch MIDI channel field, 0 system or 1...16.")
+    assign_set.add_argument("--midi-cc", type=int, default=0, help="Patch MIDI CC number field.")
+    assign_set.add_argument("--midi-cc-min", type=int, default=0, help="Patch MIDI CC value minimum.")
+    assign_set.add_argument("--midi-cc-max", type=int, default=0, help="Patch MIDI CC value maximum.")
+    assign_set.add_argument("--midi-pc", type=int, default=0, help="Patch MIDI PC number field.")
+    assign_set.add_argument("--midi-bank-msb", type=int, default=128, help="Patch MIDI bank MSB field.")
+    assign_set.add_argument("--midi-bank-lsb", type=int, default=128, help="Patch MIDI bank LSB field.")
+    assign_set.add_argument("--live", action="store_true", help="Required because this writes to the connected GT-1000.")
+    assign_set.add_argument("--user-slot", help="Persist to a user patch slot instead of the temporary patch.")
+    assign_set.add_argument("--verify", action="store_true", help="Re-read the Assign block and compare exact bytes.")
+    assign_set.add_argument("--timeout", type=float, default=12.0, help="Verification read timeout in seconds.")
+    assign_set.set_defaults(func=cmd_patch_assign_set)
+
     set_bpm = patch_subcommands.add_parser("set-bpm", help="Set validated patch master BPM.")
     set_bpm.add_argument("bpm", help="Patch master BPM, 40.0...250.0 with at most one decimal place.")
     set_bpm.add_argument("--live", action="store_true", help="Required because this writes to the connected GT-1000.")
@@ -252,6 +479,15 @@ def build_parser() -> argparse.ArgumentParser:
     set_bpm.add_argument("--verify", action="store_true", help="Re-read the written range and compare exact bytes.")
     set_bpm.add_argument("--timeout", type=float, default=12.0, help="Verification read timeout in seconds.")
     set_bpm.set_defaults(func=cmd_patch_set_bpm)
+
+    master_set = patch_subcommands.add_parser("master-set", help="Set one validated patch master field.")
+    master_set.add_argument("field", help="Field id such as level, key, amp-ctl1, carryover, tempo-hold, or input-sensitivity.")
+    master_set.add_argument("value", help="Field value; booleans accept on/off and key accepts names such as C(Am).")
+    master_set.add_argument("--live", action="store_true", help="Required because this writes to the connected GT-1000.")
+    master_set.add_argument("--user-slot", help="Persist to a user patch slot instead of the temporary patch.")
+    master_set.add_argument("--verify", action="store_true", help="Re-read the written field and compare exact bytes.")
+    master_set.add_argument("--timeout", type=float, default=12.0, help="Verification read timeout in seconds.")
+    master_set.set_defaults(func=cmd_patch_master_set)
 
     tuner_assign = patch_subcommands.add_parser("tuner-assign", help="Install the tested Assign 16 tuner mapping.")
     tuner_assign.add_argument("--live", action="store_true", help="Required because this writes to the connected GT-1000.")
@@ -273,7 +509,54 @@ def add_input_options(parser: argparse.ArgumentParser) -> None:
 def cmd_ports(args: argparse.Namespace) -> Any:
     if not args.live:
         raise CLIError("ports requires --live because MIDI ports are live device state", 64)
-    return live.list_ports()
+    return live_call_with_timeout("ports --live", args.timeout, live.list_ports)
+
+
+def live_call_with_timeout(label: str, process_timeout: float, func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    if process_timeout <= 0:
+        raise CLIError("timeout must be greater than 0", 64)
+    try:
+        pickle.dumps((func, args, kwargs))
+    except Exception:
+        return func(*args, **kwargs)
+    context = multiprocessing.get_context("spawn")
+    with tempfile.NamedTemporaryFile(prefix="gt1000-live-call-", suffix=".pickle", delete=False) as output_file:
+        output_path = Path(output_file.name)
+    try:
+        process = context.Process(target=live_call_worker, args=(output_path, func, args, kwargs))
+        process.start()
+        process.join(process_timeout)
+        if process.is_alive():
+            process.terminate()
+            process.join(2)
+            raise CLIError(
+                f"{label} timed out after {process_timeout:g}s; quit MIDI clients such as BOSS Tone Studio, then power-cycle or reconnect the GT-1000",
+                1,
+            )
+        if output_path.stat().st_size == 0:
+            raise CLIError(f"{label} failed without returning a result", 1)
+        with output_path.open("rb") as handle:
+            ok, payload = pickle.load(handle)
+    finally:
+        try:
+            output_path.unlink()
+        except FileNotFoundError:
+            pass
+    if ok:
+        return payload
+    message, exit_code = payload
+    raise CLIError(message, exit_code)
+
+
+def live_call_worker(output_path: Path, func: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+    try:
+        payload = (True, func(*args, **kwargs))
+    except CLIError as error:
+        payload = (False, (str(error), error.exit_code))
+    except Exception as error:
+        payload = (False, (str(error), 1))
+    with output_path.open("wb") as handle:
+        pickle.dump(payload, handle)
 
 
 def cmd_midi_cc(args: argparse.Namespace) -> Any:
@@ -351,7 +634,14 @@ def cmd_system_view(args: argparse.Namespace) -> Any:
     }
     section_id, label, address, size, decoder = sections[args.system_command]
     try:
-        raw = live.read_system_section(address, size, timeout=args.timeout)
+        raw = live_call_with_timeout(
+            f"system {args.system_command} --live",
+            args.timeout,
+            live.read_system_section,
+            address,
+            size,
+            timeout=args.timeout,
+        )
     except live.LiveMIDIError as error:
         raise CLIError(str(error)) from error
     data = raw.get(live.address_key(address), [])
@@ -374,7 +664,14 @@ def cmd_system_pcmap(args: argparse.Namespace) -> Any:
         address = pcmap_bank_address(bank)
         size = [0x00, 0x00, 0x04, 0x00]
         try:
-            raw = live.read_system_section(address, size, timeout=args.timeout)
+            raw = live_call_with_timeout(
+                f"system pcmap --live bank {bank}",
+                args.timeout,
+                live.read_system_section,
+                address,
+                size,
+                timeout=args.timeout,
+            )
         except live.LiveMIDIError as error:
             raise CLIError(str(error)) from error
         data = raw.get(live.address_key(address), [])
@@ -402,7 +699,14 @@ def cmd_system_inputs(args: argparse.Namespace) -> Any:
         address = system_input_setting_address(number)
         size = [0x00, 0x00, 0x00, 0x11]
         try:
-            raw = live.read_system_section(address, size, timeout=args.timeout)
+            raw = live_call_with_timeout(
+                f"system inputs --live number {number}",
+                args.timeout,
+                live.read_system_section,
+                address,
+                size,
+                timeout=args.timeout,
+            )
         except live.LiveMIDIError as error:
             raise CLIError(str(error)) from error
         data = raw.get(live.address_key(address), [])
@@ -431,7 +735,7 @@ def resolve_block_id(block_id: str) -> str:
     if lower_id in aliases:
         return aliases[lower_id]
 
-    all_definitions = list(live.SUMMARY_BLOCKS) + list(live.RESIDENT_BLOCKS)
+    all_definitions = list(live.SUMMARY_BLOCKS) + list(live.FX_ALGORITHM_BLOCKS) + list(live.RESIDENT_BLOCKS)
     for block in all_definitions:
         if block.id.lower() == lower_id:
             return block.id
@@ -440,7 +744,7 @@ def resolve_block_id(block_id: str) -> str:
 
 def chain_value_for_block_id(block_id: str) -> int:
     resolved = resolve_block_id(block_id)
-    all_definitions = list(live.SUMMARY_BLOCKS) + list(live.RESIDENT_BLOCKS)
+    all_definitions = list(live.SUMMARY_BLOCKS) + list(live.FX_ALGORITHM_BLOCKS) + list(live.RESIDENT_BLOCKS)
     block = next((definition for definition in all_definitions if definition.id == resolved), None)
     if block is None:
         raise ValueError(f"unknown chain block {block_id}")
@@ -449,13 +753,114 @@ def chain_value_for_block_id(block_id: str) -> int:
 
 def assign_target_for_block_parameter(block_id: str, parameter_id: str) -> dict[str, Any]:
     resolved = resolve_block_id(block_id)
+    parameter_key = normalize_cli_key(parameter_id)
     for target_range in ASSIGN_TARGET_RANGES:
         if target_range["blockId"] != resolved:
             continue
         for index, (candidate_id, _candidate_name) in enumerate(target_range["parameters"]):
-            if candidate_id == parameter_id:
-                return decode_assign_target_detail(target_range["start"] + index)
+            if candidate_id == parameter_id or normalize_cli_key(candidate_id) == parameter_key:
+                raw = target_range["start"] + index
+                return assign_target_detail(
+                    raw,
+                    name=f'{target_range["category"]} {_candidate_name}',
+                    category=target_range["category"],
+                    blockId=resolved,
+                    parameterId=candidate_id,
+                    isOnOff=candidate_id in {"sw", "soloSw", "bright", "trigger", "preampSw"},
+                )
     raise ValueError(f"unknown Assign target for {block_id}.{parameter_id}")
+
+
+def parse_assign_target_reference(value: str) -> int:
+    text = value.strip()
+    if text.isdigit():
+        return int(text)
+    key = normalize_cli_key(text)
+    exact_targets = {
+        "divider1-channel-select": 932,
+        "divider1-channelselect": 932,
+        "divider1.channelselect": 932,
+        "divider1.channel-select": 932,
+        "divider2-channel-select": 933,
+        "divider2-channelselect": 933,
+        "divider2.channelselect": 933,
+        "divider2.channel-select": 933,
+        "divider3-channel-select": 934,
+        "divider3-channelselect": 934,
+        "divider3.channelselect": 934,
+        "divider3.channel-select": 934,
+        "tuner": 987,
+        "tuner-on-off": 987,
+        "tuner-pdf-alternate": 991,
+    }
+    if key in exact_targets:
+        return exact_targets[key]
+    for separator in (".", ":"):
+        if separator in text:
+            block_id, parameter_id = text.split(separator, 1)
+            return assign_target_for_block_parameter(block_id, parameter_id)["raw"]
+    if "-" in key:
+        parts = key.split("-")
+        for split_at in range(len(parts) - 1, 0, -1):
+            block_id = "-".join(parts[:split_at])
+            parameter_id = "-".join(parts[split_at:])
+            try:
+                return assign_target_for_block_parameter(block_id, parameter_id)["raw"]
+            except ValueError:
+                continue
+    raise ValueError(f"unknown Assign target {value}")
+
+
+def parse_assign_source_reference(value: str) -> int:
+    text = value.strip()
+    if text.isdigit():
+        return int(text)
+    key = normalize_cli_key(text)
+    source_aliases = {
+        "cur-num": 5,
+        "current-number": 5,
+        "bank-down": 6,
+        "bank-up": 7,
+        "exp1-sw": 15,
+        "exp1-switch": 15,
+        "exp1": 16,
+        "exp1-pedal": 16,
+        "exp2": 17,
+        "exp2-pedal": 17,
+        "exp3": 18,
+        "exp3-pedal": 18,
+        "internal": 19,
+        "internal-pedal": 19,
+        "wave": 20,
+        "wave-pedal": 20,
+        "input": 21,
+        "input-level": 21,
+    }
+    if key in source_aliases:
+        return source_aliases[key]
+    if key.startswith("num") and key[3:].isdigit():
+        number = int(key[3:])
+        if 1 <= number <= 5:
+            return number - 1
+    if key.startswith("ctl") and key[3:].isdigit():
+        number = int(key[3:])
+        if 1 <= number <= 7:
+            return number + 7
+    if key.startswith("midi-cc"):
+        return assign_source_for_cc_text(key[7:])
+    if key.startswith("cc"):
+        return assign_source_for_cc_text(key[2:])
+    raise ValueError(f"unknown Assign source {value}")
+
+
+def assign_source_for_cc_text(value: str) -> int:
+    if not value.isdigit():
+        raise ValueError(f"unknown MIDI CC source cc{value}")
+    return patch_edit.assign_source_for_cc(int(value))
+
+
+def normalize_cli_key(value: str) -> str:
+    return value.strip().lower().replace("_", "-").replace(" ", "-").replace(".", "-")
 
 
 def user_patch_zero_based_index(slot: str) -> int:
@@ -629,7 +1034,13 @@ def patch_view(args: argparse.Namespace, view: str) -> Any:
             for i in range(1, 17)
         ] if view in {"chain", "controls", "summary"} else []
         
-        snapshot = read_live_snapshot(args.timeout, requests=live.READ_PLAN + assign_requests if view in {"chain", "controls", "summary"} else live.INITIAL_READS)
+        snapshot = live_call_with_timeout(
+            f"patch {view} --live",
+            args.timeout,
+            read_live_snapshot,
+            args.timeout,
+            requests=live.READ_PLAN + assign_requests if view in {"chain", "controls", "summary"} else live.INITIAL_READS,
+        )
         if view == "chain":
             return chain_from_full(snapshot)
         if view == "overview":
@@ -662,6 +1073,16 @@ def cmd_patch_slot(args: argparse.Namespace) -> Any:
     return view_from_full(snapshot, args.view)
 
 
+def cmd_patch_preset(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch preset requires --live because preset slots are live device state", 64)
+    try:
+        snapshot = read_preset_slot_snapshot(args.slot, args.timeout, view=args.view)
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    return view_from_full(snapshot, args.view)
+
+
 def cmd_patch_bank(args: argparse.Namespace) -> Any:
     if not args.live:
         raise CLIError("patch bank requires --live because user banks are live device state", 64)
@@ -679,6 +1100,29 @@ def cmd_patch_bank(args: argparse.Namespace) -> Any:
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     return {"bank": bank, "patches": patches}
+
+
+def cmd_patch_schema(args: argparse.Namespace) -> Any:
+    try:
+        if args.block_id:
+            schema_key = normalize_cli_key(args.block_id)
+            if schema_key in {"master", "patch-master"}:
+                return master_schema()
+            if schema_key in {"controls", "control", "ctl-exp"}:
+                return controls_editor_schema()
+            if schema_key in {"assign", "assigns"}:
+                return assign_editor_schema()
+            if schema_key in {"led", "leds", "patch-led"}:
+                return led_editor_schema()
+            block_id = resolve_block_id(args.block_id)
+            return block_schema(block_id, include_raw=args.raw)
+        blocks = [
+            block_schema(block.id, include_raw=False)
+            for block in list(live.SUMMARY_BLOCKS) + list(live.FX_ALGORITHM_BLOCKS) + list(live.RESIDENT_BLOCKS)
+        ]
+        return {"id": "patchSchema", "blocks": blocks}
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
 
 
 def cmd_patch_select(args: argparse.Namespace) -> Any:
@@ -703,17 +1147,335 @@ def cmd_patch_select(args: argparse.Namespace) -> Any:
 
 def cmd_patch_clone(args: argparse.Namespace) -> Any:
     if not args.live:
-        raise CLIError("patch clone requires --live because it reads and writes persistent GT-1000 user slots", 64)
+        raise CLIError(f"patch {args.patch_command} requires --live because it reads and writes persistent GT-1000 user slots", 64)
     try:
         source = live.normalize_user_slot(args.source_slot)
         destination = live.normalize_user_slot(args.destination_slot)
         if source == destination:
             raise ValueError("source and destination slots must be different")
-        source_data = live.read_data_sets(timeout=args.timeout, requests=patch_edit.clone_read_requests(source))
+        source_data = read_clone_records_with_timeout(f"patch {args.patch_command} {source} --live", args.timeout, source)
         plan = patch_edit.build_clone_plan(source, destination, source_data)
-        result = patch_edit.apply_plan(plan, timeout=args.timeout, verify=args.verify)
+        result = apply_plan_cli(plan, timeout=args.timeout, verify=args.verify)
         result["sourceSlot"] = source
         result["destinationSlot"] = destination
+        return result
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
+def cmd_patch_batch_copy(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch batch-copy requires --live because it reads and writes persistent GT-1000 user slots", 64)
+    try:
+        sources = [live.normalize_user_slot(slot) for slot in args.source_slots]
+        destinations = consecutive_user_slots(args.destination_start, len(sources))
+        if len(set(destinations)) != len(destinations):
+            raise ValueError("destination slots must be unique")
+        writes = []
+        operations = []
+        for index, (source, destination) in enumerate(zip(sources, destinations)):
+            if source == destination:
+                raise ValueError("source and destination slots must be different")
+            source_data = read_clone_records_with_timeout(f"patch batch-copy {source} --live", args.timeout, source)
+            delay_between_slot_reads(index, len(sources))
+            plan = patch_edit.build_clone_plan(source, destination, source_data)
+            writes.extend(plan.writes)
+            operations.append({"sourceSlot": source, "destinationSlot": destination, "writeCount": len(plan.writes)})
+        plan = patch_edit.PatchPlan(
+            id=f"batch-copy:{sources[0]}:{destinations[0]}:{len(sources)}",
+            description=f"Copy {len(sources)} user patch slots to consecutive destinations starting at {destinations[0]}.",
+            writes=writes,
+        )
+        result = apply_plan_cli(plan, timeout=args.timeout, verify=args.verify)
+        result["operations"] = operations
+        return result
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
+def cmd_patch_export(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch export requires --live because it reads persistent GT-1000 user slots", 64)
+    try:
+        slots = [live.normalize_user_slot(slot) for slot in args.slots]
+        patches = []
+        for index, slot in enumerate(slots):
+            source_data = read_clone_records_with_timeout(f"patch export {slot} --live", args.timeout, slot)
+            delay_between_slot_reads(index, len(slots))
+            patches.append(patch_edit.export_liveset_patch(slot, source_data))
+        liveset = patch_edit.build_liveset_export(patches)
+        args.output.write_text(json.dumps(liveset, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        return {
+            "format": liveset["format"],
+            "patchCount": liveset["patchCount"],
+            "slots": slots,
+            "output": str(args.output),
+        }
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
+def cmd_patch_import(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch import requires --live because it writes persistent GT-1000 user slots", 64)
+    try:
+        liveset = load_json(args.file)
+        plan = patch_edit.build_liveset_import_plan(liveset, args.destination_start)
+        result = apply_plan_cli(plan, timeout=args.timeout, verify=args.verify)
+        patch_count = len(liveset.get("patches", []))
+        result["sourceFile"] = str(args.file)
+        result["destinationSlots"] = patch_edit.consecutive_user_slots(args.destination_start, patch_count)
+        return result
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
+def cmd_patch_tsl_export(args: argparse.Namespace) -> Any:
+    try:
+        liveset = load_json(args.file)
+        tsl = patch_edit.build_tsl_export(liveset, name=args.name, memo=args.memo)
+        write_json(args.output, tsl)
+        summary = patch_edit.tsl_summary(tsl)
+        summary["output"] = str(args.output)
+        return summary
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+
+
+def cmd_patch_tsl_list(args: argparse.Namespace) -> Any:
+    try:
+        return patch_edit.tsl_summary(load_json(args.file))
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+
+
+def cmd_patch_tsl_import(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch tsl-import requires --live because it writes persistent GT-1000 user slots", 64)
+    try:
+        tsl = load_json(args.file)
+        plan = patch_edit.build_tsl_import_plan(tsl, args.destination_start)
+        result = apply_plan_cli(plan, timeout=args.timeout, verify=args.verify)
+        result["sourceFile"] = str(args.file)
+        result["destinationSlots"] = patch_edit.consecutive_user_slots(args.destination_start, len(patch_edit.tsl_patch_list(tsl)))
+        return result
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
+def cmd_patch_liveset_list(args: argparse.Namespace) -> Any:
+    try:
+        return patch_edit.liveset_summary(load_json(args.file))
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+
+
+def cmd_patch_liveset_move(args: argparse.Namespace) -> Any:
+    try:
+        liveset = patch_edit.move_liveset_patch(load_json(args.file), args.from_index, args.to_index)
+        write_json(args.output, liveset)
+        result = patch_edit.liveset_summary(liveset)
+        result["operation"] = "move"
+        result["fromIndex"] = args.from_index
+        result["toIndex"] = args.to_index
+        result["output"] = str(args.output)
+        return result
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+
+
+def cmd_patch_liveset_copy(args: argparse.Namespace) -> Any:
+    try:
+        liveset = patch_edit.copy_liveset_patch(load_json(args.file), args.from_index, args.to_index)
+        write_json(args.output, liveset)
+        result = patch_edit.liveset_summary(liveset)
+        result["operation"] = "copy"
+        result["fromIndex"] = args.from_index
+        result["toIndex"] = args.to_index
+        result["output"] = str(args.output)
+        return result
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+
+
+def cmd_patch_liveset_rename(args: argparse.Namespace) -> Any:
+    try:
+        liveset = patch_edit.rename_liveset_patch(load_json(args.file), args.index, args.name)
+        write_json(args.output, liveset)
+        result = patch_edit.liveset_summary(liveset)
+        result["operation"] = "rename"
+        result["index"] = args.index
+        result["name"] = args.name
+        result["output"] = str(args.output)
+        return result
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+
+
+def cmd_patch_liveset_remove(args: argparse.Namespace) -> Any:
+    try:
+        liveset = patch_edit.remove_liveset_patch(load_json(args.file), args.index)
+        write_json(args.output, liveset)
+        result = patch_edit.liveset_summary(liveset)
+        result["operation"] = "remove"
+        result["index"] = args.index
+        result["output"] = str(args.output)
+        return result
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+
+
+def cmd_patch_restore_preset(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch restore-preset requires --live because it reads preset data and writes a persistent GT-1000 user slot", 64)
+    try:
+        preset = live.normalize_preset_slot(args.preset_slot)
+        destination = live.normalize_user_slot(args.destination_slot)
+        source_data = read_patch_records_with_timeout(
+            f"patch restore-preset {preset} --live",
+            args.timeout,
+            patch_edit.preset_restore_read_requests(preset),
+        )
+        plan = patch_edit.build_preset_restore_plan(preset, destination, source_data)
+        result = apply_plan_cli(plan, timeout=args.timeout, verify=args.verify)
+        result["presetSlot"] = preset
+        result["destinationSlot"] = destination
+        result["recordScope"] = "documented-primary-patch-records"
+        result["note"] = "Preset extra STOMPBOX records are not copied because their preset addresses are not documented."
+        return result
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
+def cmd_patch_exchange(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch exchange requires --live because it reads and writes persistent GT-1000 user slots", 64)
+    try:
+        slot_a = live.normalize_user_slot(args.slot_a)
+        slot_b = live.normalize_user_slot(args.slot_b)
+        if slot_a == slot_b:
+            raise ValueError("exchange slots must be different")
+        data_a = read_clone_records_with_timeout(f"patch exchange {slot_a} --live", args.timeout, slot_a)
+        delay_between_slot_reads(0, 2)
+        data_b = read_clone_records_with_timeout(f"patch exchange {slot_b} --live", args.timeout, slot_b)
+        plan = patch_edit.build_exchange_plan(slot_a, slot_b, data_a, data_b)
+        result = apply_plan_cli(plan, timeout=args.timeout, verify=args.verify)
+        result["slotA"] = slot_a
+        result["slotB"] = slot_b
+        return result
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
+def cmd_patch_insert(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch insert requires --live because it reads and writes persistent GT-1000 user slots", 64)
+    try:
+        source = live.normalize_user_slot(args.source_slot)
+        destination = live.normalize_user_slot(args.destination_slot)
+        range_end = live.normalize_user_slot(args.range_end)
+        destination_index = live.user_patch_zero_based_index(destination)
+        range_end_index = live.user_patch_zero_based_index(range_end)
+        if range_end_index < destination_index:
+            raise ValueError("--range-end must be at or after destination_slot")
+        destination_range = consecutive_user_slots(destination, range_end_index - destination_index + 1)
+
+        source_data = read_clone_records_with_timeout(f"patch insert {source} --live", args.timeout, source)
+        read_slots = [source, *destination_range[:-1]]
+        existing_data = {}
+        for index, slot in enumerate(destination_range[:-1], start=1):
+            delay_between_slot_reads(index - 1, len(read_slots))
+            existing_data[slot] = read_clone_records_with_timeout(f"patch insert {slot} --live", args.timeout, slot)
+        writes = []
+        operations = []
+        for from_slot, to_slot, source_records in [
+            *[
+                (slot, destination_range[index + 1], existing_data[slot])
+                for index, slot in reversed(list(enumerate(destination_range[:-1])))
+            ],
+            (source, destination, source_data),
+        ]:
+            plan = patch_edit.build_clone_plan(from_slot, to_slot, source_records)
+            writes.extend(plan.writes)
+            operations.append({"sourceSlot": from_slot, "destinationSlot": to_slot, "writeCount": len(plan.writes)})
+        plan = patch_edit.PatchPlan(
+            id=f"insert:{source}:{destination}:{range_end}",
+            description=f"Insert {source} at {destination}, shifting through {range_end}.",
+            writes=writes,
+        )
+        result = apply_plan_cli(plan, timeout=args.timeout, verify=args.verify)
+        result["sourceSlot"] = source
+        result["destinationSlot"] = destination
+        result["rangeEnd"] = range_end
+        result["operations"] = operations
+        return result
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
+def cmd_patch_rename(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch rename requires --live because it writes to the connected GT-1000", 64)
+    try:
+        plan = patch_edit.build_rename_plan(args.name, slot=args.user_slot)
+        return apply_plan_cli(plan, timeout=args.timeout, verify=args.verify)
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
+def cmd_patch_initialize(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch initialize requires --live because it writes to the connected GT-1000", 64)
+    try:
+        plan = patch_edit.build_default_patch_plan(args.name)
+        if args.user_slot:
+            plan = patch_edit.plan_for_user_slot(plan, args.user_slot)
+        return apply_plan_cli(plan, timeout=args.timeout, verify=args.verify)
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
+def cmd_patch_batch_initialize(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch batch-initialize requires --live because it writes persistent GT-1000 user slots", 64)
+    try:
+        slots = [live.normalize_user_slot(slot) for slot in args.slots]
+        if len(set(slots)) != len(slots):
+            raise ValueError("slots must be unique")
+        writes = []
+        operations = []
+        for index, slot in enumerate(slots, start=1):
+            name = args.name_prefix if len(slots) == 1 else f"{args.name_prefix} {index}"
+            plan = patch_edit.plan_for_user_slot(patch_edit.build_default_patch_plan(name), slot)
+            writes.extend(plan.writes)
+            operations.append({"slot": slot, "name": name, "writeCount": len(plan.writes)})
+        plan = patch_edit.PatchPlan(
+            id=f"batch-initialize:{slots[0]}:{len(slots)}",
+            description=f"Initialize {len(slots)} user patch slots.",
+            writes=writes,
+        )
+        result = apply_plan_cli(plan, timeout=args.timeout, verify=args.verify)
+        result["operations"] = operations
         return result
     except ValueError as error:
         raise CLIError(str(error), 64) from error
@@ -738,7 +1500,7 @@ def cmd_patch_block(args: argparse.Namespace) -> Any:
         block_request = None
         if args.block_id is not None:
             args.block_id = resolve_block_id(args.block_id)
-            all_definitions = list(live.SUMMARY_BLOCKS) + list(live.RESIDENT_BLOCKS)
+            all_definitions = list(live.SUMMARY_BLOCKS) + list(live.FX_ALGORITHM_BLOCKS) + list(live.RESIDENT_BLOCKS)
             block_definition = next((block for block in all_definitions if block.id == args.block_id), None)
             if block_definition is None:
                 raise CLIError(f"unknown block {args.block_id}", 64)
@@ -753,7 +1515,13 @@ def cmd_patch_block(args: argparse.Namespace) -> Any:
                 # Resident blocks are at fixed offsets in the PatchEfct record
                 block_request = live.INITIAL_READS[2] # Patch Effect record
         else:
-            header_snapshot = read_live_snapshot(args.timeout, requests=live.INITIAL_READS)
+            header_snapshot = live_call_with_timeout(
+                "patch block position header --live",
+                args.timeout,
+                read_live_snapshot,
+                args.timeout,
+                requests=live.INITIAL_READS,
+            )
             element = next(
                 (item for item in header_snapshot.get("signalChainElements", []) if item.get("position") == args.position),
                 None,
@@ -761,7 +1529,7 @@ def cmd_patch_block(args: argparse.Namespace) -> Any:
             if element is None:
                 raise CLIError(f"unknown chain position {args.position}", 64)
             
-            all_definitions = list(live.SUMMARY_BLOCKS) + list(live.RESIDENT_BLOCKS)
+            all_definitions = list(live.SUMMARY_BLOCKS) + list(live.FX_ALGORITHM_BLOCKS) + list(live.RESIDENT_BLOCKS)
             block_definition = next(
                 (block for block in all_definitions if block.chain_element_value == element.get("rawValue")),
                 None,
@@ -782,7 +1550,13 @@ def cmd_patch_block(args: argparse.Namespace) -> Any:
                 block_request = live.INITIAL_READS[2] # Patch Effect record
 
         requests = live.INITIAL_READS + ([block_request] if block_request else live.BLOCK_READS)
-        snapshot = read_live_snapshot(args.timeout, requests=requests)
+        snapshot = live_call_with_timeout(
+            "patch block --live",
+            args.timeout,
+            read_live_snapshot,
+            args.timeout,
+            requests=requests,
+        )
         if args.position is not None:
             block = block_for_position(snapshot, args.position)
         else:
@@ -819,7 +1593,13 @@ def cmd_patch_stompbox(args: argparse.Namespace) -> Any:
         for _id, label, address, size, _definitions in records
     ]
     try:
-        raw = live.read_data_sets(timeout=args.timeout, requests=requests)
+        raw = live_call_with_timeout(
+            "patch stompbox --live",
+            args.timeout,
+            live.read_data_sets,
+            timeout=args.timeout,
+            requests=requests,
+        )
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -858,7 +1638,12 @@ def cmd_patch_dump(args: argparse.Namespace) -> Any:
     if not args.live:
         raise CLIError("patch dump currently requires --live", 64)
 
-    dump = read_live_snapshot(args.timeout)
+    dump = live_call_with_timeout(
+        "patch dump --live",
+        args.timeout,
+        read_live_snapshot,
+        args.timeout,
+    )
     if args.output:
         args.output.write_text(json.dumps(dump, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return {"output": str(args.output), "patchName": dump.get("patchName")}
@@ -887,7 +1672,7 @@ def cmd_patch_apply(args: argparse.Namespace) -> Any:
     if args.user_slot:
         plan = patch_edit.plan_for_user_slot(plan, args.user_slot)
     try:
-        return patch_edit.apply_plan(plan, timeout=args.timeout, verify=args.verify)
+        return apply_plan_cli(plan, timeout=args.timeout, verify=args.verify)
     except live.LiveMIDIError as error:
         raise CLIError(str(error)) from error
 
@@ -898,7 +1683,20 @@ def cmd_patch_set(args: argparse.Namespace) -> Any:
     try:
         args.block_id = resolve_block_id(args.block_id)
         plan = patch_edit.build_parameter_set_plan(args.block_id, args.parameter_id, args.value, slot=args.user_slot)
-        return patch_edit.apply_plan(plan, timeout=args.timeout, verify=args.verify)
+        return apply_plan_cli(plan, timeout=args.timeout, verify=args.verify)
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
+def cmd_patch_raw_set(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch raw-set requires --live because it writes to the connected GT-1000", 64)
+    try:
+        block_id = resolve_block_id(args.block_id)
+        plan = patch_edit.build_raw_parameter_set_plan(block_id, args.offset, args.value, width=args.width, slot=args.user_slot)
+        return apply_plan_cli(plan, timeout=args.timeout, verify=args.verify)
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -913,7 +1711,7 @@ def cmd_patch_enable(args: argparse.Namespace) -> Any:
         block_id = resolve_block_id(args.block_id)
         value = "on" if args.enabled else "off"
         plan = patch_edit.build_parameter_set_plan(block_id, "sw", value, slot=args.user_slot)
-        return patch_edit.apply_plan(plan, timeout=args.timeout, verify=args.verify)
+        return apply_plan_cli(plan, timeout=args.timeout, verify=args.verify)
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -926,7 +1724,7 @@ def cmd_patch_type(args: argparse.Namespace) -> Any:
     try:
         block_id = resolve_block_id(args.block_id)
         plan = patch_edit.build_parameter_set_plan(block_id, "type", args.type_value, slot=args.user_slot)
-        return patch_edit.apply_plan(plan, timeout=args.timeout, verify=args.verify)
+        return apply_plan_cli(plan, timeout=args.timeout, verify=args.verify)
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -946,7 +1744,55 @@ def cmd_patch_move(args: argparse.Namespace) -> Any:
             snapshot = read_live_snapshot(args.timeout, requests=requests_for_view("chain"))
         chain_values = [item["rawValue"] for item in snapshot.get("signalChainElements", [])]
         plan = patch_edit.build_chain_move_plan(chain_values, element, before=before, after=after, slot=args.user_slot)
-        return patch_edit.apply_plan(plan, timeout=args.timeout, verify=args.verify)
+        return apply_plan_cli(plan, timeout=args.timeout, verify=args.verify)
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
+def cmd_patch_control_set(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch control-set requires --live because it writes to the connected GT-1000", 64)
+    try:
+        plan = patch_edit.build_control_set_plan(args.control, args.function, mode=args.mode, slot=args.user_slot)
+        return apply_plan_cli(plan, timeout=args.timeout, verify=args.verify)
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
+def cmd_patch_system_control_set(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch system-control-set requires --live because it writes to the connected GT-1000 system control section", 64)
+    try:
+        plan = patch_edit.build_system_control_set_plan(args.control, args.function, mode=args.mode)
+        return apply_plan_cli(plan, timeout=args.timeout, verify=args.verify)
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
+def cmd_patch_control_preference_set(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch control-preference-set requires --live because it writes to the connected GT-1000 system control section", 64)
+    try:
+        plan = patch_edit.build_control_preference_plan(args.control, args.preference)
+        return apply_plan_cli(plan, timeout=args.timeout, verify=args.verify)
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
+def cmd_patch_led_set(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch led-set requires --live because it writes to the connected GT-1000", 64)
+    try:
+        plan = patch_edit.build_led_set_plan(args.control, args.state, args.color, slot=args.user_slot)
+        return apply_plan_cli(plan, timeout=args.timeout, verify=args.verify)
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -977,7 +1823,39 @@ def cmd_patch_assign_cc(args: argparse.Namespace) -> Any:
             active_max=args.active_max,
             slot=args.user_slot,
         )
-        return patch_edit.apply_plan(plan, timeout=args.timeout, verify=args.verify)
+        return apply_plan_cli(plan, timeout=args.timeout, verify=args.verify)
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
+def cmd_patch_assign_set(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch assign-set requires --live because it writes to the connected GT-1000", 64)
+    try:
+        target = parse_assign_target_reference(args.target)
+        source = parse_assign_source_reference(args.source)
+        plan = patch_edit.build_assign_set_plan(
+            args.number,
+            enabled=args.sw == "on",
+            target=target,
+            target_min=args.target_min,
+            target_max=args.target_max,
+            source=source,
+            mode=args.mode,
+            active_min=args.active_min,
+            active_max=args.active_max,
+            midi_channel=args.midi_channel,
+            midi_cc=args.midi_cc,
+            midi_cc_min=args.midi_cc_min,
+            midi_cc_max=args.midi_cc_max,
+            midi_pc=args.midi_pc,
+            midi_bank_msb=args.midi_bank_msb,
+            midi_bank_lsb=args.midi_bank_lsb,
+            slot=args.user_slot,
+        )
+        return apply_plan_cli(plan, timeout=args.timeout, verify=args.verify)
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -989,7 +1867,26 @@ def cmd_patch_set_bpm(args: argparse.Namespace) -> Any:
         raise CLIError("patch set-bpm requires --live because it writes to the connected GT-1000", 64)
     try:
         plan = patch_edit.build_bpm_set_plan(args.bpm, slot=args.user_slot)
-        return patch_edit.apply_plan(plan, timeout=args.timeout, verify=args.verify)
+        return apply_plan_cli(plan, timeout=args.timeout, verify=args.verify)
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
+def cmd_patch_master_set(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch master-set requires --live because it writes to the connected GT-1000", 64)
+    try:
+        if args.user_slot:
+            slot = live.normalize_user_slot(args.user_slot)
+            address = live.remap_temporary_patch_address(live.TEMPORARY_PATCH_EFFECT, live.user_patch_base(slot))
+            request = live.PatchReadRequest("Patch Effect", address, [0x00, 0x00, 0x01, 0x1C])
+            data = live.read_data_sets(timeout=args.timeout, requests=[request])[live.address_key(address)]
+            plan = patch_edit.build_master_set_record_plan(args.field, args.value, data, slot=slot)
+        else:
+            plan = patch_edit.build_master_set_plan(args.field, args.value)
+        return apply_plan_cli(plan, timeout=args.timeout, verify=args.verify)
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -1001,7 +1898,7 @@ def cmd_patch_tuner_assign(args: argparse.Namespace) -> Any:
         raise CLIError("patch tuner-assign requires --live because it writes to the connected GT-1000", 64)
     try:
         plan = patch_edit.build_tuner_assign_plan(slot=args.user_slot)
-        return patch_edit.apply_plan(plan, timeout=args.timeout, verify=args.verify)
+        return apply_plan_cli(plan, timeout=args.timeout, verify=args.verify)
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -1027,9 +1924,171 @@ def read_live_snapshot(timeout: float, requests: list[live.PatchReadRequest] | N
 def read_user_slot_snapshot(slot: str, timeout: float, *, view: str) -> dict[str, Any]:
     requests = requests_for_view(view)
     try:
-        return live.read_user_patch(slot, timeout=timeout, requests=requests)
+        patch_base = live.user_patch_base(slot)
+        return read_mapped_patch_snapshot(
+            requests=requests,
+            patch_base=patch_base,
+            timeout=timeout,
+            source_slot=live.normalize_user_slot(slot),
+            source_type="user",
+        )
     except live.LiveMIDIError as error:
         raise CLIError(str(error)) from error
+
+
+def read_preset_slot_snapshot(slot: str, timeout: float, *, view: str) -> dict[str, Any]:
+    requests = requests_for_view(view)
+    try:
+        patch_base = live.preset_patch_base(slot)
+        return read_mapped_patch_snapshot(
+            requests=requests,
+            patch_base=patch_base,
+            timeout=timeout,
+            source_slot=live.normalize_preset_slot(slot),
+            source_type="preset",
+        )
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
+def read_mapped_patch_snapshot(
+    *,
+    requests: list[live.PatchReadRequest],
+    patch_base: list[int],
+    timeout: float,
+    source_slot: str,
+    source_type: str,
+) -> dict[str, Any]:
+    remapped_requests = [
+        live.PatchReadRequest(request.label, live.remap_temporary_patch_address(request.address, patch_base), request.size)
+        for request in requests
+    ]
+    raw = live_call_with_timeout(
+        f"patch {source_slot} --live",
+        timeout,
+        patch_edit.read_data_sets_batched,
+        timeout=timeout,
+        requests=remapped_requests,
+    )
+    snapshot = live.empty_snapshot()
+    for source_request, remapped_request in zip(requests, remapped_requests):
+        data = raw.get(live.address_key(remapped_request.address))
+        if data is not None:
+            live.apply_data_set(snapshot, source_request.address, data)
+    snapshot["sourceSlot"] = source_slot
+    snapshot["sourceAddress"] = live.hex_bytes(patch_base)
+    if source_type != "user":
+        snapshot["sourceType"] = source_type
+    return snapshot
+
+
+def read_patch_records_with_timeout(
+    label: str,
+    timeout: float,
+    requests: list[live.PatchReadRequest],
+) -> dict[str, list[int]]:
+    process_timeout = patch_record_process_timeout(timeout, len(requests))
+    attempts = 3
+    for attempt in range(attempts):
+        try:
+            return live_call_with_timeout(
+                label,
+                process_timeout,
+                patch_edit.read_data_sets_batched,
+                timeout=timeout,
+                requests=requests,
+            )
+        except CLIError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(0.5)
+    raise CLIError(f"{label} failed without returning a result", 1)
+
+
+def read_patch_records_lenient_with_timeout(
+    label: str,
+    timeout: float,
+    requests: list[live.PatchReadRequest],
+) -> dict[str, list[int]]:
+    if not requests:
+        return {}
+    read_timeout = min(timeout, 2.0)
+    process_timeout = max(timeout, min(120.0, (read_timeout + 0.1) * len(requests) + 5.0))
+    return live_call_with_timeout(
+        label,
+        process_timeout,
+        live.read_data_sets_lenient,
+        timeout=read_timeout,
+        requests=requests,
+    )
+
+
+def read_clone_records_with_timeout(label: str, timeout: float, slot: str) -> dict[str, list[int]]:
+    source = live.normalize_user_slot(slot)
+    raw = read_patch_records_lenient_with_timeout(f"{label} core records", timeout, patch_edit.clone_core_read_requests(source))
+    required_labels = {"Patch Common", "Patch Effect"}
+    missing_required = [
+        request.label
+        for request in patch_edit.clone_core_read_requests(source)
+        if request.label in required_labels and live.address_key(request.address) not in raw
+    ]
+    if missing_required:
+        raise CLIError(f"{label} missing required records: {', '.join(missing_required)}", 1)
+    active_requests = patch_edit.active_fx_algorithm_read_requests(source, raw)
+    if active_requests:
+        raw.update(read_patch_records_lenient_with_timeout(f"{label} active FX records", timeout, active_requests))
+    return raw
+
+
+def delay_between_slot_reads(index: int, total: int) -> None:
+    if index >= total - 1:
+        return
+    delay = float(os.environ.get("GT1000_SLOT_READ_DELAY", "1.0"))
+    if delay > 0:
+        time.sleep(delay)
+
+
+def patch_record_process_timeout(timeout: float, request_count: int) -> float:
+    if request_count <= 0:
+        return timeout
+    batches = (request_count + patch_edit.VERIFY_READ_BATCH_SIZE - 1) // patch_edit.VERIFY_READ_BATCH_SIZE
+    return max(timeout, min(120.0, timeout * max(1.0, batches / 3.0)))
+
+
+def apply_plan_cli(plan: patch_edit.PatchPlan, *, timeout: float, verify: bool) -> dict[str, Any]:
+    try:
+        patch_edit.write_data_sets_resilient(plan.writes)
+    except live.LiveMIDIError as error:
+        raise live.LiveMIDIError(f"write phase failed for {plan.id}: {error}") from error
+
+    result: dict[str, Any] = {"plan": plan.id, "writeCount": len(plan.writes), "verified": None}
+    if verify:
+        time.sleep(0.25)
+        try:
+            verification = verify_plan_with_timeout(plan, timeout=timeout)
+        except live.LiveMIDIError as error:
+            raise live.LiveMIDIError(f"verification phase failed for {plan.id}: {error}") from error
+        result["verified"] = verification["ok"]
+        result["verification"] = verification
+    return result
+
+
+def verify_plan_with_timeout(plan: patch_edit.PatchPlan, *, timeout: float) -> dict[str, Any]:
+    requests = [write.read_request for write in plan.writes]
+    raw = read_patch_records_with_timeout(f"verify {plan.id}", timeout, requests)
+    checks = []
+    for write in plan.writes:
+        key = live.address_key(write.address)
+        actual = raw.get(key)
+        ok = actual is not None and actual[:len(write.data)] == write.data
+        checks.append({
+            "label": write.label,
+            "address": live.hex_bytes(write.address),
+            "ok": ok,
+            "expectedHex": live.hex_string(write.data),
+            "actualHex": live.hex_string(actual or []),
+        })
+    return {"ok": all(check["ok"] for check in checks), "checks": checks}
 
 
 def requests_for_view(view: str) -> list[live.PatchReadRequest]:
@@ -1044,6 +2103,186 @@ def requests_for_view(view: str) -> list[live.PatchReadRequest]:
     if view == "overview":
         return live.INITIAL_READS
     return live.READ_PLAN + assign_requests
+
+
+def parameter_schema(parameter: live.Parameter, relative_offset: int) -> dict[str, Any]:
+    schema = {
+        "id": parameter.id,
+        "displayName": parameter.display_name,
+        "offset": relative_offset,
+        "absoluteOffset": parameter.offset,
+        "kind": parameter.kind,
+        "byteCount": parameter.byte_count,
+        "values": list(parameter.values),
+    }
+    if parameter.kind == "bool":
+        schema["minimum"] = 0
+        schema["maximum"] = 1
+        schema["values"] = ["off", "on"]
+    elif parameter.kind == "type" and parameter.values:
+        schema["minimum"] = 0
+        schema["maximum"] = len(parameter.values) - 1
+    elif parameter.kind in {"byte", "type"}:
+        schema["minimum"] = 0
+        schema["maximum"] = 127
+    elif parameter.kind == "nibbles":
+        schema["minimum"] = 0
+        schema["maximum"] = (1 << (parameter.byte_count * 4)) - 1
+    return schema
+
+
+def block_schema(block_id: str, *, include_raw: bool = False) -> dict[str, Any]:
+    block = patch_edit.find_patch_block(block_id)
+    if isinstance(block, live.BlockDefinition):
+        address = block.address
+        block_type = "effect"
+    else:
+        address = live.address_adding(live.TEMPORARY_PATCH_EFFECT, block.offset)
+        block_type = "resident"
+    editable_size = patch_edit.editable_block_size(block)
+    named_parameters = [
+        parameter_schema(parameter, parameter.offset if isinstance(block, live.BlockDefinition) else parameter.offset - block.offset)
+        for parameter in block.parameters
+    ]
+    named_by_offset = {}
+    for parameter in block.parameters:
+        relative_offset = parameter.offset if isinstance(block, live.BlockDefinition) else parameter.offset - block.offset
+        for offset in range(relative_offset, relative_offset + parameter.byte_count):
+            named_by_offset.setdefault(offset, parameter)
+    schema = {
+        "id": block.id,
+        "displayName": block.display_name,
+        "type": block_type,
+        "chainElementValue": block.chain_element_value,
+        "temporaryAddress": live.hex_bytes(address),
+        "summarySize": block.size,
+        "editableSize": editable_size,
+        "namedParameterCount": len(named_parameters),
+        "namedParameters": named_parameters,
+        "rawEditable": {
+            "command": f"patch raw-set {block.id} <offset> <value>",
+            "offsetRange": [0, editable_size - 1],
+            "widths": ["byte", "nibbles2", "nibbles4"],
+        },
+    }
+    if include_raw:
+        schema["rawEditable"]["parameters"] = [
+            {
+                "id": f"offset{offset}",
+                "offset": offset,
+                "command": f"patch raw-set {block.id} {offset} <value>",
+                "isNamed": offset in named_by_offset,
+                "namedParameterId": named_by_offset[offset].id if offset in named_by_offset else None,
+            }
+            for offset in range(editable_size)
+        ]
+    return schema
+
+
+def master_schema() -> dict[str, Any]:
+    fields = [
+        {
+            "id": "level",
+            "displayName": "PATCH LEVEL",
+            "offset": 0x5F,
+            "kind": "nibbles2",
+            "byteCount": 2,
+            "minimum": 0,
+            "maximum": 200,
+        },
+        {"id": "key", "displayName": "MASTER KEY", "offset": 0x65, "kind": "key", "minimum": 0, "maximum": 11, "values": list(patch_edit.MASTER_KEY_VALUES)},
+        {"id": "amp-ctl1", "displayName": "AMP CTL1", "offset": 0x66, "kind": "bool", "minimum": 0, "maximum": 1},
+        {"id": "amp-ctl2", "displayName": "AMP CTL2", "offset": 0x67, "kind": "bool", "minimum": 0, "maximum": 1},
+        {"id": "carryover", "displayName": "MASTER CARRYOVER", "offset": 0x99, "kind": "bool", "minimum": 0, "maximum": 1},
+        {"id": "tempo-hold", "displayName": "CONTROL ASSIGN TEMPO HOLD", "offset": 0x9A, "kind": "bool", "minimum": 0, "maximum": 1},
+        {"id": "input-sensitivity", "displayName": "CONTROL ASSIGN INPUT SENS", "offset": 0x9B, "kind": "byte", "minimum": 0, "maximum": 100},
+    ]
+    return {
+        "id": "master",
+        "displayName": "PATCH MASTER",
+        "type": "patchEffect",
+        "temporaryAddress": live.hex_bytes(live.TEMPORARY_PATCH_EFFECT),
+        "namedParameterCount": len(fields),
+        "namedParameters": fields,
+        "command": "patch master-set <field> <value>",
+    }
+
+
+def controls_editor_schema() -> dict[str, Any]:
+    return {
+        "id": "controls",
+        "displayName": "PATCH/SYSTEM CONTROLS",
+        "type": "editor",
+        "commands": {
+            "patch": "patch control-set <control> <function>",
+            "system": "patch system-control-set <control> <function>",
+            "preference": "patch control-preference-set <control> <patch|system>",
+        },
+        "controls": sorted(set(patch_edit.PATCH_CONTROL_FIELDS) | set(patch_edit.PATCH_EXP_PEDAL_FIELDS)),
+        "switchFunctions": sorted(patch_edit.CONTROL_FUNCTION_VALUES),
+        "pedalFunctions": sorted(patch_edit.EXP_PEDAL_FUNCTION_VALUES),
+        "modes": ["toggle", "moment"],
+        "preferences": ["patch", "system"],
+    }
+
+
+def assign_editor_schema() -> dict[str, Any]:
+    return {
+        "id": "assign",
+        "displayName": "ASSIGN",
+        "type": "editor",
+        "commands": {
+            "decodedCc": "patch assign-cc <number> <block> <parameter> --cc <cc> --mode <toggle|moment>",
+            "general": "patch assign-set <number> --target <target> --min <value> --max <value> --source <source> --mode <toggle|moment>",
+        },
+        "assignRange": [1, 16],
+        "targetRange": [0, 16383],
+        "logicalValueRange": [0, 16383],
+        "activeRange": [0, 16383],
+        "midiCcSources": ["cc1...cc31", "cc64...cc95"],
+        "sourceAliases": [
+            "num1...num5", "cur-num", "bank-down", "bank-up", "ctl1...ctl7",
+            "exp1-sw", "exp1", "exp2", "exp3", "internal-pedal", "wave-pedal", "input-level",
+        ],
+        "targetAliases": ["tuner", "divider1-channel-select", "divider2-channel-select", "divider3-channel-select", "block.parameter"],
+        "modes": ["toggle", "moment"],
+        "patchMidiFields": {
+            "midi-channel": [0, 16],
+            "midi-cc": [0, 127],
+            "midi-cc-min": [0, 16383],
+            "midi-cc-max": [0, 16383],
+            "midi-pc": [0, 127],
+            "midi-bank-msb": [0, 16383],
+            "midi-bank-lsb": [0, 16383],
+        },
+    }
+
+
+def led_editor_schema() -> dict[str, Any]:
+    off_colors = [name for name, value in patch_edit.LED_COLOR_VALUES.items() if value <= 10]
+    return {
+        "id": "led",
+        "displayName": "PATCH LED",
+        "type": "editor",
+        "command": "patch led-set <control> <off|on> <color>",
+        "temporaryAddress": live.hex_bytes(live.TEMPORARY_PATCH_LED),
+        "controls": sorted(patch_edit.PATCH_LED_COLOR_OFFSETS),
+        "states": ["off", "on"],
+        "offColors": off_colors,
+        "onColors": sorted(patch_edit.LED_COLOR_VALUES),
+    }
+
+
+def consecutive_user_slots(start_slot: str, count: int) -> list[str]:
+    if count <= 0:
+        raise ValueError("count must be positive")
+    start = live.normalize_user_slot(start_slot)
+    start_index = live.user_patch_zero_based_index(start)
+    end_index = start_index + count - 1
+    max_index = live.USER_BANK_COUNT * live.USER_PATCHES_PER_BANK - 1
+    if end_index > max_index:
+        raise ValueError("destination range exceeds U50-5")
+    return [slot_from_patch_index("U", index) for index in range(start_index, end_index + 1)]
 
 
 def program_change_for_slot(slot: str, channel: int) -> list[int]:
@@ -1197,6 +2436,10 @@ def load_json(path: Path) -> dict[str, Any]:
     return value
 
 
+def write_json(path: Path, value: dict[str, Any]) -> None:
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def overview_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
     return {
         "patchName": snapshot.get("patchName"),
@@ -1222,6 +2465,14 @@ def controls_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
         raise CLIError("missing patchCommon or systemControl raw data in snapshot", 64)
 
     controls = {}
+
+    def byte_at(data: bytes, offset: int) -> int | None:
+        return data[offset] if 0 <= offset < len(data) else None
+
+    def control_source(preference: str, patch_offset: int) -> tuple[bytes, int]:
+        if preference == "SYSTEM":
+            return system_control, patch_offset - 0x23
+        return patch_common, patch_offset
     
     # Define physical switches and their offsets in PatchCommon and SystemControl
     switches = [
@@ -1234,9 +2485,12 @@ def controls_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
     ]
 
     for name, patch_offset, system_pref_offset in switches:
-        preference = "SYSTEM" if system_control[system_pref_offset] == 1 else "PATCH"
-        func_byte = system_control[patch_offset - 0x23] if preference == "SYSTEM" else patch_common[patch_offset]
-        mode_byte = system_control[patch_offset - 0x23 + 1] if preference == "SYSTEM" else patch_common[patch_offset + 1]
+        preference = "SYSTEM" if byte_at(system_control, system_pref_offset) == 1 else "PATCH"
+        source, source_offset = control_source(preference, patch_offset)
+        func_byte = byte_at(source, source_offset)
+        mode_byte = byte_at(source, source_offset + 1)
+        if func_byte is None:
+            continue
         function_detail = decode_control_function_detail(func_byte, is_num="NUM" in name)
         
         controls[name] = {
@@ -1252,8 +2506,11 @@ def controls_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
     # EXP Pedals
     exp_pedals = [("EXP 1", 0x43, 0x33), ("EXP 2", 0x44, 0x34), ("EXP 3", 0x45, 0x35)]
     for name, patch_offset, system_pref_offset in exp_pedals:
-        preference = "SYSTEM" if system_control[system_pref_offset] == 1 else "PATCH"
-        func_byte = system_control[patch_offset - 0x23] if preference == "SYSTEM" else patch_common[patch_offset]
+        preference = "SYSTEM" if byte_at(system_control, system_pref_offset) == 1 else "PATCH"
+        source, source_offset = control_source(preference, patch_offset)
+        func_byte = byte_at(source, source_offset)
+        if func_byte is None:
+            continue
         function_detail = decode_exp_function_detail(func_byte)
         controls[name] = {
             "preference": preference,
@@ -1437,11 +2694,124 @@ def assign_target_detail(
 
 
 def block_parameter_names(block_id: str) -> list[tuple[str, str]]:
-    block = next((item for item in live.SUMMARY_BLOCKS if item.id == block_id), None)
+    block = next((item for item in list(live.SUMMARY_BLOCKS) + list(live.FX_ALGORITHM_BLOCKS) if item.id == block_id), None)
     if block is None:
         return []
+    by_id = {parameter.id: (parameter.id, parameter.display_name) for parameter in block.parameters}
+    if block_id.startswith("eq"):
+        return [
+            by_id[parameter_id]
+            for parameter_id in [
+                "sw", "type", "lowGain", "highGain", "lowMidFreq", "lowMidQ", "lowMidGain",
+                "highMidFreq", "highMidQ", "highMidGain", "level", "lowCut", "highCut",
+                "geq31_5Hz", "geq63Hz", "geq125Hz", "geq250Hz", "geq500Hz", "geq1kHz",
+                "geq2kHz", "geq4kHz", "geq8kHz", "geq16kHz", "geqLevel",
+            ]
+        ]
+    if block_id == "masterDelay":
+        return [
+            by_id[parameter_id]
+            for parameter_id in [
+                "sw", "type", "time", "feedback", "highCut", "effectLevel", "directLevel", "modRate",
+                "modDepth", "duckSens", "duckPreDepth", "duckPostDepth", "head", "pitch", "pitchBal",
+                "pitchFeedback", "dualMode", "d1Type", "d1Time", "d1Feedback", "d1HighCut",
+                "d1EffectLevel", "d2Type", "d2Time", "d2Feedback", "d2HighCut", "d2EffectLevel",
+                "trigger", "twistMode", "riseTime", "fallTime", "level",
+            ]
+        ]
+    if block_id == "reverb":
+        return [
+            by_id[parameter_id]
+            for parameter_id in [
+                "sw", "type", "time", "tone", "density", "preDelay", "lowCut", "highCut",
+                "lowDamp", "highDamp", "modRate", "modDepth", "duckSens", "duckPreDepth",
+                "duckPostDepth", "effectLevel", "directLevel", "pitch1", "level1", "pitch2",
+                "level2", "type1", "time1", "preDelay1", "density1", "tone1", "lowCut1",
+                "highCut1", "effectLevel1", "type2", "time2", "preDelay2", "density2", "tone2",
+                "lowCut2", "highCut2", "effectLevel2",
+            ]
+        ]
+    if block_id == "pedalFx":
+        return [
+            by_id[parameter_id]
+            for parameter_id in [
+                "sw", "type", "pitch", "effectLevel", "directMix", "wahType", "pedalMin",
+                "pedalMax", "wahPedalPosition", "pedalBendPedalPosition",
+            ]
+        ]
     by_offset = {parameter.offset: (parameter.id, parameter.display_name) for parameter in block.parameters}
     return [by_offset.get(offset, (f"param{offset}", f"PARAM {offset}")) for offset in range(block.size)]
+
+
+FX_ASSIGN_ORDERS = {
+    "AGSim": ["body", "low", "high", "level"],
+    "AcReso": ["type", "resonance", "tone", "level"],
+    "AWah": ["filterMode", "rate", "depth", "frequency", "resonance", "waveform", "effectLevel", "directMix"],
+    "Chorus": [
+        "type", "rate", "depth", "preDelay", "waveform", "lowCut", "highCut", "effectLevel", "directLevel",
+        "rate1", "depth1", "preDelay1", "waveform1", "lowCut1", "highCut1", "effectLevel1",
+        "rate2", "depth2", "preDelay2", "waveform2", "lowCut2", "highCut2", "effectLevel2",
+        "outputMode", "sweetness", "bell", "preampSw", "preampGain", "preampLevel",
+    ],
+    "CVibe": ["mode", "rate", "depth", "effectLevel"],
+    "Comp": ["type", "sustain", "attack", "tone", "ratio", "level", "directMix"],
+    "Defretter": ["sens", "depth", "tone", "attack", "resonance", "effectLevel", "directMix"],
+    "Feedbacker": ["mode", "trigger", "depth", "riseTime", "octRiseTime", "feedback", "octFeedback", "vibRate", "vibDepth"],
+    "Flanger": [
+        "rate", "depth", "resonance", "manual", "turbo", "waveform", "stepRate", "separation",
+        "lowDamp", "highDamp", "lowCut", "highCut", "effectLevel", "directMix",
+    ],
+    "Harmonist": [
+        "voice", "hr1Harmony", "hr1PreDelay", "hr1Feedback", "hr1Level",
+        "hr2Harmony", "hr2PreDelay", "hr2Level", "directLevel",
+    ],
+    "Humanizer": ["mode", "vowel1", "vowel2", "sens", "rate", "depth", "manual", "level"],
+    "Octave": ["type", "minus2oct", "minus1oct", "directLevel", "range", "octaveLevel"],
+    "Overtone": ["lowerLevel", "upperLevel", "unisonLevel", "directLevel", "detune", "low", "high", "outputMode"],
+    "Pan": ["rate", "depth", "waveform", "effectLevel", "directMix"],
+    "Phaser": [
+        "type", "stage", "rate", "depth", "resonance", "manual", "waveform", "stepRate",
+        "biPhase", "separation", "lowDamp", "highDamp", "lowCut", "highCut", "effectLevel", "directMix",
+    ],
+    "PitchShift": [
+        "voice", "ps1Pitch", "ps1Mode", "ps1Fine", "ps1PreDelay", "ps1Feedback", "ps1Level",
+        "ps2Pitch", "ps2Mode", "ps2Fine", "ps2PreDelay", "ps2Level", "directLevel",
+    ],
+    "RingMod": ["intelligent", "frequency", "freqModRate", "freqModDepth", "effectLevel", "directMix"],
+    "Rotary": ["speedSelect", "slowRate", "fastRate", "riseTime", "fallTime", "micDistance", "rotorHorn", "drive", "effectLevel", "directMix"],
+    "SitarSim": ["sens", "depth", "tone", "resonance", "buzz", "effectLevel", "directMix"],
+    "Slicer": ["pattern", "rate", "trigger", "attack", "duty", "effectLevel", "directMix"],
+    "SlowGear": ["sens", "riseTime", "level"],
+    "SoundHold": ["trigger", "riseTime", "effectLevel"],
+    "SBend": ["trigger", "pitch", "riseTime", "fallTime"],
+    "Tremolo": ["rate", "depth", "waveform", "trigger", "riseTime", "effectLevel", "directMix"],
+    "TWah": ["filterMode", "polarity", "sens", "frequency", "resonance", "decay", "effectLevel", "directMix"],
+    "Vibrato": ["rate", "depth", "color", "trigger", "riseTime", "effectLevel", "directMix"],
+}
+
+FX_ASSIGN_STARTS = {
+    "AGSim": 240, "AcReso": 244, "AWah": 248, "Chorus": 256, "CVibe": 285, "Comp": 289,
+    "Defretter": 296, "Feedbacker": 303, "Flanger": 312, "Harmonist": 326, "Humanizer": 335,
+    "Octave": 343, "Overtone": 349, "Pan": 357, "Phaser": 362, "PitchShift": 378,
+    "RingMod": 391, "Rotary": 397, "SitarSim": 407, "Slicer": 414, "SlowGear": 421,
+    "SoundHold": 424, "SBend": 427, "Tremolo": 431, "TWah": 438, "Vibrato": 446,
+}
+
+
+def fx_algorithm_assign_ranges() -> list[dict[str, Any]]:
+    ranges = []
+    for fx_number, target_offset in [(1, 0), (2, 215), (3, 430), (4, 937)]:
+        for suffix, start in FX_ASSIGN_STARTS.items():
+            block_id = f"fx{fx_number}{suffix}"
+            by_id = {parameter_id: (parameter_id, name) for parameter_id, name in block_parameter_names(block_id)}
+            parameters = [by_id[parameter_id] for parameter_id in FX_ASSIGN_ORDERS[suffix] if parameter_id in by_id]
+            ranges.append({
+                "start": start + target_offset,
+                "category": f"FX {fx_number} {suffix}",
+                "blockId": block_id,
+                "parameters": parameters,
+            })
+    return ranges
 
 
 ASSIGN_TARGET_RANGES = [
@@ -1465,6 +2835,8 @@ ASSIGN_TARGET_RANGES = [
     {"start": 237, "category": "FX 1", "blockId": "fx1", "parameters": block_parameter_names("fx1")},
     {"start": 449, "category": "FX 2", "blockId": "fx2", "parameters": block_parameter_names("fx2")},
     {"start": 661, "category": "FX 3", "blockId": "fx3", "parameters": block_parameter_names("fx3")},
+    *fx_algorithm_assign_ranges(),
+    {"start": 1175, "category": "FX 4", "blockId": "fx4", "parameters": block_parameter_names("fx4")},
     {"start": 873, "category": "REVERB", "blockId": "reverb", "parameters": block_parameter_names("reverb")},
     {"start": 915, "category": "PEDAL FX", "blockId": "pedalFx", "parameters": block_parameter_names("pedalFx")},
 ]

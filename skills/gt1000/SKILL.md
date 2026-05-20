@@ -91,7 +91,7 @@ Use this routing:
 These commands read the current/temporary patch buffer (`10 00 00 00`) unless a command explicitly targets a user slot.
 
 ```sh
-scripts/gt1000-agent --pretty ports --live
+scripts/gt1000-agent --pretty ports --live --timeout 8
 scripts/gt1000-agent --pretty patch summary --live --timeout 8
 scripts/gt1000-agent --pretty patch overview --live --timeout 8
 scripts/gt1000-agent --pretty patch chain --live --timeout 8
