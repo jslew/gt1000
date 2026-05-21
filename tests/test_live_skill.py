@@ -68,6 +68,7 @@ LIVE_VERIFIED_COMMAND_PATHS = {
     ("patch", "liveset-rename"),
     ("patch", "master-set"),
     ("patch", "move"),
+    ("patch", "musician-summary"),
     ("patch", "overview"),
     ("patch", "performance"),
     ("patch", "plan"),

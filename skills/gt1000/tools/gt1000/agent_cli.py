@@ -123,6 +123,10 @@ def build_parser() -> argparse.ArgumentParser:
     add_input_options(performance)
     performance.set_defaults(func=lambda args: patch_view(args, "performance"))
 
+    musician_summary = patch_subcommands.add_parser("musician-summary", help="Describe the patch in concise musician-facing language.")
+    add_input_options(musician_summary)
+    musician_summary.set_defaults(func=lambda args: patch_view(args, "musician-summary"))
+
     summary = patch_subcommands.add_parser("summary", help="Show aggregated patch overview, chain, and controls.")
     add_input_options(summary)
     summary.set_defaults(func=lambda args: patch_view(args, "summary"))
@@ -130,21 +134,21 @@ def build_parser() -> argparse.ArgumentParser:
     slot = patch_subcommands.add_parser("slot", help="Read one persistent user patch slot without selecting it.")
     slot.add_argument("slot", help="User slot such as U01-1.")
     slot.add_argument("--live", action="store_true", help="Required because user slots are read from the connected GT-1000.")
-    slot.add_argument("--view", choices=["overview", "chain", "controls", "performance", "summary", "full"], default="summary")
+    slot.add_argument("--view", choices=["overview", "chain", "controls", "performance", "musician-summary", "summary", "full"], default="summary")
     slot.add_argument("--timeout", type=float, default=8.0, help="Live read timeout in seconds.")
     slot.set_defaults(func=cmd_patch_slot)
 
     preset = patch_subcommands.add_parser("preset", help="Read one preset patch's documented primary records without selecting it.")
     preset.add_argument("slot", help="Preset slot such as P01-1.")
     preset.add_argument("--live", action="store_true", help="Required because preset slots are read from the connected GT-1000.")
-    preset.add_argument("--view", choices=["overview", "chain", "controls", "performance", "summary", "full"], default="summary")
+    preset.add_argument("--view", choices=["overview", "chain", "controls", "performance", "musician-summary", "summary", "full"], default="summary")
     preset.add_argument("--timeout", type=float, default=8.0, help="Live read timeout in seconds.")
     preset.set_defaults(func=cmd_patch_preset)
 
     bank = patch_subcommands.add_parser("bank", help="Read all five patches in a persistent user bank.")
     bank.add_argument("bank", help="User bank such as U01.")
     bank.add_argument("--live", action="store_true", help="Required because user banks are read from the connected GT-1000.")
-    bank.add_argument("--view", choices=["overview", "chain", "controls", "performance", "summary", "full"], default="summary")
+    bank.add_argument("--view", choices=["overview", "chain", "controls", "performance", "musician-summary", "summary", "full"], default="summary")
     bank.add_argument("--timeout", type=float, default=8.0, help="Live read timeout in seconds per slot.")
     bank.set_defaults(func=cmd_patch_bank)
 
@@ -1053,7 +1057,7 @@ STOMPBOX3_SELECTIONS = [
 def patch_view(args: argparse.Namespace, view: str) -> Any:
     if args.live or args.file is None:
         requests = requests_for_view(view)
-        if view == "performance":
+        if view in {"performance", "musician-summary"}:
             snapshot = read_performance_snapshot_with_timeout(f"patch {view} --live", args.timeout)
         else:
             snapshot = read_live_snapshot_with_timeout(
@@ -1069,6 +1073,8 @@ def patch_view(args: argparse.Namespace, view: str) -> Any:
             return controls_from_full(snapshot)
         if view == "performance":
             return performance_from_full(snapshot)
+        if view == "musician-summary":
+            return musician_summary_from_full(snapshot)
         if view == "summary":
             return summary_from_full(snapshot)
         return snapshot
@@ -1082,6 +1088,8 @@ def patch_view(args: argparse.Namespace, view: str) -> Any:
         return controls_from_full(snapshot)
     if view == "performance":
         return performance_from_full(snapshot)
+    if view == "musician-summary":
+        return musician_summary_from_full(snapshot)
     if view == "summary":
         return summary_from_full(snapshot)
     raise CLIError(f"unsupported patch view {view}", 64)
@@ -2095,6 +2103,121 @@ def performance_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def musician_summary_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
+    overview = overview_from_full(snapshot)
+    performance = performance_from_snapshot_safe(snapshot)
+    chain = chain_from_full(snapshot)
+    playable_controls = musician_playable_controls(performance)
+    tone = musician_tone_sentence(chain)
+    live_use = musician_live_use_sentence(performance)
+    control_summary = musician_control_sentence(playable_controls)
+    summary = [tone, live_use, control_summary]
+    notes = list(performance.get("notes", []))
+
+    return {
+        "id": "patchMusicianSummary",
+        "patchName": overview.get("patchName"),
+        "headline": musician_headline(overview),
+        "tone": tone,
+        "liveUse": live_use,
+        "controlSummary": control_summary,
+        "playableControls": playable_controls,
+        "tunerAvailable": performance.get("tunerAvailable"),
+        "masterBPM": overview.get("masterBPM"),
+        "masterPatchLevel": overview.get("masterPatchLevel"),
+        "summary": summary,
+        "notes": notes,
+    }
+
+
+def musician_headline(overview: dict[str, Any]) -> str:
+    patch_name = overview.get("patchName") or "Unnamed patch"
+    details = []
+    if overview.get("masterPatchLevel") is not None:
+        details.append(f"level {overview['masterPatchLevel']}")
+    if overview.get("masterBPM") is not None:
+        details.append(f"{format_musician_number(overview['masterBPM'])} BPM")
+    return f"{patch_name}: {', '.join(details)}" if details else str(patch_name)
+
+
+def musician_tone_sentence(chain: dict[str, Any]) -> str:
+    labels = musician_chain_labels(chain)
+    if labels:
+        limit = 8
+        shown = labels[:limit]
+        prefix = "Main path starts: " if len(labels) > limit else "Main path: "
+        suffix = f" ({len(labels) - limit} more decoded elements omitted)." if len(labels) > limit else "."
+        return prefix + " -> ".join(shown) + suffix
+    summary = chain.get("descriptionSignalChainSummary") or chain.get("signalChainSummary")
+    if summary:
+        return f"Main path: {summary}."
+    return "No decoded signal chain was available."
+
+
+def musician_chain_labels(chain: dict[str, Any]) -> list[str]:
+    elements = chain.get("descriptionElements") or chain.get("elements") or []
+    labels = []
+    for element in elements:
+        if element.get("isReserved"):
+            continue
+        display_name = element.get("displayName")
+        if not display_name:
+            continue
+        if display_name.startswith("BYPASS"):
+            continue
+        type_name = element.get("typeName")
+        labels.append(f"{display_name} ({type_name})" if type_name else display_name)
+    return labels
+
+
+def musician_playable_controls(performance: dict[str, Any]) -> list[dict[str, Any]]:
+    controls = []
+    for control in performance.get("controls", []):
+        action = control.get("action")
+        if not action or action == "No patch action":
+            continue
+        controls.append({
+            "control": control.get("control"),
+            "kind": control.get("kind"),
+            "preference": control.get("preference"),
+            "action": action,
+        })
+    return controls
+
+
+def musician_live_use_sentence(performance: dict[str, Any]) -> str:
+    details = []
+    level = performance.get("masterPatchLevel")
+    bpm = performance.get("masterBPM")
+    if level is not None:
+        details.append(f"patch level {level}")
+    if bpm is not None:
+        details.append(f"{format_musician_number(bpm)} BPM")
+    if performance.get("tunerAvailable"):
+        details.append("decoded tuner access")
+    else:
+        details.append("no decoded tuner access")
+    return "Live use: " + ", ".join(details) + "."
+
+
+def musician_control_sentence(playable_controls: list[dict[str, Any]]) -> str:
+    if not playable_controls:
+        return "Playable controls: no patch-specific actions decoded."
+    shown = [
+        f"{control.get('control')}: {control.get('action')}"
+        for control in playable_controls[:5]
+    ]
+    if len(playable_controls) > 5:
+        shown.append(f"{len(playable_controls) - 5} more")
+    return "Playable controls: " + "; ".join(shown) + "."
+
+
+def format_musician_number(value: Any) -> str:
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
 def assign_source_names_for_control(name: str) -> list[str]:
     if name == "CUR NUM":
         return ["CURRENT NUMBER"]
@@ -2957,7 +3080,7 @@ def verify_plan_with_timeout(plan: patch_edit.PatchPlan, *, timeout: float) -> d
 
 def requests_for_view(view: str) -> list[live.PatchReadRequest]:
     assign_requests = assign_read_requests()
-    if view in {"controls", "performance"}:
+    if view in {"controls", "performance", "musician-summary"}:
         return live.INITIAL_READS + assign_requests
     if view in {"chain", "summary"}:
         return live.READ_PLAN + assign_requests
@@ -3294,6 +3417,8 @@ def view_from_full(snapshot: dict[str, Any], view: str) -> Any:
         return controls_from_full(snapshot)
     if view == "performance":
         return performance_from_full(snapshot)
+    if view == "musician-summary":
+        return musician_summary_from_full(snapshot)
     if view == "summary":
         return summary_from_full(snapshot)
     if view == "full":

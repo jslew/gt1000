@@ -1,3 +1,4 @@
+import json
 import sys
 import tempfile
 import unittest
@@ -696,6 +697,31 @@ class UserPatchReadTests(unittest.TestCase):
                 agent_cli.patch_view(args, "performance")
 
         self.assertEqual(read_live.call_args.args, ("patch performance --live", 8.0))
+
+    def test_musician_summary_describes_tone_and_playable_controls(self):
+        snapshot = self.performance_snapshot("MUSIC", level=83, delay_enabled=False, ctl1_function=33, assign_target=987)
+
+        summary = agent_cli.musician_summary_from_full(snapshot)
+
+        self.assertEqual(summary["id"], "patchMusicianSummary")
+        self.assertEqual(summary["headline"], "MUSIC: level 83, 120 BPM")
+        self.assertIn("DELAY 1", summary["tone"])
+        self.assertIn("CTL 1", summary["controlSummary"])
+        self.assertTrue(summary["tunerAvailable"])
+        self.assertNotIn("rawSections", summary)
+        self.assertNotIn("dataHex", json.dumps(summary))
+        self.assertEqual(summary["playableControls"][0]["control"], "CTL 1")
+        self.assertEqual(set(summary["playableControls"][0]), {"control", "kind", "preference", "action"})
+
+    def test_live_patch_musician_summary_uses_performance_reader(self):
+        snapshot = self.performance_snapshot("MUSIC", level=83, delay_enabled=False, ctl1_function=33, assign_target=987)
+        args = agent_cli.build_parser().parse_args(["patch", "musician-summary", "--live"])
+
+        with mock.patch.object(agent_cli, "read_performance_snapshot_with_timeout", return_value=snapshot) as read_live:
+            with mock.patch.object(agent_cli, "musician_summary_from_full", return_value={"id": "patchMusicianSummary"}):
+                agent_cli.patch_view(args, "musician-summary")
+
+        self.assertEqual(read_live.call_args.args, ("patch musician-summary --live", 8.0))
 
     def test_performance_live_reader_reads_core_strictly_and_assigns_leniently(self):
         required_calls = []

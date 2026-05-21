@@ -17,7 +17,7 @@ Build these in order. Prefer commands that answer practical rehearsal and giggin
 4. [x] Setlist audit
    - Read a bank or slot range and flag live-use risks: patch level jumps, BPM mismatches, missing tuner access, inconsistent EXP behavior, and unusual CTL mappings.
 
-5. [ ] Musician summary mode
+5. [x] Musician summary mode
    - Add a concise narrative description focused on tone, playable controls, and live-use intent.
    - Avoid raw data unless explicitly requested.
 

@@ -218,13 +218,22 @@ scripts/gt1000-agent --pretty patch performance --live --timeout 15
 - Reports tuner availability from decoded direct controls and active Assign targets.
 - Adds practical notes for SYSTEM-preference controls, active Assign overlays, and controls with no patch-specific action.
 
+### `patch musician-summary`
+Describe the current patch in concise musician-facing language.
+```sh
+scripts/gt1000-agent --pretty patch musician-summary --live --timeout 15
+```
+- Focuses on the main sound path, live-use basics such as patch level/BPM/tuner access, and playable NUM/CTL/EXP actions.
+- Uses the same resilient live reader as `patch performance`, with core patch data required and Assign overlays read leniently.
+- Avoids raw bytes and low-level record data.
+
 ### `patch slot`
 Read a persistent user patch slot directly by SysEx without selecting it on the unit.
 ```sh
 scripts/gt1000-agent --pretty patch slot U01-1 --live --view summary --timeout 15
 ```
 - `slot`: User slot `U01-1` through `U50-5`.
-- `--view`: `overview`, `chain`, `controls`, `performance`, `summary`, or `full`.
+- `--view`: `overview`, `chain`, `controls`, `performance`, `musician-summary`, `summary`, or `full`.
 
 ### `patch preset`
 Read a preset patch's documented primary records directly by SysEx without selecting it on the unit.
@@ -232,7 +241,7 @@ Read a preset patch's documented primary records directly by SysEx without selec
 scripts/gt1000-agent --pretty patch preset P01-1 --live --view summary --timeout 15
 ```
 - `slot`: Preset slot `P01-1` through `P50-5`.
-- `--view`: `overview`, `chain`, `controls`, `performance`, `summary`, or `full`.
+- `--view`: `overview`, `chain`, `controls`, `performance`, `musician-summary`, `summary`, or `full`.
 - Preset extra STOMPBOX records are not read because their preset address bases are not documented in the local MIDI reference.
 - During destructive live validation on the tested GT-1000, direct preset-memory reads at `30 00 00 00` did not reply. Treat this command as requiring renewed live validation before relying on it for factory-preset recovery.
 
@@ -242,7 +251,7 @@ Read all five persistent user patch slots in a bank sequentially.
 scripts/gt1000-agent --pretty patch bank U01 --live --view summary --timeout 15
 ```
 - `bank`: User bank `U01` through `U50`.
-- `--view`: `overview`, `chain`, `controls`, `performance`, `summary`, or `full`.
+- `--view`: `overview`, `chain`, `controls`, `performance`, `musician-summary`, `summary`, or `full`.
 - Reads are sequential to avoid interleaving GT-1000 MIDI replies.
 - Use this for comparing patch names, master patch levels, chains, controls, and switchable-path level parameters across a bank.
 

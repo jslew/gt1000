@@ -64,7 +64,7 @@ Keep routine patch work on the compact CLI outputs first. Do not load low-level 
 
 Use this routing:
 
-- Patch description, "what is this sound?", or quick signal-chain review: load the optional user profile, run `patch summary`, and use `descriptionSignalChainSummary`, `descriptionElements`, `controls`, and `activeAssigns`. Do not open MIDI reference pages unless a decoded field is unclear.
+- Patch description, "what is this sound?", or quick signal-chain review: load the optional user profile, run `patch musician-summary` for a concise answer or `patch summary` when you need more structured detail, and use `descriptionSignalChainSummary`, `descriptionElements`, `controls`, and `activeAssigns`. Do not open MIDI reference pages unless a decoded field is unclear.
 - Patch comparison questions: use `patch diff <source> <target> --live` for user slots or `patch diff <before.json> <after.json>` for saved full patch dumps before opening lower-level views.
 - Setlist readiness questions: use `patch setlist-audit <bank-or-slots> --live` to check patch-level jumps, tuner access, BPM mismatches, expression-pedal changes, and SYSTEM-preference controls.
 - Switch/control questions: run `patch performance` first for stage-use questions and `patch controls` for raw control/Assign details. Open `references/midi-reference/patch-controls.md` only if a raw/unknown function appears or the user asks how a physical control is encoded.
@@ -99,6 +99,7 @@ scripts/gt1000-agent --pretty patch overview --live --timeout 8
 scripts/gt1000-agent --pretty patch chain --live --timeout 8
 scripts/gt1000-agent --pretty patch controls --live --timeout 8
 scripts/gt1000-agent --pretty patch performance --live --timeout 8
+scripts/gt1000-agent --pretty patch musician-summary --live --timeout 8
 scripts/gt1000-agent --pretty patch slot U01-1 --live --view summary --timeout 15
 scripts/gt1000-agent --pretty patch bank U01 --live --view summary --timeout 15
 scripts/gt1000-agent --pretty patch diff U10-1 U10-2 --live --timeout 15
@@ -121,7 +122,7 @@ scripts/gt1000-agent --pretty patch block delay1 --live --timeout 8
 scripts/gt1000-agent --pretty patch stompbox --live --timeout 8
 ```
 
-Use `summary` first for human patch descriptions because it includes metadata, typed signal-chain data, and controls.
+Use `musician-summary` first for concise human patch descriptions, and `summary` when you need full metadata, typed signal-chain data, and controls.
 Use `performance` first for stage-use questions about what the physical controls do while playing.
 Use `slot` or `bank` for persistent user patch inspection; these read user patch memory directly and do not select the patch on the unit.
 Use `patch block --user-slot` for targeted persistent-slot block inspection.

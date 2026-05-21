@@ -692,6 +692,9 @@ class AgentCLITests(unittest.TestCase):
         summary = parser.parse_args(["patch", "summary", "--live"])
         self.assertEqual(summary.patch_command, "summary")
 
+        musician_summary = parser.parse_args(["patch", "musician-summary", "--live"])
+        self.assertEqual(musician_summary.patch_command, "musician-summary")
+
         dump = parser.parse_args(["patch", "dump", "--live"])
         self.assertEqual(dump.patch_command, "dump")
 
