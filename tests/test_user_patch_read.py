@@ -162,14 +162,14 @@ class UserPatchReadTests(unittest.TestCase):
         data3 = [0] * 0x25
         data3[36] = 5
 
-        with mock.patch.object(agent_cli.live, "read_data_sets", return_value={
+        with mock.patch.object(agent_cli, "read_patch_records_with_timeout", return_value={
             "10 00 01 00": data,
             "10 01 00 00": data2,
             "10 02 00 00": data3,
-        }) as read_data_sets:
+        }) as read_records:
             result = agent_cli.cmd_patch_stompbox(args)
 
-        requests = read_data_sets.call_args.kwargs["requests"]
+        requests = read_records.call_args.args[2]
         self.assertEqual([request.label for request in requests], ["Patch Stompbox", "Patch Stompbox 2", "Patch Stompbox 3"])
         self.assertEqual(requests[0].address, [0x10, 0x00, 0x01, 0x00])
         self.assertEqual(requests[0].size, [0x00, 0x00, 0x00, 0x68])
@@ -187,14 +187,14 @@ class UserPatchReadTests(unittest.TestCase):
     def test_patch_stompbox_reads_user_slot_raw_record(self):
         args = agent_cli.build_parser().parse_args(["patch", "stompbox", "--live", "--user-slot", "U03-2"])
 
-        with mock.patch.object(agent_cli.live, "read_data_sets", return_value={
+        with mock.patch.object(agent_cli, "read_patch_records_with_timeout", return_value={
             "20 0B 01 00": [0],
             "22 05 00 00": [0],
             "23 7F 00 00": [0],
-        }) as read_data_sets:
+        }) as read_records:
             result = agent_cli.cmd_patch_stompbox(args)
 
-        requests = read_data_sets.call_args.kwargs["requests"]
+        requests = read_records.call_args.args[2]
         self.assertEqual(requests[0].address, [0x20, 0x0B, 0x01, 0x00])
         self.assertEqual(requests[1].address, [0x22, 0x05, 0x00, 0x00])
         self.assertEqual(requests[2].address, [0x23, 0x7F, 0x00, 0x00])
@@ -296,14 +296,19 @@ class UserPatchReadTests(unittest.TestCase):
                 for request in requests
             }
 
-        with mock.patch.object(agent_cli, "read_patch_records_lenient_with_timeout", side_effect=fake_read_patch_records) as read_patch_records:
-            with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"plan": "clone:U03-2:U10-1", "writeCount": len(requests), "verified": True}) as apply_plan:
-                result = agent_cli.cmd_patch_clone(args)
+        with mock.patch.object(agent_cli, "read_required_patch_records_with_timeout", side_effect=fake_read_patch_records) as read_required_records:
+            with mock.patch.object(agent_cli, "read_patch_records_lenient_with_timeout", side_effect=fake_read_patch_records) as read_patch_records:
+                with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"plan": "clone:U03-2:U10-1", "writeCount": len(requests), "verified": True}) as apply_plan:
+                    result = agent_cli.cmd_patch_clone(args)
 
+        self.assertEqual(read_required_records.call_count, 1)
+        self.assertEqual(read_required_records.call_args_list[0].args[0], "patch clone U03-2 --live required record")
+        self.assertEqual([request.label for request in read_required_records.call_args_list[0].args[2]], ["Patch Common", "Patch Effect"])
         self.assertEqual(read_patch_records.call_count, 1)
         self.assertEqual(read_patch_records.call_args_list[0].args[0], "patch clone U03-2 --live core records")
         self.assertEqual(read_patch_records.call_args_list[0].args[1], 20.0)
-        self.assertEqual(read_patch_records.call_args_list[0].args[2][0].address, [0x20, 0x0B, 0x00, 0x00])
+        self.assertNotIn("Patch Common", [request.label for request in read_patch_records.call_args_list[0].args[2]])
+        self.assertNotIn("Patch Effect", [request.label for request in read_patch_records.call_args_list[0].args[2]])
         plan = apply_plan.call_args.args[0]
         self.assertEqual(plan.id, "clone:U03-2:U10-1")
         self.assertEqual(plan.writes[0].address, [0x20, 0x2D, 0x00, 0x00])
@@ -331,13 +336,16 @@ class UserPatchReadTests(unittest.TestCase):
                     for index, request in enumerate(requests)
                 }
 
-            with mock.patch.object(agent_cli, "read_patch_records_lenient_with_timeout", side_effect=fake_read_records) as read_records:
-                result = agent_cli.cmd_patch_export(args)
+            with mock.patch.object(agent_cli, "read_required_patch_records_with_timeout", side_effect=fake_read_records) as read_required_records:
+                with mock.patch.object(agent_cli, "read_patch_records_lenient_with_timeout", side_effect=fake_read_records) as read_records:
+                    result = agent_cli.cmd_patch_export(args)
 
+            self.assertEqual(read_required_records.call_count, 2)
+            self.assertEqual([request.label for request in read_required_records.call_args_list[0].args[2]], ["Patch Common", "Patch Effect"])
             self.assertEqual(read_records.call_count, 2)
             self.assertTrue(all(call.args[1] == 20.0 for call in read_records.call_args_list))
-            self.assertEqual(read_records.call_args_list[0].args[2][0].address, [0x20, 0x0B, 0x00, 0x00])
-            self.assertEqual(read_records.call_args_list[1].args[2][0].address, [0x20, 0x0C, 0x00, 0x00])
+            self.assertNotIn("Patch Common", [request.label for request in read_records.call_args_list[0].args[2]])
+            self.assertNotIn("Patch Effect", [request.label for request in read_records.call_args_list[1].args[2]])
             self.assertEqual(result["format"], "gt1000-agent-liveset-v1")
             self.assertEqual(result["patchCount"], 2)
             self.assertTrue(output.is_file())
@@ -346,11 +354,11 @@ class UserPatchReadTests(unittest.TestCase):
         args = agent_cli.build_parser().parse_args(["patch", "master-set", "level", "95", "--live", "--user-slot", "U03-2", "--verify"])
         record = [0] * agent_cli.live.seven_bit_address_value([0x00, 0x00, 0x01, 0x1C])
 
-        with mock.patch.object(agent_cli.live, "read_data_sets", return_value={"20 0B 10 00": record}) as read_data_sets:
+        with mock.patch.object(agent_cli, "read_patch_records_with_timeout", return_value={"20 0B 10 00": record}) as read_records:
             with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"plan": "master-set:level:U03-2", "writeCount": 1, "verified": True}) as apply_plan:
                 result = agent_cli.cmd_patch_master_set(args)
 
-        self.assertEqual(read_data_sets.call_args.kwargs["requests"][0].address, [0x20, 0x0B, 0x10, 0x00])
+        self.assertEqual(read_records.call_args.args[2][0].address, [0x20, 0x0B, 0x10, 0x00])
         plan = apply_plan.call_args.args[0]
         self.assertEqual(plan.writes[0].address, [0x20, 0x0B, 0x10, 0x00])
         self.assertEqual(plan.writes[0].data[0x5F:0x61], [0x05, 0x0F])
@@ -629,6 +637,160 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(delay["directControlCount"], 1)
         self.assertEqual(delay["directControls"][0]["control"], "CTL 1")
 
+    def test_performance_view_summarizes_direct_controls_and_assigns(self):
+        patch_common = [0] * 0x7E
+        patch_common[0x31] = 33
+        patch_common[0x32] = 0
+        system_control = [0] * 0x36
+        system_control[0x2B] = 1
+        assign_data = [0] * 0x2C
+        assign_data[0] = 1
+        assign_data[1:5] = live.nibbles_for(987)
+        assign_data[5:9] = live.nibbles_for(32768)
+        assign_data[9:13] = live.nibbles_for(32769)
+        assign_data[13] = 8
+        assign_data[14] = 1
+        snapshot = {
+            "patchName": "PERF",
+            "masterBPM": 120.0,
+            "masterPatchLevel": 80,
+            "masterKey": "C(Am)",
+            "ampControl1Enabled": False,
+            "ampControl2Enabled": False,
+            "signalChainElements": [],
+            "blocks": [],
+            "rawSections": [
+                {"id": "patchCommon", "dataHex": live.hex_string(patch_common)},
+                {"id": "systemControl", "dataHex": live.hex_string(system_control)},
+                {"id": "Assign 1", "dataHex": live.hex_string(assign_data)},
+            ],
+        }
+
+        performance = agent_cli.performance_from_full(snapshot)
+        ctl1 = next(row for row in performance["controls"] if row["control"] == "CTL 1")
+
+        self.assertEqual(performance["id"], "patchPerformance")
+        self.assertTrue(performance["tunerAvailable"])
+        self.assertEqual(performance["activeAssignCount"], 1)
+        self.assertEqual(ctl1["directFunction"], "DELAY 1")
+        self.assertEqual(ctl1["assigns"][0]["target"], "TUNER ON/OFF")
+        self.assertEqual(ctl1["action"], "Direct: DELAY 1 (TOGGLE); CTL 1 -> TUNER ON/OFF (MOMENT)")
+        self.assertTrue(any("controls use SYSTEM preference" in note for note in performance["notes"]))
+
+    def test_live_patch_performance_reads_assigns_for_overlay_actions(self):
+        snapshot = {
+            "patchName": "PERF",
+            "masterBPM": 120.0,
+            "masterPatchLevel": 80,
+            "masterKey": "C(Am)",
+            "ampControl1Enabled": False,
+            "ampControl2Enabled": False,
+            "signalChainElements": [],
+            "blocks": [],
+            "rawSections": [],
+        }
+        args = agent_cli.build_parser().parse_args(["patch", "performance", "--live"])
+
+        with mock.patch.object(agent_cli, "read_performance_snapshot_with_timeout", return_value=snapshot) as read_live:
+            with mock.patch.object(agent_cli, "performance_from_full", return_value={"id": "patchPerformance"}):
+                agent_cli.patch_view(args, "performance")
+
+        self.assertEqual(read_live.call_args.args, ("patch performance --live", 8.0))
+
+    def test_performance_live_reader_reads_core_strictly_and_assigns_leniently(self):
+        required_calls = []
+        lenient_calls = []
+
+        def fake_required(label, timeout, requests):
+            required_calls.append((label, timeout, requests))
+            return {agent_cli.live.address_key(request.address): [0] * agent_cli.live.seven_bit_address_value(request.size) for request in requests}
+
+        def fake_lenient(label, timeout, requests):
+            lenient_calls.append((label, timeout, requests))
+            return {}
+
+        original_required = agent_cli.read_required_patch_records_with_timeout
+        original_lenient = agent_cli.read_patch_records_lenient_with_timeout
+        agent_cli.read_required_patch_records_with_timeout = fake_required
+        agent_cli.read_patch_records_lenient_with_timeout = fake_lenient
+        try:
+            agent_cli.read_performance_snapshot_with_timeout("patch performance --live", 8)
+        finally:
+            agent_cli.read_patch_records_lenient_with_timeout = original_lenient
+            agent_cli.read_required_patch_records_with_timeout = original_required
+
+        self.assertEqual([request.label for request in required_calls[0][2]], ["Master BPM", "Patch Effect", "Patch Common", "System Control"])
+        self.assertEqual([request.label for request in lenient_calls[0][2]][0], "Assign 1")
+        self.assertEqual([request.label for request in lenient_calls[0][2]][-1], "Assign 16")
+
+    def test_patch_diff_reports_musical_changes(self):
+        source = self.performance_snapshot("SOURCE", level=80, delay_enabled=False, ctl1_function=33, assign_target=987)
+        target = self.performance_snapshot("TARGET", level=92, delay_enabled=True, ctl1_function=0, assign_target=158)
+
+        diff = agent_cli.patch_diff_from_full(source, target, source_label="A", target_label="B")
+
+        self.assertEqual(diff["id"], "patchDiff")
+        self.assertIn({"field": "masterPatchLevel", "label": "Patch level", "source": 80, "target": 92}, diff["overviewChanges"])
+        delay_change = next(change for change in diff["blockChanges"] if change["blockId"] == "delay1")
+        self.assertIn({"field": "isEnabled", "label": "on/off", "source": False, "target": True}, delay_change["changes"])
+        ctl1_change = next(change for change in diff["controlChanges"] if change["control"] == "CTL 1")
+        self.assertIn({"field": "function", "label": "function", "source": "DELAY 1", "target": "OFF"}, ctl1_change["changes"])
+        assign_change = next(change for change in diff["assignChanges"] if change["assign"] == "Assign 1")
+        self.assertIn({"field": "targetName", "label": "target", "source": "TUNER ON/OFF", "target": "DELAY 1 SW"}, assign_change["changes"])
+
+    def test_live_patch_diff_reads_user_slots_full(self):
+        source = self.performance_snapshot("SOURCE", level=80, delay_enabled=False, ctl1_function=33, assign_target=987)
+        target = self.performance_snapshot("TARGET", level=92, delay_enabled=True, ctl1_function=0, assign_target=158)
+        args = agent_cli.build_parser().parse_args(["patch", "diff", "U10-1", "U10-2", "--live"])
+
+        with mock.patch.object(agent_cli, "read_clone_snapshot_with_timeout", side_effect=[source, target]) as read_slot:
+            result = agent_cli.cmd_patch_diff(args)
+
+        self.assertEqual(result["id"], "patchDiff")
+        self.assertEqual(read_slot.call_args_list[0].args, ("patch diff U10-1 --live", 8.0, "U10-1"))
+        self.assertEqual(read_slot.call_args_list[1].args, ("patch diff U10-2 --live", 8.0, "U10-2"))
+
+    def performance_snapshot(self, name: str, *, level: int, delay_enabled: bool, ctl1_function: int, assign_target: int) -> dict:
+        patch_common = [0] * 0x7E
+        patch_common[0x31] = ctl1_function
+        patch_common[0x32] = 0
+        system_control = [0] * 0x36
+        assign_data = [0] * 0x2C
+        assign_data[0] = 1
+        assign_data[1:5] = live.nibbles_for(assign_target)
+        assign_data[5:9] = live.nibbles_for(32768)
+        assign_data[9:13] = live.nibbles_for(32769)
+        assign_data[13] = 8
+        return {
+            "patchName": name,
+            "masterBPM": 120.0,
+            "masterPatchLevel": level,
+            "masterKey": "C(Am)",
+            "ampControl1Enabled": False,
+            "ampControl2Enabled": False,
+            "signalChainSummary": "DELAY 1 -> MAIN OUT L",
+            "signalChainElements": [
+                {"position": 1, "rawValue": 15, "displayName": "DELAY 1"},
+                {"position": 2, "rawValue": 31, "displayName": "MAIN OUT L", "isOutput": True},
+            ],
+            "blocks": [
+                {
+                    "id": "delay1",
+                    "displayName": "DELAY 1",
+                    "chainElementValue": 15,
+                    "isEnabled": delay_enabled,
+                    "isInSignalChain": True,
+                    "typeName": None,
+                    "parameters": [],
+                }
+            ],
+            "rawSections": [
+                {"id": "patchCommon", "dataHex": live.hex_string(patch_common)},
+                {"id": "systemControl", "dataHex": live.hex_string(system_control)},
+                {"id": "Assign 1", "dataHex": live.hex_string(assign_data)},
+            ],
+        }
+
     def test_chain_view_reads_assigns_for_reachability(self):
         labels = [request.label for request in agent_cli.requests_for_view("chain")]
 
@@ -649,7 +811,7 @@ class UserPatchReadTests(unittest.TestCase):
         }
         args = agent_cli.build_parser().parse_args(["patch", "chain", "--live"])
 
-        with mock.patch.object(agent_cli, "read_live_snapshot", return_value=snapshot) as read_live:
+        with mock.patch.object(agent_cli, "read_live_snapshot_with_timeout", return_value=snapshot) as read_live:
             agent_cli.patch_view(args, "chain")
 
         labels = [request.label for request in read_live.call_args.kwargs["requests"]]

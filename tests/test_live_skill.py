@@ -51,6 +51,7 @@ LIVE_VERIFIED_COMMAND_PATHS = {
     ("patch", "controls"),
     ("patch", "copy"),
     ("patch", "disable"),
+    ("patch", "diff"),
     ("patch", "dump"),
     ("patch", "enable"),
     ("patch", "exchange"),
@@ -68,6 +69,7 @@ LIVE_VERIFIED_COMMAND_PATHS = {
     ("patch", "master-set"),
     ("patch", "move"),
     ("patch", "overview"),
+    ("patch", "performance"),
     ("patch", "plan"),
     ("patch", "preset"),
     ("patch", "raw-set"),
@@ -86,6 +88,7 @@ LIVE_VERIFIED_COMMAND_PATHS = {
     ("patch", "tsl-list"),
     ("patch", "tuner-assign"),
     ("patch", "type"),
+    ("patch", "undo-last"),
     ("system", "common"),
     ("system", "controls"),
     ("system", "effects"),
@@ -114,6 +117,15 @@ class LiveUtilityTests(unittest.TestCase):
 
         self.assertEqual(endpoint, 123)
         sleep.assert_called_once_with(0.25)
+
+    def test_lenient_consecutive_miss_limit_defaults_and_ignores_bad_env(self):
+        with mock.patch.dict(live.os.environ, {}, clear=False):
+            live.os.environ.pop("GT1000_LENIENT_MAX_CONSECUTIVE_MISSES", None)
+            self.assertEqual(live.lenient_consecutive_miss_limit(), 8)
+        with mock.patch.dict(live.os.environ, {"GT1000_LENIENT_MAX_CONSECUTIVE_MISSES": "3"}):
+            self.assertEqual(live.lenient_consecutive_miss_limit(), 3)
+        with mock.patch.dict(live.os.environ, {"GT1000_LENIENT_MAX_CONSECUTIVE_MISSES": "bad"}):
+            self.assertEqual(live.lenient_consecutive_miss_limit(), 8)
 
 
 @unittest.skipUnless(RUN_LIVE, "set GT1000_LIVE=1 to run live GT-1000 tests")

@@ -95,6 +95,7 @@ Patch2 also contains GT-1000-specific Bass Mode support records documented in th
 | `10 01 04 00` | FX2 Flanger Bass |
 | `10 01 05 00` | FX3 Chorus Bass |
 | `10 01 06 00` | FX3 Flanger Bass |
+| `10 01 07 00` | Master Delay 2 / Tone Studio `User_patch2%mstDelay` |
 | `10 01 0A 00` | PatchEfct2 |
 
 Patch3 contains GT-1000-only FX4 and Bass Distortion support records:
@@ -108,7 +109,8 @@ Patch3 contains GT-1000-only FX4 and Bass Distortion support records:
 | `10 02 21 00` | FX3 Distortion Bass |
 | `10 02 22 00` | FX4 Distortion Bass |
 
-The CLI uses these Patch2/Patch3 addresses for supported GT-1000 Tone Studio `.tsl` import planning. GT-1000CORE compatibility should be handled conservatively because the MIDI implementation marks FX4 and some Patch2/Patch3 records as GT-1000-only.
+The CLI uses these Patch2/Patch3 addresses for supported GT-1000 Tone Studio `.tsl` import planning and clone/export preservation after live read validation on the tested unit. Tone Studio `.tsl` files can also contain `User_patch3%fx1MasterFx` through `User_patch3%fx4MasterFx`, but direct reads of the apparent `10 02 23 00` through `10 02 26 00` records timed out on the tested unit, so the CLI currently treats those keys as ignorable rather than importable records.
+GT-1000CORE compatibility should be handled conservatively because the MIDI implementation marks FX4 and some Patch2/Patch3 records as GT-1000-only.
 FX4 is also exposed through `patch schema fx4`, `patch schema fx4<Algorithm>`, `patch set`, `patch raw-set`, and Assign target aliases such as `fx4Chorus.effectLevel2`.
 
 ## Current CLI Read Plan

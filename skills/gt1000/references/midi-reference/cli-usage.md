@@ -209,13 +209,22 @@ scripts/gt1000-agent --pretty patch controls --live --timeout 15
 - Direct switch functions expose raw function bytes plus decoded target metadata: `functionTargetBlockId`, `functionTargetParameterId`, and `functionCanEnableBlock`.
 - Active Assigns expose decoded target metadata: `targetCategory`, `targetBlockId`, `targetParameterId`, and `targetIsOnOff`.
 
+### `patch performance`
+Show the current patch as a stage-performance control layout.
+```sh
+scripts/gt1000-agent --pretty patch performance --live --timeout 15
+```
+- Includes each NUM/CTL/EXP control, whether it uses PATCH or SYSTEM preference, its direct function, and any active Assign overlays sourced by that control.
+- Reports tuner availability from decoded direct controls and active Assign targets.
+- Adds practical notes for SYSTEM-preference controls, active Assign overlays, and controls with no patch-specific action.
+
 ### `patch slot`
 Read a persistent user patch slot directly by SysEx without selecting it on the unit.
 ```sh
 scripts/gt1000-agent --pretty patch slot U01-1 --live --view summary --timeout 15
 ```
 - `slot`: User slot `U01-1` through `U50-5`.
-- `--view`: `overview`, `chain`, `controls`, `summary`, or `full`.
+- `--view`: `overview`, `chain`, `controls`, `performance`, `summary`, or `full`.
 
 ### `patch preset`
 Read a preset patch's documented primary records directly by SysEx without selecting it on the unit.
@@ -223,7 +232,7 @@ Read a preset patch's documented primary records directly by SysEx without selec
 scripts/gt1000-agent --pretty patch preset P01-1 --live --view summary --timeout 15
 ```
 - `slot`: Preset slot `P01-1` through `P50-5`.
-- `--view`: `overview`, `chain`, `controls`, `summary`, or `full`.
+- `--view`: `overview`, `chain`, `controls`, `performance`, `summary`, or `full`.
 - Preset extra STOMPBOX records are not read because their preset address bases are not documented in the local MIDI reference.
 - During destructive live validation on the tested GT-1000, direct preset-memory reads at `30 00 00 00` did not reply. Treat this command as requiring renewed live validation before relying on it for factory-preset recovery.
 
@@ -233,8 +242,28 @@ Read all five persistent user patch slots in a bank sequentially.
 scripts/gt1000-agent --pretty patch bank U01 --live --view summary --timeout 15
 ```
 - `bank`: User bank `U01` through `U50`.
+- `--view`: `overview`, `chain`, `controls`, `performance`, `summary`, or `full`.
 - Reads are sequential to avoid interleaving GT-1000 MIDI replies.
 - Use this for comparing patch names, master patch levels, chains, controls, and switchable-path level parameters across a bank.
+
+### `patch diff`
+Compare two patches in musician-facing terms.
+```sh
+scripts/gt1000-agent --pretty patch diff U10-1 U10-2 --live --timeout 15
+scripts/gt1000-agent --pretty patch diff before.json after.json
+```
+- With `--live`, `source` and `target` are user patch slots read directly without selecting them.
+- Without `--live`, `source` and `target` are full patch JSON dump files.
+- Reports overview changes, signal-chain changes, block on/off/type changes, control changes, and active Assign changes.
+
+### `patch undo-last`
+Restore the latest automatic restore point created before a CLI write.
+```sh
+scripts/gt1000-agent --pretty patch undo-last --live --verify --timeout 20
+```
+- Restore points are written before `apply_plan_cli` sends any write data.
+- The default restore directory is `~/.gt1000-agent/restore-points`; set `GT1000_RESTORE_DIR` to override it.
+- `undo-last` writes the captured previous bytes back to their original addresses and can read-back verify them.
 
 ### `patch schema`
 Show the editable parameter schema for decoded blocks.

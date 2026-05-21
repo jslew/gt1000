@@ -877,6 +877,8 @@ def transact_requests(timeout: float, requests: list[PatchReadRequest], *, requi
 
         request_delay = float(os.environ.get("GT1000_REQUEST_DELAY", str(DEFAULT_REQUEST_DELAY)))
         request_retries = int(os.environ.get("GT1000_REQUEST_RETRIES", "1"))
+        consecutive_misses = 0
+        lenient_miss_limit = lenient_consecutive_miss_limit()
         # Send requests one at a time. Large RQ1 bursts can leave the tested unit
         # visible to CoreMIDI but no longer replying to SysEx.
         for request in requests:
@@ -890,9 +892,13 @@ def transact_requests(timeout: float, requests: list[PatchReadRequest], *, requi
                     time.sleep(0.01)
             if not state.has_response(request.address):
                 if not require_all:
+                    consecutive_misses += 1
+                    if lenient_miss_limit > 0 and consecutive_misses >= lenient_miss_limit:
+                        break
                     continue
                 missing = address_key(request.address)
                 raise LiveMIDIError(f"Timed out waiting for GT-1000 patch replies. Missing: ['{missing}']\nPartial snapshot:\n{snapshot_text_summary(state.snapshot)}")
+            consecutive_misses = 0
 
         if state.has_expected_responses():
             return state
@@ -972,6 +978,13 @@ def wait_for_quiet_input(state: PatchReadState, quiet_seconds: float = 0.5, max_
         if state.quiet_for() >= quiet_seconds:
             return
         time.sleep(0.05)
+
+
+def lenient_consecutive_miss_limit() -> int:
+    try:
+        return int(os.environ.get("GT1000_LENIENT_MAX_CONSECUTIVE_MISSES", "8"))
+    except ValueError:
+        return 8
 
 
 class SysExAssembler:

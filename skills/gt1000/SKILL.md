@@ -65,7 +65,8 @@ Keep routine patch work on the compact CLI outputs first. Do not load low-level 
 Use this routing:
 
 - Patch description, "what is this sound?", or quick signal-chain review: load the optional user profile, run `patch summary`, and use `descriptionSignalChainSummary`, `descriptionElements`, `controls`, and `activeAssigns`. Do not open MIDI reference pages unless a decoded field is unclear.
-- Switch/control questions: run `patch controls` first. Open `references/midi-reference/patch-controls.md` only if a raw/unknown function appears or the user asks how a physical control is encoded.
+- Patch comparison questions: use `patch diff <source> <target> --live` for user slots or `patch diff <before.json> <after.json>` for saved full patch dumps before opening lower-level views.
+- Switch/control questions: run `patch performance` first for stage-use questions and `patch controls` for raw control/Assign details. Open `references/midi-reference/patch-controls.md` only if a raw/unknown function appears or the user asks how a physical control is encoded.
 - Assign behavior, MIDI CC, tuner control, or assigned-off-block reachability: run `patch controls` or `patch summary` first. Open `references/midi-reference/assigns.md` only for source IDs, target min/max encoding, target table caveats, or write planning.
 - Installing tuner control: use `patch tuner-assign --live --verify` to install the tested Assign 16 / CC#80 tuner mapping. Ask before writing it persistently with `--user-slot`.
 - Sending a MIDI CC for a known Assign source: use `midi cc <controller> <value> --channel N --live` only after confirming the mapped source and RX channel. Do not send raw MIDI bytes.
@@ -96,8 +97,10 @@ scripts/gt1000-agent --pretty patch summary --live --timeout 8
 scripts/gt1000-agent --pretty patch overview --live --timeout 8
 scripts/gt1000-agent --pretty patch chain --live --timeout 8
 scripts/gt1000-agent --pretty patch controls --live --timeout 8
+scripts/gt1000-agent --pretty patch performance --live --timeout 8
 scripts/gt1000-agent --pretty patch slot U01-1 --live --view summary --timeout 15
 scripts/gt1000-agent --pretty patch bank U01 --live --view summary --timeout 15
+scripts/gt1000-agent --pretty patch diff U10-1 U10-2 --live --timeout 15
 scripts/gt1000-agent --pretty patch block delay1 --user-slot U01-1
 scripts/gt1000-agent --pretty patch clone U10-1 U10-2 --live --verify --timeout 20
 scripts/gt1000-agent --pretty midi cc 80 127 --channel 1 --live
@@ -117,6 +120,7 @@ scripts/gt1000-agent --pretty patch stompbox --live --timeout 8
 ```
 
 Use `summary` first for human patch descriptions because it includes metadata, typed signal-chain data, and controls.
+Use `performance` first for stage-use questions about what the physical controls do while playing.
 Use `slot` or `bank` for persistent user patch inspection; these read user patch memory directly and do not select the patch on the unit.
 Use `patch block --user-slot` for targeted persistent-slot block inspection.
 
@@ -178,9 +182,10 @@ For an initialized or sparse patch, keep the answer short and avoid listing dorm
 For physical switch mapping:
 
 1. Load the optional user profile memory if it exists.
-2. Use `scripts/gt1000-agent --pretty patch controls --live --timeout 8`.
-3. If output is ambiguous, consult `references/midi-reference/patch-controls.md` and `references/midi-reference/assigns.md`.
-4. Report direct switch functions plus active Assign overlays.
+2. Use `scripts/gt1000-agent --pretty patch performance --live --timeout 8` for musician-facing stage behavior.
+3. Use `scripts/gt1000-agent --pretty patch controls --live --timeout 8` when raw control/Assign details are needed.
+4. If output is ambiguous, consult `references/midi-reference/patch-controls.md` and `references/midi-reference/assigns.md`.
+5. Report direct switch functions plus active Assign overlays.
 
 ## Wiki Updates
 

@@ -93,10 +93,10 @@ class PatchEditTests(unittest.TestCase):
         self.assertEqual(requests[1].address, [0x20, 0x0B, 0x01, 0x00])
         self.assertEqual(requests[2].label, "Patch Led")
         self.assertEqual(requests[2].address, [0x20, 0x0B, 0x02, 0x00])
-        self.assertEqual(requests[-2].label, "Patch Stompbox 2")
-        self.assertEqual(requests[-2].address, [0x22, 0x05, 0x00, 0x00])
-        self.assertEqual(requests[-1].label, "Patch Stompbox 3")
-        self.assertEqual(requests[-1].address, [0x23, 0x7F, 0x00, 0x00])
+        stompbox2 = next(request for request in requests if request.label == "Patch Stompbox 2")
+        stompbox3 = next(request for request in requests if request.label == "Patch Stompbox 3")
+        self.assertEqual(stompbox2.address, [0x22, 0x05, 0x00, 0x00])
+        self.assertEqual(stompbox3.address, [0x23, 0x7F, 0x00, 0x00])
 
         source_data = {
             live.address_key(request.address): [index % 0x80] * live.seven_bit_address_value(request.size)
@@ -109,8 +109,8 @@ class PatchEditTests(unittest.TestCase):
         self.assertEqual(plan.writes[0].address, [0x20, 0x2D, 0x00, 0x00])
         self.assertEqual(plan.writes[1].address, [0x20, 0x2D, 0x01, 0x00])
         self.assertEqual(plan.writes[2].address, [0x20, 0x2D, 0x02, 0x00])
-        self.assertEqual(plan.writes[-2].address, [0x22, 0x27, 0x00, 0x00])
-        self.assertEqual(plan.writes[-1].address, [0x24, 0x21, 0x00, 0x00])
+        self.assertIn(live.PatchWrite("Clone Patch Stompbox 2", [0x22, 0x27, 0x00, 0x00], source_data[live.address_key(stompbox2.address)]), plan.writes)
+        self.assertIn(live.PatchWrite("Clone Patch Stompbox 3", [0x24, 0x21, 0x00, 0x00], source_data[live.address_key(stompbox3.address)]), plan.writes)
         self.assertEqual(plan.writes[0].data, source_data[live.address_key(requests[0].address)])
 
         with self.assertRaises(ValueError):
@@ -143,7 +143,7 @@ class PatchEditTests(unittest.TestCase):
         self.assertEqual(plan.writes[-4].label, "Clone FX 1 CHORUS")
         self.assertEqual(plan.writes[-4].address, [0x20, 0x2D, 0x27, 0x00])
 
-    def test_verify_plan_reads_large_plans_in_batches(self):
+    def test_verify_plan_reads_large_plans_in_one_session(self):
         writes = [
             live.PatchWrite(f"Write {index}", [0x20, 0x00, index, 0x00], [index])
             for index in range(patch_edit.VERIFY_READ_BATCH_SIZE + 1)
@@ -163,9 +163,7 @@ class PatchEditTests(unittest.TestCase):
             patch_edit.live.read_data_sets = original_read_data_sets
 
         self.assertTrue(result["ok"])
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(len(calls[0]), patch_edit.VERIFY_READ_BATCH_SIZE)
-        self.assertEqual(len(calls[1]), 1)
+        self.assertEqual(calls, [[write.address for write in writes]])
 
     def test_batched_reads_split_failed_multi_request_batches(self):
         requests = [
@@ -256,7 +254,7 @@ class PatchEditTests(unittest.TestCase):
         self.assertEqual(plan.id, "liveset-import:U10-1:1")
         self.assertEqual(len(plan.writes), len(requests))
         self.assertEqual(plan.writes[0].address, [0x20, 0x2D, 0x00, 0x00])
-        self.assertEqual(plan.writes[-1].address, [0x24, 0x21, 0x00, 0x00])
+        self.assertEqual(plan.writes[-1].address, [0x24, 0x21, 0x22, 0x00])
 
         with self.assertRaises(ValueError):
             patch_edit.build_liveset_export([])
@@ -388,14 +386,20 @@ class PatchEditTests(unittest.TestCase):
         led = [0] * 32
         assign = [0] * 44
         efct_a = [0] * 104
-        efct_b = [0] * 56
+        efct_b = [0] * 57
         stompbox2 = [3] * 17
         efct2 = [5] * 7
+        master_delay2 = [0, 1, 2, 3]
+        fx1_chorus_bass = [4] * 6
+        fx1_flanger_bass = [5] * 16
         stompbox3 = [4] * 37
         comp = [1] * 9
         fx_chorus = [2] * 37
         fx4 = [0, 15]
         fx4_chorus = [6] * 37
+        fx4_chorus_bass = [7] * 6
+        fx4_flanger_bass = [8] * 16
+        fx_master = [0, 32, 32, 64]
         tsl = {
             "name": "GT-1000 Tone Studio Set",
             "formatRev": "0000",
@@ -411,11 +415,20 @@ class PatchEditTests(unittest.TestCase):
                     "User_patch%efctB": [f"{byte:02X}" for byte in efct_b],
                     "User_patch2%stompBox": [f"{byte:02X}" for byte in stompbox2],
                     "User_patch2%efct": [f"{byte:02X}" for byte in efct2],
+                    "User_patch2%mstDelay": [f"{byte:02X}" for byte in master_delay2],
+                    "User_patch2%fx1ChorusBass": [f"{byte:02X}" for byte in fx1_chorus_bass],
+                    "User_patch2%fx1FlangerBass": [f"{byte:02X}" for byte in fx1_flanger_bass],
                     "User_patch3%stompBox": [f"{byte:02X}" for byte in stompbox3],
                     "User_patch3%fx(4)%fx": [f"{byte:02X}" for byte in fx4],
                     "User_patch%comp": [f"{byte:02X}" for byte in comp],
                     "User_patch%fx(1)%fxChorus": [f"{byte:02X}" for byte in fx_chorus],
                     "User_patch3%fx4Chorus": [f"{byte:02X}" for byte in fx4_chorus],
+                    "User_patch3%fx4ChorusBass": [f"{byte:02X}" for byte in fx4_chorus_bass],
+                    "User_patch3%fx4FlangerBass": [f"{byte:02X}" for byte in fx4_flanger_bass],
+                    "User_patch3%fx1MasterFx": [f"{byte:02X}" for byte in fx_master],
+                    "User_patch3%fx2MasterFx": [f"{byte:02X}" for byte in fx_master],
+                    "User_patch3%fx3MasterFx": [f"{byte:02X}" for byte in fx_master],
+                    "User_patch3%fx4MasterFx": [f"{byte:02X}" for byte in fx_master],
                 },
             }]],
         }
@@ -434,9 +447,32 @@ class PatchEditTests(unittest.TestCase):
         self.assertIn(live.PatchWrite("Import U10-1 TSL FX 1 CHORUS", [0x20, 0x2D, 0x27, 0x00], fx_chorus), plan.writes)
         self.assertIn(live.PatchWrite("Import U10-1 TSL Patch Stompbox 2", [0x22, 0x27, 0x00, 0x00], stompbox2), plan.writes)
         self.assertIn(live.PatchWrite("Import U10-1 TSL Patch Stompbox 3", [0x24, 0x21, 0x00, 0x00], stompbox3), plan.writes)
-        self.assertIn(live.PatchWrite("Import U10-1 TSL Patch Effect 2", [0x22, 0x27, 0x14, 0x00], efct2), plan.writes)
-        self.assertIn(live.PatchWrite("Import U10-1 TSL FX 4", [0x24, 0x21, 0x02, 0x00], fx4), plan.writes)
-        self.assertIn(live.PatchWrite("Import U10-1 TSL FX 4 Chorus", [0x24, 0x21, 0x0A, 0x00], fx4_chorus), plan.writes)
+        self.assertIn(live.PatchWrite("Import U10-1 TSL Patch Effect 2", [0x22, 0x27, 0x0A, 0x00], efct2), plan.writes)
+        self.assertIn(live.PatchWrite("Import U10-1 TSL Master Delay 2", [0x22, 0x27, 0x07, 0x00], master_delay2), plan.writes)
+        self.assertIn(live.PatchWrite("Import U10-1 TSL FX 1 Chorus Bass", [0x22, 0x27, 0x01, 0x00], fx1_chorus_bass), plan.writes)
+        self.assertIn(live.PatchWrite("Import U10-1 TSL FX 1 Flanger Bass", [0x22, 0x27, 0x02, 0x00], fx1_flanger_bass), plan.writes)
+        self.assertIn(live.PatchWrite("Import U10-1 TSL FX 4", [0x24, 0x21, 0x01, 0x00], fx4), plan.writes)
+        self.assertIn(live.PatchWrite("Import U10-1 TSL FX 4 CHORUS", [0x24, 0x21, 0x05, 0x00], fx4_chorus), plan.writes)
+        self.assertIn(live.PatchWrite("Import U10-1 TSL FX 4 Chorus Bass", [0x24, 0x21, 0x1C, 0x00], fx4_chorus_bass), plan.writes)
+        self.assertIn(live.PatchWrite("Import U10-1 TSL FX 4 Flanger Bass", [0x24, 0x21, 0x1D, 0x00], fx4_flanger_bass), plan.writes)
+        self.assertFalse(any("MASTER FX" in write.label for write in plan.writes))
+
+    def test_tsl_import_rejects_oversized_bass_extension_records(self):
+        tsl = {
+            "name": "GT-1000 Tone Studio Set",
+            "formatRev": "0000",
+            "device": "GT-1000",
+            "data": [[{
+                "memo": "",
+                "paramSet": {
+                    "User_patch%common": ["20"] * 126,
+                    "User_patch2%fx1ChorusBass": ["00"] * 7,
+                },
+            }]],
+        }
+
+        with self.assertRaisesRegex(ValueError, "User_patch2%fx1ChorusBass has 7 bytes"):
+            patch_edit.build_tsl_import_plan(tsl, "U10-1")
 
     def test_tsl_import_plan_rejects_unsupported_gt1000_param_set_keys(self):
         tsl = {
@@ -562,6 +598,23 @@ class PatchEditTests(unittest.TestCase):
         fx1_chorus = requests[labels.index("FX 1 CHORUS")]
         self.assertEqual(fx1_chorus.address, [0x20, 0x0B, 0x27, 0x00])
         self.assertEqual(fx1_chorus.size, [0x00, 0x00, 0x00, 0x1D])
+
+    def test_clone_core_read_requests_include_validated_extended_records(self):
+        requests = patch_edit.clone_core_read_requests("U10-1")
+        by_label = {request.label: request for request in requests}
+
+        self.assertEqual(by_label["FX 1 Chorus Bass"].address, [0x22, 0x27, 0x01, 0x00])
+        self.assertEqual(by_label["FX 1 Chorus Bass"].size, [0x00, 0x00, 0x00, 0x06])
+        self.assertEqual(by_label["FX 1 Flanger Bass"].address, [0x22, 0x27, 0x02, 0x00])
+        self.assertEqual(by_label["Master Delay 2"].address, [0x22, 0x27, 0x07, 0x00])
+        self.assertEqual(by_label["Patch Effect 2"].address, [0x22, 0x27, 0x0A, 0x00])
+        self.assertEqual(by_label["FX 4"].address, [0x24, 0x21, 0x01, 0x00])
+        self.assertEqual(by_label["FX 4 Chorus Bass"].address, [0x24, 0x21, 0x1C, 0x00])
+        self.assertEqual(by_label["FX 4 Flanger Bass"].address, [0x24, 0x21, 0x1D, 0x00])
+        self.assertEqual(by_label["FX 1 DIST"].address, [0x24, 0x21, 0x1F, 0x00])
+        self.assertEqual(by_label["FX 2 DIST"].address, [0x24, 0x21, 0x20, 0x00])
+        self.assertEqual(by_label["FX 3 DIST"].address, [0x24, 0x21, 0x21, 0x00])
+        self.assertEqual(by_label["FX 4 Dist"].address, [0x24, 0x21, 0x22, 0x00])
 
     def test_parameter_set_plan_supports_resident_blocks(self):
         plan = patch_edit.build_parameter_set_plan("sendReturn1", "sendLevel", "100")

@@ -119,6 +119,10 @@ def build_parser() -> argparse.ArgumentParser:
     add_input_options(controls)
     controls.set_defaults(func=lambda args: patch_view(args, "controls"))
 
+    performance = patch_subcommands.add_parser("performance", help="Show what the patch controls do for performance.")
+    add_input_options(performance)
+    performance.set_defaults(func=lambda args: patch_view(args, "performance"))
+
     summary = patch_subcommands.add_parser("summary", help="Show aggregated patch overview, chain, and controls.")
     add_input_options(summary)
     summary.set_defaults(func=lambda args: patch_view(args, "summary"))
@@ -126,23 +130,30 @@ def build_parser() -> argparse.ArgumentParser:
     slot = patch_subcommands.add_parser("slot", help="Read one persistent user patch slot without selecting it.")
     slot.add_argument("slot", help="User slot such as U01-1.")
     slot.add_argument("--live", action="store_true", help="Required because user slots are read from the connected GT-1000.")
-    slot.add_argument("--view", choices=["overview", "chain", "controls", "summary", "full"], default="summary")
+    slot.add_argument("--view", choices=["overview", "chain", "controls", "performance", "summary", "full"], default="summary")
     slot.add_argument("--timeout", type=float, default=8.0, help="Live read timeout in seconds.")
     slot.set_defaults(func=cmd_patch_slot)
 
     preset = patch_subcommands.add_parser("preset", help="Read one preset patch's documented primary records without selecting it.")
     preset.add_argument("slot", help="Preset slot such as P01-1.")
     preset.add_argument("--live", action="store_true", help="Required because preset slots are read from the connected GT-1000.")
-    preset.add_argument("--view", choices=["overview", "chain", "controls", "summary", "full"], default="summary")
+    preset.add_argument("--view", choices=["overview", "chain", "controls", "performance", "summary", "full"], default="summary")
     preset.add_argument("--timeout", type=float, default=8.0, help="Live read timeout in seconds.")
     preset.set_defaults(func=cmd_patch_preset)
 
     bank = patch_subcommands.add_parser("bank", help="Read all five patches in a persistent user bank.")
     bank.add_argument("bank", help="User bank such as U01.")
     bank.add_argument("--live", action="store_true", help="Required because user banks are read from the connected GT-1000.")
-    bank.add_argument("--view", choices=["overview", "chain", "controls", "summary", "full"], default="summary")
+    bank.add_argument("--view", choices=["overview", "chain", "controls", "performance", "summary", "full"], default="summary")
     bank.add_argument("--timeout", type=float, default=8.0, help="Live read timeout in seconds per slot.")
     bank.set_defaults(func=cmd_patch_bank)
+
+    diff = patch_subcommands.add_parser("diff", help="Compare two patches in musician-facing terms.")
+    diff.add_argument("source", help="Source user slot when --live is set, otherwise a full patch JSON file.")
+    diff.add_argument("target", help="Target user slot when --live is set, otherwise a full patch JSON file.")
+    diff.add_argument("--live", action="store_true", help="Read source and target as live user slots.")
+    diff.add_argument("--timeout", type=float, default=8.0, help="Live read timeout in seconds per slot.")
+    diff.set_defaults(func=cmd_patch_diff)
 
     schema = patch_subcommands.add_parser("schema", help="Show editable parameter schema for decoded blocks.")
     schema.add_argument("block_id", nargs="?", help="Optional block id such as delay1, fx1, or sendReturn1.")
@@ -251,6 +262,12 @@ def build_parser() -> argparse.ArgumentParser:
     restore_preset.add_argument("--verify", action="store_true", help="Re-read every written primary record and compare exact bytes.")
     restore_preset.add_argument("--timeout", type=float, default=20.0, help="Read/verification timeout in seconds.")
     restore_preset.set_defaults(func=cmd_patch_restore_preset)
+
+    undo_last = patch_subcommands.add_parser("undo-last", help="Restore the most recent automatic restore point.")
+    undo_last.add_argument("--live", action="store_true", help="Required because this writes to the connected GT-1000.")
+    undo_last.add_argument("--verify", action="store_true", help="Re-read every restored range and compare exact bytes.")
+    undo_last.add_argument("--timeout", type=float, default=20.0, help="Read/verification timeout in seconds.")
+    undo_last.set_defaults(func=cmd_patch_undo_last)
 
     exchange = patch_subcommands.add_parser("exchange", help="Exchange two persistent user patch slots.")
     exchange.add_argument("slot_a", help="First user slot such as U10-1.")
@@ -530,7 +547,7 @@ def live_call_with_timeout(label: str, process_timeout: float, func: Callable[..
             process.terminate()
             process.join(2)
             raise CLIError(
-                f"{label} timed out after {process_timeout:g}s; quit MIDI clients such as BOSS Tone Studio, then power-cycle or reconnect the GT-1000",
+                f"{label} live MIDI worker did not finish within {process_timeout:g}s",
                 1,
             )
         if output_path.stat().st_size == 0:
@@ -636,7 +653,7 @@ def cmd_system_view(args: argparse.Namespace) -> Any:
     try:
         raw = live_call_with_timeout(
             f"system {args.system_command} --live",
-            args.timeout,
+            patch_record_process_timeout(args.timeout, 1),
             live.read_system_section,
             address,
             size,
@@ -666,7 +683,7 @@ def cmd_system_pcmap(args: argparse.Namespace) -> Any:
         try:
             raw = live_call_with_timeout(
                 f"system pcmap --live bank {bank}",
-                args.timeout,
+                patch_record_process_timeout(args.timeout, 1),
                 live.read_system_section,
                 address,
                 size,
@@ -701,7 +718,7 @@ def cmd_system_inputs(args: argparse.Namespace) -> Any:
         try:
             raw = live_call_with_timeout(
                 f"system inputs --live number {number}",
-                args.timeout,
+                patch_record_process_timeout(args.timeout, 1),
                 live.read_system_section,
                 address,
                 size,
@@ -1029,24 +1046,23 @@ STOMPBOX3_SELECTIONS = [
 
 def patch_view(args: argparse.Namespace, view: str) -> Any:
     if args.live or args.file is None:
-        assign_requests = [
-            live.PatchReadRequest(f"Assign {i}", live.address_adding(live.ASSIGN_BASE, (i-1)*live.ASSIGN_STRIDE), [0x00, 0x00, 0x00, 0x2C])
-            for i in range(1, 17)
-        ] if view in {"chain", "controls", "summary"} else []
-        
-        snapshot = live_call_with_timeout(
-            f"patch {view} --live",
-            args.timeout,
-            read_live_snapshot,
-            args.timeout,
-            requests=live.READ_PLAN + assign_requests if view in {"chain", "controls", "summary"} else live.INITIAL_READS,
-        )
+        requests = requests_for_view(view)
+        if view == "performance":
+            snapshot = read_performance_snapshot_with_timeout(f"patch {view} --live", args.timeout)
+        else:
+            snapshot = read_live_snapshot_with_timeout(
+                f"patch {view} --live",
+                args.timeout,
+                requests=requests,
+            )
         if view == "chain":
             return chain_from_full(snapshot)
         if view == "overview":
             return overview_from_full(snapshot)
         if view == "controls":
             return controls_from_full(snapshot)
+        if view == "performance":
+            return performance_from_full(snapshot)
         if view == "summary":
             return summary_from_full(snapshot)
         return snapshot
@@ -1058,6 +1074,8 @@ def patch_view(args: argparse.Namespace, view: str) -> Any:
         return chain_from_full(snapshot)
     if view == "controls":
         return controls_from_full(snapshot)
+    if view == "performance":
+        return performance_from_full(snapshot)
     if view == "summary":
         return summary_from_full(snapshot)
     raise CLIError(f"unsupported patch view {view}", 64)
@@ -1100,6 +1118,27 @@ def cmd_patch_bank(args: argparse.Namespace) -> Any:
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     return {"bank": bank, "patches": patches}
+
+
+def cmd_patch_diff(args: argparse.Namespace) -> Any:
+    if args.live:
+        try:
+            source = live.normalize_user_slot(args.source)
+            target = live.normalize_user_slot(args.target)
+            source_snapshot = read_clone_snapshot_with_timeout(f"patch diff {source} --live", args.timeout, source)
+            target_snapshot = read_clone_snapshot_with_timeout(f"patch diff {target} --live", args.timeout, target)
+        except ValueError as error:
+            raise CLIError(str(error), 64) from error
+        return patch_diff_from_full(source_snapshot, target_snapshot, source_label=source, target_label=target)
+
+    source_path = Path(args.source)
+    target_path = Path(args.target)
+    return patch_diff_from_full(
+        load_json(source_path),
+        load_json(target_path),
+        source_label=str(source_path),
+        target_label=str(target_path),
+    )
 
 
 def cmd_patch_schema(args: argparse.Namespace) -> Any:
@@ -1359,6 +1398,25 @@ def cmd_patch_restore_preset(args: argparse.Namespace) -> Any:
         raise CLIError(str(error)) from error
 
 
+def cmd_patch_undo_last(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch undo-last requires --live because it writes to the connected GT-1000", 64)
+    restore_path = latest_restore_point_path()
+    if not restore_path.is_file():
+        raise CLIError(f"no restore point found at {restore_path}", 1)
+    restore = load_json(restore_path)
+    try:
+        plan = restore_plan_from_data(restore)
+        result = apply_plan_cli(plan, timeout=args.timeout, verify=args.verify, create_restore=False)
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+    result["restorePoint"] = str(restore_path)
+    result["restoredPlan"] = restore.get("plan")
+    return result
+
+
 def cmd_patch_exchange(args: argparse.Namespace) -> Any:
     if not args.live:
         raise CLIError("patch exchange requires --live because it reads and writes persistent GT-1000 user slots", 64)
@@ -1515,10 +1573,8 @@ def cmd_patch_block(args: argparse.Namespace) -> Any:
                 # Resident blocks are at fixed offsets in the PatchEfct record
                 block_request = live.INITIAL_READS[2] # Patch Effect record
         else:
-            header_snapshot = live_call_with_timeout(
+            header_snapshot = read_live_snapshot_with_timeout(
                 "patch block position header --live",
-                args.timeout,
-                read_live_snapshot,
                 args.timeout,
                 requests=live.INITIAL_READS,
             )
@@ -1550,10 +1606,8 @@ def cmd_patch_block(args: argparse.Namespace) -> Any:
                 block_request = live.INITIAL_READS[2] # Patch Effect record
 
         requests = live.INITIAL_READS + ([block_request] if block_request else live.BLOCK_READS)
-        snapshot = live_call_with_timeout(
+        snapshot = read_live_snapshot_with_timeout(
             "patch block --live",
-            args.timeout,
-            read_live_snapshot,
             args.timeout,
             requests=requests,
         )
@@ -1593,12 +1647,10 @@ def cmd_patch_stompbox(args: argparse.Namespace) -> Any:
         for _id, label, address, size, _definitions in records
     ]
     try:
-        raw = live_call_with_timeout(
+        raw = read_patch_records_with_timeout(
             "patch stompbox --live",
             args.timeout,
-            live.read_data_sets,
-            timeout=args.timeout,
-            requests=requests,
+            requests,
         )
     except ValueError as error:
         raise CLIError(str(error), 64) from error
@@ -1638,10 +1690,8 @@ def cmd_patch_dump(args: argparse.Namespace) -> Any:
     if not args.live:
         raise CLIError("patch dump currently requires --live", 64)
 
-    dump = live_call_with_timeout(
+    dump = read_live_snapshot_with_timeout(
         "patch dump --live",
-        args.timeout,
-        read_live_snapshot,
         args.timeout,
     )
     if args.output:
@@ -1882,7 +1932,12 @@ def cmd_patch_master_set(args: argparse.Namespace) -> Any:
             slot = live.normalize_user_slot(args.user_slot)
             address = live.remap_temporary_patch_address(live.TEMPORARY_PATCH_EFFECT, live.user_patch_base(slot))
             request = live.PatchReadRequest("Patch Effect", address, [0x00, 0x00, 0x01, 0x1C])
-            data = live.read_data_sets(timeout=args.timeout, requests=[request])[live.address_key(address)]
+            data = read_patch_records_with_timeout(
+                f"patch master-set {slot} source record",
+                args.timeout,
+                [request],
+                reader=patch_edit.read_data_sets_sequential_session,
+            )[live.address_key(address)]
             plan = patch_edit.build_master_set_record_plan(args.field, args.value, data, slot=slot)
         else:
             plan = patch_edit.build_master_set_plan(args.field, args.value)
@@ -1913,12 +1968,317 @@ def summary_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def performance_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
+    controls_view = controls_from_full(snapshot)
+    controls = controls_view["controls"]
+    active_assigns = controls_view["activeAssigns"]
+    assigns_by_source: dict[str, list[dict[str, Any]]] = {}
+    for assign in active_assigns:
+        source = assign.get("sourceName")
+        if source:
+            assigns_by_source.setdefault(source, []).append(assign)
+
+    rows = []
+    matched_assign_ids: set[str] = set()
+    system_controls = []
+    no_action_controls = []
+    tuner_available = False
+    for name, control in controls.items():
+        sources = assign_source_names_for_control(name)
+        assigns = [
+            assign
+            for source in sources
+            for assign in assigns_by_source.get(source, [])
+        ]
+        matched_assign_ids.update(assign.get("id", "") for assign in assigns)
+        direct_function = control.get("function")
+        direct_is_active = direct_function not in {None, "OFF"}
+        if direct_function and "TUNER" in direct_function:
+            tuner_available = True
+        if any("TUNER" in (assign.get("targetName") or "") for assign in assigns):
+            tuner_available = True
+        if control.get("preference") == "SYSTEM":
+            system_controls.append(name)
+        formatted_assigns = [performance_assign(assign) for assign in assigns]
+        if not direct_is_active and not formatted_assigns:
+            no_action_controls.append(name)
+        rows.append({
+            "control": name,
+            "kind": performance_control_kind(name),
+            "preference": control.get("preference"),
+            "mode": control.get("mode"),
+            "directFunction": direct_function,
+            "directTargetBlockId": control.get("functionTargetBlockId"),
+            "directTargetParameterId": control.get("functionTargetParameterId"),
+            "directCanEnableBlock": control.get("functionCanEnableBlock"),
+            "assignCount": len(formatted_assigns),
+            "assigns": formatted_assigns,
+            "action": performance_action_summary(control, formatted_assigns),
+        })
+
+    external_assigns = [
+        performance_assign(assign)
+        for assign in active_assigns
+        if assign.get("id") not in matched_assign_ids
+    ]
+    notes = []
+    if not tuner_available:
+        notes.append("No tuner control is mapped in the decoded direct controls or active Assigns.")
+    if system_controls:
+        notes.append(f"{len(system_controls)} controls use SYSTEM preference: {', '.join(system_controls)}.")
+    if active_assigns:
+        notes.append(f"{len(active_assigns)} active Assign overlays are enabled.")
+    if no_action_controls:
+        notes.append(f"{len(no_action_controls)} controls have no patch-specific action.")
+
+    overview = overview_from_full(snapshot)
+    return {
+        "id": "patchPerformance",
+        "overview": overview,
+        "patchName": overview.get("patchName"),
+        "masterBPM": overview.get("masterBPM"),
+        "masterPatchLevel": overview.get("masterPatchLevel"),
+        "tunerAvailable": tuner_available,
+        "controlCount": len(rows),
+        "activeAssignCount": len(active_assigns),
+        "controls": rows,
+        "externalAssigns": external_assigns,
+        "notes": notes,
+    }
+
+
+def assign_source_names_for_control(name: str) -> list[str]:
+    if name == "CUR NUM":
+        return ["CURRENT NUMBER"]
+    if name.startswith("EXP ") and not name.endswith("SW"):
+        return [f"{name} PEDAL"]
+    return [name]
+
+
+def performance_control_kind(name: str) -> str:
+    if name.startswith("EXP ") and not name.endswith("SW"):
+        return "expression-pedal"
+    return "footswitch"
+
+
+def performance_assign(assign: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": assign.get("id"),
+        "source": assign.get("sourceName"),
+        "mode": assign.get("mode"),
+        "target": assign.get("targetName"),
+        "targetBlockId": assign.get("targetBlockId"),
+        "targetParameterId": assign.get("targetParameterId"),
+        "targetIsOnOff": assign.get("targetIsOnOff"),
+        "targetMin": assign.get("targetMin"),
+        "targetMax": assign.get("targetMax"),
+        "summary": f"{assign.get('sourceName')} -> {assign.get('targetName')} ({assign.get('mode')})",
+    }
+
+
+def performance_action_summary(control: dict[str, Any], assigns: list[dict[str, Any]]) -> str:
+    parts = []
+    direct_function = control.get("function")
+    if direct_function and direct_function != "OFF":
+        mode = control.get("mode")
+        parts.append(f"Direct: {direct_function}" + (f" ({mode})" if mode else ""))
+    parts.extend(assign["summary"] for assign in assigns)
+    return "; ".join(parts) if parts else "No patch action"
+
+
+def patch_diff_from_full(
+    source: dict[str, Any],
+    target: dict[str, Any],
+    *,
+    source_label: str,
+    target_label: str,
+) -> dict[str, Any]:
+    overview_changes = overview_diff(source, target)
+    chain_changes = chain_diff(source, target)
+    block_changes = block_diff(source, target)
+    control_changes = controls_diff(source, target)
+    assign_changes = assigns_diff(source, target)
+    summary = diff_summary(overview_changes, chain_changes, block_changes, control_changes, assign_changes)
+    return {
+        "id": "patchDiff",
+        "source": source_label,
+        "target": target_label,
+        "sourcePatchName": source.get("patchName"),
+        "targetPatchName": target.get("patchName"),
+        "summary": summary,
+        "overviewChanges": overview_changes,
+        "chainChanges": chain_changes,
+        "blockChanges": block_changes,
+        "controlChanges": control_changes,
+        "assignChanges": assign_changes,
+    }
+
+
+def overview_diff(source: dict[str, Any], target: dict[str, Any]) -> list[dict[str, Any]]:
+    fields = [
+        ("patchName", "Patch name"),
+        ("masterBPM", "Master BPM"),
+        ("masterPatchLevel", "Patch level"),
+        ("masterKey", "Key"),
+        ("masterCarryoverEnabled", "Carryover"),
+    ]
+    changes = []
+    for key, label in fields:
+        if source.get(key) != target.get(key):
+            changes.append({"field": key, "label": label, "source": source.get(key), "target": target.get(key)})
+    return changes
+
+
+def chain_diff(source: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
+    source_chain = source.get("signalChainSummary") or chain_summary_from_elements(source)
+    target_chain = target.get("signalChainSummary") or chain_summary_from_elements(target)
+    return {
+        "changed": source_chain != target_chain,
+        "source": source_chain,
+        "target": target_chain,
+    }
+
+
+def chain_summary_from_elements(snapshot: dict[str, Any]) -> str:
+    return " -> ".join(
+        element.get("displayName", "?")
+        for element in snapshot.get("signalChainElements", [])
+        if not element.get("isReserved")
+    )
+
+
+def block_diff(source: dict[str, Any], target: dict[str, Any]) -> list[dict[str, Any]]:
+    source_blocks = {block.get("id"): block for block in source.get("blocks", []) if block.get("id")}
+    target_blocks = {block.get("id"): block for block in target.get("blocks", []) if block.get("id")}
+    changes = []
+    for block_id in sorted(set(source_blocks) | set(target_blocks)):
+        source_block = source_blocks.get(block_id)
+        target_block = target_blocks.get(block_id)
+        if source_block is None or target_block is None:
+            changes.append({
+                "blockId": block_id,
+                "label": (source_block or target_block or {}).get("displayName"),
+                "change": "added" if source_block is None else "removed",
+            })
+            continue
+        field_changes = []
+        for key, label in [("isEnabled", "on/off"), ("typeName", "type"), ("isInSignalChain", "in chain")]:
+            if source_block.get(key) != target_block.get(key):
+                field_changes.append({"field": key, "label": label, "source": source_block.get(key), "target": target_block.get(key)})
+        if field_changes:
+            changes.append({
+                "blockId": block_id,
+                "label": source_block.get("displayName") or target_block.get("displayName"),
+                "changes": field_changes,
+            })
+    return changes
+
+
+def controls_diff(source: dict[str, Any], target: dict[str, Any]) -> list[dict[str, Any]]:
+    try:
+        source_controls = controls_from_full(source)["controls"]
+        target_controls = controls_from_full(target)["controls"]
+    except CLIError:
+        return []
+    changes = []
+    for name in sorted(set(source_controls) | set(target_controls)):
+        source_control = source_controls.get(name, {})
+        target_control = target_controls.get(name, {})
+        field_changes = []
+        for key, label in [("preference", "preference"), ("function", "function"), ("mode", "mode")]:
+            if source_control.get(key) != target_control.get(key):
+                field_changes.append({"field": key, "label": label, "source": source_control.get(key), "target": target_control.get(key)})
+        if field_changes:
+            changes.append({"control": name, "changes": field_changes})
+    return changes
+
+
+def assigns_diff(source: dict[str, Any], target: dict[str, Any]) -> list[dict[str, Any]]:
+    source_assigns = {assign.get("id"): assign for assign in active_assigns_from_snapshot(source) if assign.get("id")}
+    target_assigns = {assign.get("id"): assign for assign in active_assigns_from_snapshot(target) if assign.get("id")}
+    changes = []
+    for assign_id in sorted(set(source_assigns) | set(target_assigns)):
+        source_assign = source_assigns.get(assign_id)
+        target_assign = target_assigns.get(assign_id)
+        if source_assign is None or target_assign is None:
+            changes.append({
+                "assign": assign_id,
+                "change": "added" if source_assign is None else "removed",
+                "source": assign_summary(source_assign),
+                "target": assign_summary(target_assign),
+            })
+            continue
+        field_changes = []
+        for key, label in [("sourceName", "source"), ("targetName", "target"), ("mode", "mode")]:
+            if source_assign.get(key) != target_assign.get(key):
+                field_changes.append({"field": key, "label": label, "source": source_assign.get(key), "target": target_assign.get(key)})
+        if field_changes:
+            changes.append({"assign": assign_id, "changes": field_changes})
+    return changes
+
+
+def assign_summary(assign: dict[str, Any] | None) -> str | None:
+    if not assign:
+        return None
+    return f"{assign.get('sourceName')} -> {assign.get('targetName')} ({assign.get('mode')})"
+
+
+def diff_summary(
+    overview_changes: list[dict[str, Any]],
+    chain_changes: dict[str, Any],
+    block_changes: list[dict[str, Any]],
+    control_changes: list[dict[str, Any]],
+    assign_changes: list[dict[str, Any]],
+) -> list[str]:
+    summary = []
+    for change in overview_changes:
+        summary.append(f"{change['label']}: {change['source']} -> {change['target']}")
+    if chain_changes.get("changed"):
+        summary.append("Signal chain order or routing changed.")
+    for change in block_changes[:8]:
+        label = change.get("label") or change.get("blockId")
+        fields = ", ".join(item["label"] for item in change.get("changes", []))
+        if fields:
+            summary.append(f"{label}: {fields} changed.")
+        else:
+            summary.append(f"{label}: {change.get('change')}.")
+    for change in control_changes[:8]:
+        fields = ", ".join(item["label"] for item in change.get("changes", []))
+        summary.append(f"{change['control']}: {fields} changed.")
+    for change in assign_changes[:8]:
+        if "changes" in change:
+            fields = ", ".join(item["label"] for item in change["changes"])
+            summary.append(f"{change['assign']}: {fields} changed.")
+        else:
+            summary.append(f"{change['assign']}: {change.get('change')}.")
+    return summary or ["No decoded musical differences found."]
+
+
 
 def read_live_snapshot(timeout: float, requests: list[live.PatchReadRequest] | None = None) -> dict[str, Any]:
     try:
         return live.read_current_patch(timeout=timeout, requests=requests)
     except live.LiveMIDIError as error:
         raise CLIError(str(error)) from error
+
+
+def read_live_snapshot_with_timeout(
+    label: str,
+    timeout: float,
+    requests: list[live.PatchReadRequest] | None = None,
+) -> dict[str, Any]:
+    source_requests = requests or live.READ_PLAN
+    raw = read_patch_records_with_timeout(label, timeout, source_requests)
+    return snapshot_from_patch_records(source_requests, source_requests, raw)
+
+
+def read_performance_snapshot_with_timeout(label: str, timeout: float) -> dict[str, Any]:
+    required_requests = performance_required_read_requests()
+    assign_requests = assign_read_requests()
+    raw = read_required_patch_records_with_timeout(f"{label} required record", timeout, required_requests)
+    raw.update(read_patch_records_lenient_with_timeout(f"{label} Assign records", timeout, assign_requests))
+    source_requests = required_requests + assign_requests
+    return snapshot_from_patch_records(source_requests, source_requests, raw)
 
 
 def read_user_slot_snapshot(slot: str, timeout: float, *, view: str) -> dict[str, Any]:
@@ -1930,6 +2290,21 @@ def read_user_slot_snapshot(slot: str, timeout: float, *, view: str) -> dict[str
             patch_base=patch_base,
             timeout=timeout,
             source_slot=live.normalize_user_slot(slot),
+            source_type="user",
+        )
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
+def read_user_slot_snapshot_lenient(slot: str, timeout: float, *, view: str) -> dict[str, Any]:
+    try:
+        source_slot = live.normalize_user_slot(slot)
+        patch_base = live.user_patch_base(source_slot)
+        return read_mapped_patch_snapshot_lenient(
+            requests=requests_for_view(view),
+            patch_base=patch_base,
+            timeout=timeout,
+            source_slot=source_slot,
             source_type="user",
         )
     except live.LiveMIDIError as error:
@@ -1963,21 +2338,83 @@ def read_mapped_patch_snapshot(
         live.PatchReadRequest(request.label, live.remap_temporary_patch_address(request.address, patch_base), request.size)
         for request in requests
     ]
-    raw = live_call_with_timeout(
+    raw = read_patch_records_with_timeout(
         f"patch {source_slot} --live",
         timeout,
-        patch_edit.read_data_sets_batched,
-        timeout=timeout,
-        requests=remapped_requests,
+        remapped_requests,
     )
+    return snapshot_from_patch_records(
+        requests,
+        remapped_requests,
+        raw,
+        source_slot=source_slot,
+        source_address=patch_base,
+        source_type=source_type,
+    )
+
+
+def read_mapped_patch_snapshot_lenient(
+    *,
+    requests: list[live.PatchReadRequest],
+    patch_base: list[int],
+    timeout: float,
+    source_slot: str,
+    source_type: str,
+) -> dict[str, Any]:
+    remapped_requests = [
+        live.PatchReadRequest(request.label, live.remap_temporary_patch_address(request.address, patch_base), request.size)
+        for request in requests
+    ]
+    required_labels = {"Master BPM", "Patch Effect", "Patch Common", "System Control"}
+    required_requests = [request for request in remapped_requests if request.label in required_labels]
+    optional_requests = [request for request in remapped_requests if request.label not in required_labels]
+    read_timeout = min(timeout, 5.0)
+    raw: dict[str, list[int]] = {}
+    for request in required_requests:
+        try:
+            raw.update(read_patch_records_with_timeout(
+                f"patch {source_slot} --live {request.label}",
+                read_timeout,
+                [request],
+                reader=patch_edit.read_data_sets_sequential_session,
+                attempts=1,
+            ))
+        except CLIError:
+            pass
+    raw.update(read_patch_records_lenient_chunks(
+        f"patch {source_slot} --live optional records",
+        min(timeout, 2.0),
+        optional_requests,
+    ))
+    return snapshot_from_patch_records(
+        requests,
+        remapped_requests,
+        raw,
+        source_slot=source_slot,
+        source_address=patch_base,
+        source_type=source_type,
+    )
+
+
+def snapshot_from_patch_records(
+    source_requests: list[live.PatchReadRequest],
+    remapped_requests: list[live.PatchReadRequest],
+    raw: dict[str, list[int]],
+    *,
+    source_slot: str | None = None,
+    source_address: list[int] | None = None,
+    source_type: str | None = None,
+) -> dict[str, Any]:
     snapshot = live.empty_snapshot()
-    for source_request, remapped_request in zip(requests, remapped_requests):
+    for source_request, remapped_request in zip(source_requests, remapped_requests):
         data = raw.get(live.address_key(remapped_request.address))
         if data is not None:
             live.apply_data_set(snapshot, source_request.address, data)
-    snapshot["sourceSlot"] = source_slot
-    snapshot["sourceAddress"] = live.hex_bytes(patch_base)
-    if source_type != "user":
+    if source_slot is not None:
+        snapshot["sourceSlot"] = source_slot
+    if source_address is not None:
+        snapshot["sourceAddress"] = live.hex_bytes(source_address)
+    if source_type is not None and source_type != "user":
         snapshot["sourceType"] = source_type
     return snapshot
 
@@ -1986,22 +2423,24 @@ def read_patch_records_with_timeout(
     label: str,
     timeout: float,
     requests: list[live.PatchReadRequest],
+    reader: Callable[..., dict[str, list[int]]] = patch_edit.read_data_sets_batched,
+    attempts: int = 3,
 ) -> dict[str, list[int]]:
-    process_timeout = patch_record_process_timeout(timeout, len(requests))
-    attempts = 3
+    transport_requests = transport_read_requests(requests)
+    process_timeout = patch_record_process_timeout(timeout, len(transport_requests))
     for attempt in range(attempts):
         try:
             return live_call_with_timeout(
                 label,
                 process_timeout,
-                patch_edit.read_data_sets_batched,
+                reader,
                 timeout=timeout,
-                requests=requests,
+                requests=transport_requests,
             )
         except CLIError:
             if attempt == attempts - 1:
                 raise
-            time.sleep(0.5)
+            time.sleep(recovery_delay_seconds(attempt))
     raise CLIError(f"{label} failed without returning a result", 1)
 
 
@@ -2013,31 +2452,135 @@ def read_patch_records_lenient_with_timeout(
     if not requests:
         return {}
     read_timeout = min(timeout, 2.0)
-    process_timeout = max(timeout, min(120.0, (read_timeout + 0.1) * len(requests) + 5.0))
-    return live_call_with_timeout(
-        label,
-        process_timeout,
-        live.read_data_sets_lenient,
-        timeout=read_timeout,
-        requests=requests,
-    )
+    raw = read_patch_records_lenient_chunks(label, read_timeout, requests)
+    missing_requests = [
+        request
+        for request in requests
+        if live.address_key(request.address) not in raw
+    ]
+    if missing_requests and len(missing_requests) < len(requests):
+        retry_timeout = max(timeout, read_timeout)
+        raw.update(read_patch_records_lenient_chunks(
+            f"{label} missing records retry",
+            retry_timeout,
+            missing_requests,
+        ))
+    return raw
+
+
+def read_patch_records_lenient_chunks(
+    label: str,
+    timeout: float,
+    requests: list[live.PatchReadRequest],
+) -> dict[str, list[int]]:
+    raw: dict[str, list[int]] = {}
+    batch_size = lenient_read_batch_size()
+    transport_requests = transport_read_requests(requests)
+    for start in range(0, len(transport_requests), batch_size):
+        chunk = transport_requests[start:start + batch_size]
+        process_timeout = lenient_patch_record_process_timeout(timeout, len(chunk))
+        try:
+            chunk_raw = live_call_with_timeout(
+                label,
+                process_timeout,
+                live.read_data_sets_lenient,
+                timeout=timeout,
+                requests=chunk,
+            )
+        except CLIError:
+            break
+        raw.update(chunk_raw)
+        if not chunk_raw:
+            break
+    return raw
+
+
+def transport_read_requests(requests: list[live.PatchReadRequest]) -> list[live.PatchReadRequest]:
+    selected: dict[str, live.PatchReadRequest] = {}
+    order = []
+    for request in requests:
+        key = live.address_key(request.address)
+        if key not in selected:
+            order.append(key)
+            selected[key] = request
+            continue
+        if live.seven_bit_address_value(request.size) > live.seven_bit_address_value(selected[key].size):
+            selected[key] = request
+    return [selected[key] for key in order]
+
+
+def read_required_patch_records_with_timeout(
+    label: str,
+    timeout: float,
+    requests: list[live.PatchReadRequest],
+) -> dict[str, list[int]]:
+    raw: dict[str, list[int]] = {}
+    missing_requests = list(requests)
+    for attempt in range(required_record_attempts()):
+        for request in list(missing_requests):
+            try:
+                raw.update(read_patch_records_with_timeout(
+                    f"{label} {request.label}",
+                    timeout,
+                    [request],
+                    reader=patch_edit.read_data_sets_sequential_session,
+                    attempts=1,
+                ))
+            except CLIError:
+                pass
+        missing_requests = [
+            request
+            for request in requests
+            if live.address_key(request.address) not in raw
+        ]
+        if not missing_requests:
+            return raw
+        time.sleep(recovery_delay_seconds(attempt))
+    raw.update(read_patch_records_lenient_with_timeout(f"{label} lenient retry", timeout, missing_requests))
+    return raw
 
 
 def read_clone_records_with_timeout(label: str, timeout: float, slot: str) -> dict[str, list[int]]:
     source = live.normalize_user_slot(slot)
-    raw = read_patch_records_lenient_with_timeout(f"{label} core records", timeout, patch_edit.clone_core_read_requests(source))
+    core_requests = patch_edit.clone_core_read_requests(source)
     required_labels = {"Patch Common", "Patch Effect"}
+    required_requests = [
+        request
+        for request in core_requests
+        if request.label in required_labels
+    ]
+    raw = read_required_patch_records_with_timeout(f"{label} required record", timeout, required_requests)
     missing_required = [
         request.label
-        for request in patch_edit.clone_core_read_requests(source)
-        if request.label in required_labels and live.address_key(request.address) not in raw
+        for request in required_requests
+        if live.address_key(request.address) not in raw
     ]
     if missing_required:
-        raise CLIError(f"{label} missing required records: {', '.join(missing_required)}", 1)
+        raise missing_required_records_error(label, missing_required, timeout)
+    optional_core_requests = [
+        request
+        for request in core_requests
+        if request.label not in required_labels
+    ]
+    raw.update(read_patch_records_lenient_with_timeout(f"{label} core records", timeout, optional_core_requests))
     active_requests = patch_edit.active_fx_algorithm_read_requests(source, raw)
     if active_requests:
         raw.update(read_patch_records_lenient_with_timeout(f"{label} active FX records", timeout, active_requests))
     return raw
+
+
+def read_clone_snapshot_with_timeout(label: str, timeout: float, slot: str) -> dict[str, Any]:
+    source = live.normalize_user_slot(slot)
+    raw = read_clone_records_with_timeout(label, timeout, source)
+    snapshot = live.empty_snapshot()
+    for definition in patch_edit.clone_record_definitions_for_data(source, raw):
+        source_address = patch_edit.remap_clone_address(definition.address, source)
+        data = raw.get(live.address_key(source_address))
+        if data is not None:
+            live.apply_data_set(snapshot, definition.address, data)
+    snapshot["sourceSlot"] = source
+    snapshot["sourceAddress"] = live.hex_bytes(live.user_patch_base(source))
+    return snapshot
 
 
 def delay_between_slot_reads(index: int, total: int) -> None:
@@ -2048,20 +2591,100 @@ def delay_between_slot_reads(index: int, total: int) -> None:
         time.sleep(delay)
 
 
+def missing_required_records_error(label: str, missing_required: list[str], timeout: float) -> CLIError:
+    probe_ok, probe_detail = probe_gt1000_connectivity(min(5.0, max(2.0, timeout / 4.0)))
+    missing_text = ", ".join(missing_required)
+    if probe_ok:
+        return CLIError(
+            f"{label} missing required records after recovery attempts: {missing_text}; "
+            "GT-1000 connectivity probe passed, so this is a recoverable live-read timeout. Retry the command.",
+            1,
+        )
+    return CLIError(
+        f"{label} missing required records after recovery attempts: {missing_text}; "
+        f"GT-1000 connectivity probe failed ({probe_detail}). Reconnect or power-cycle the GT-1000; "
+        "restart macOS only if CoreMIDI endpoint checks hang or never return.",
+        1,
+    )
+
+
+def probe_gt1000_connectivity(timeout: float) -> tuple[bool, str]:
+    try:
+        ports = live_call_with_timeout("GT-1000 endpoint check", max(3.0, timeout + 1.0), live.list_ports)
+    except CLIError as error:
+        return False, f"endpoint check failed: {error}"
+    destinations = ports.get("destinations", []) if isinstance(ports, dict) else []
+    sources = ports.get("sources", []) if isinstance(ports, dict) else []
+    has_destination = any(port.get("isDefaultGT1000Endpoint") for port in destinations)
+    has_source = any(port.get("isDefaultGT1000Endpoint") for port in sources)
+    if not has_destination or not has_source:
+        return False, "normal GT-1000 source/destination endpoints are not both present"
+
+    request = live.PatchReadRequest("System Common", live.SYSTEM_COMMON, [0x00, 0x00, 0x00, 0x0D])
+    try:
+        live_call_with_timeout(
+            "GT-1000 system common health check",
+            patch_record_process_timeout(timeout, 1),
+            live.read_data_sets,
+            timeout=timeout,
+            requests=[request],
+        )
+    except CLIError as error:
+        return False, f"system common read failed: {error}"
+    return True, "normal endpoints and System Common read are responsive"
+
+
 def patch_record_process_timeout(timeout: float, request_count: int) -> float:
     if request_count <= 0:
         return timeout
-    batches = (request_count + patch_edit.VERIFY_READ_BATCH_SIZE - 1) // patch_edit.VERIFY_READ_BATCH_SIZE
-    return max(timeout, min(120.0, timeout * max(1.0, batches / 3.0)))
+    return min(300.0, max(timeout + 5.0, (timeout + 0.25) * request_count + 5.0))
 
 
-def apply_plan_cli(plan: patch_edit.PatchPlan, *, timeout: float, verify: bool) -> dict[str, Any]:
+def lenient_patch_record_process_timeout(timeout: float, request_count: int) -> float:
+    if request_count <= 0:
+        return timeout
+    return min(30.0, max(timeout + 2.0, (timeout + 0.1) * request_count + 2.0))
+
+
+def lenient_read_batch_size() -> int:
+    try:
+        value = int(os.environ.get("GT1000_LENIENT_READ_BATCH_SIZE", "8"))
+    except ValueError:
+        return 8
+    return max(1, value)
+
+
+def required_record_attempts() -> int:
+    try:
+        value = int(os.environ.get("GT1000_REQUIRED_RECORD_ATTEMPTS", "3"))
+    except ValueError:
+        return 3
+    return max(1, value)
+
+
+def recovery_delay_seconds(attempt: int) -> float:
+    return min(2.0, 0.5 * (attempt + 1))
+
+
+def apply_plan_cli(
+    plan: patch_edit.PatchPlan,
+    *,
+    timeout: float,
+    verify: bool,
+    create_restore: bool = True,
+) -> dict[str, Any]:
+    restore_path = create_restore_point(plan, timeout=timeout) if create_restore else None
     try:
         patch_edit.write_data_sets_resilient(plan.writes)
     except live.LiveMIDIError as error:
         raise live.LiveMIDIError(f"write phase failed for {plan.id}: {error}") from error
 
-    result: dict[str, Any] = {"plan": plan.id, "writeCount": len(plan.writes), "verified": None}
+    result: dict[str, Any] = {
+        "plan": plan.id,
+        "writeCount": len(plan.writes),
+        "verified": None,
+        "restorePoint": str(restore_path) if restore_path else None,
+    }
     if verify:
         time.sleep(0.25)
         try:
@@ -2073,9 +2696,108 @@ def apply_plan_cli(plan: patch_edit.PatchPlan, *, timeout: float, verify: bool) 
     return result
 
 
+def create_restore_point(plan: patch_edit.PatchPlan, *, timeout: float) -> Path | None:
+    if not plan.writes:
+        return None
+    requests = unique_restore_read_requests(plan.writes)
+    raw = read_patch_records_with_timeout(
+        f"restore point {plan.id}",
+        timeout,
+        requests,
+        reader=patch_edit.read_data_sets_sequential_session,
+    )
+    records = []
+    for request in requests:
+        key = live.address_key(request.address)
+        data = raw.get(key)
+        if data is None:
+            raise CLIError(f"restore point {plan.id} could not read {request.label} at {key}", 1)
+        records.append({
+            "label": request.label,
+            "address": live.hex_bytes(request.address),
+            "size": live.hex_bytes(request.size),
+            "dataHex": live.hex_string(data),
+        })
+    restore = {
+        "format": "gt1000-agent-restore-v1",
+        "createdAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "plan": plan.id,
+        "records": records,
+    }
+    directory = restore_point_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    filename = f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}-{safe_restore_plan_id(plan.id)}.json"
+    path = directory / filename
+    restore_text = json.dumps(restore, indent=2, sort_keys=True) + "\n"
+    path.write_text(restore_text, encoding="utf-8")
+    latest_restore_point_path().write_text(restore_text, encoding="utf-8")
+    return path
+
+
+def unique_restore_read_requests(writes: list[live.PatchWrite]) -> list[live.PatchReadRequest]:
+    requests = []
+    seen = set()
+    for write in writes:
+        request = write.read_request
+        key = (tuple(request.address), tuple(request.size))
+        if key in seen:
+            continue
+        seen.add(key)
+        requests.append(request)
+    return requests
+
+
+def restore_point_dir() -> Path:
+    return Path(os.environ.get("GT1000_RESTORE_DIR", str(Path.home() / ".gt1000-agent" / "restore-points")))
+
+
+def latest_restore_point_path() -> Path:
+    return restore_point_dir() / "latest.json"
+
+
+def safe_restore_plan_id(plan_id: str) -> str:
+    safe = "".join(char if char.isalnum() or char in {"-", "_"} else "-" for char in plan_id)
+    return safe[:80] or "restore"
+
+
+def restore_plan_from_data(restore: dict[str, Any]) -> patch_edit.PatchPlan:
+    if restore.get("format") != "gt1000-agent-restore-v1":
+        raise ValueError("unsupported restore point format")
+    records = restore.get("records")
+    if not isinstance(records, list) or not records:
+        raise ValueError("restore point contains no records")
+    writes = []
+    for record in records:
+        label = str(record.get("label") or "Restore record")
+        address = bytes_from_hex_list(record.get("address"), "address")
+        data = bytes.fromhex(str(record.get("dataHex", "")).replace(" ", ""))
+        if not data:
+            raise ValueError(f"restore record {label} contains no data")
+        writes.append(live.PatchWrite(f"Restore {label}", address, list(data)))
+    return patch_edit.PatchPlan(
+        id=f"undo-last:{restore.get('plan', 'unknown')}",
+        description=f"Restore previous data captured before {restore.get('plan', 'unknown')}.",
+        writes=writes,
+    )
+
+
+def bytes_from_hex_list(value: Any, field: str) -> list[int]:
+    if not isinstance(value, list):
+        raise ValueError(f"restore record {field} must be a list")
+    try:
+        return [int(str(byte), 16) for byte in value]
+    except ValueError as error:
+        raise ValueError(f"restore record {field} contains invalid hex") from error
+
+
 def verify_plan_with_timeout(plan: patch_edit.PatchPlan, *, timeout: float) -> dict[str, Any]:
     requests = [write.read_request for write in plan.writes]
-    raw = read_patch_records_with_timeout(f"verify {plan.id}", timeout, requests)
+    raw = read_patch_records_with_timeout(
+        f"verify {plan.id}",
+        timeout,
+        requests,
+        reader=patch_edit.read_data_sets_sequential_session,
+    )
     checks = []
     for write in plan.writes:
         key = live.address_key(write.address)
@@ -2092,17 +2814,29 @@ def verify_plan_with_timeout(plan: patch_edit.PatchPlan, *, timeout: float) -> d
 
 
 def requests_for_view(view: str) -> list[live.PatchReadRequest]:
-    assign_requests = [
-        live.PatchReadRequest(f"Assign {i}", live.address_adding(live.ASSIGN_BASE, (i - 1) * live.ASSIGN_STRIDE), [0x00, 0x00, 0x00, 0x2C])
-        for i in range(1, 17)
-    ]
-    if view in {"controls", "summary"}:
-        return live.READ_PLAN + assign_requests
-    if view == "chain":
+    assign_requests = assign_read_requests()
+    if view in {"controls", "performance"}:
+        return live.INITIAL_READS + assign_requests
+    if view in {"chain", "summary"}:
         return live.READ_PLAN + assign_requests
     if view == "overview":
         return live.INITIAL_READS
     return live.READ_PLAN + assign_requests
+
+
+def performance_required_read_requests() -> list[live.PatchReadRequest]:
+    return [
+        request
+        for request in live.INITIAL_READS
+        if request.label in {"Master BPM", "Patch Effect", "Patch Common", "System Control"}
+    ]
+
+
+def assign_read_requests() -> list[live.PatchReadRequest]:
+    return [
+        live.PatchReadRequest(f"Assign {i}", live.address_adding(live.ASSIGN_BASE, (i - 1) * live.ASSIGN_STRIDE), [0x00, 0x00, 0x00, 0x2C])
+        for i in range(1, 17)
+    ]
 
 
 def parameter_schema(parameter: live.Parameter, relative_offset: int) -> dict[str, Any]:
@@ -2416,6 +3150,8 @@ def view_from_full(snapshot: dict[str, Any], view: str) -> Any:
         return chain_from_full(snapshot)
     if view == "controls":
         return controls_from_full(snapshot)
+    if view == "performance":
+        return performance_from_full(snapshot)
     if view == "summary":
         return summary_from_full(snapshot)
     if view == "full":

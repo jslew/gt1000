@@ -1,3 +1,4 @@
+import json
 import sys
 import time
 import tempfile
@@ -33,7 +34,7 @@ class AgentCLITests(unittest.TestCase):
         self.assertEqual(len(agent_cli.live_call_with_timeout("large", 5, bytes, 1024 * 1024)), 1024 * 1024)
         with self.assertRaises(agent_cli.CLIError) as context:
             agent_cli.live_call_with_timeout("test", 0.1, time.sleep, 5)
-        self.assertIn("timed out", str(context.exception))
+        self.assertIn("did not finish", str(context.exception))
 
     def test_live_timeout_wrapper_preserves_kwargs_and_mock_fallback(self):
         def kwonly(*, value):
@@ -48,15 +49,17 @@ class AgentCLITests(unittest.TestCase):
     def test_patch_export_uses_process_timeout_guard_for_slot_reads(self):
         calls = []
 
-        def fake_read(label, timeout, requests):
+        def fake_required_read(label, timeout, requests):
             calls.append((label, timeout, len(requests)))
             return {
                 agent_cli.live.address_key(request.address): [0] * agent_cli.live.seven_bit_address_value(request.size)
                 for request in requests
             }
 
-        original = agent_cli.read_patch_records_lenient_with_timeout
-        agent_cli.read_patch_records_lenient_with_timeout = fake_read
+        original_required = agent_cli.read_required_patch_records_with_timeout
+        original_lenient = agent_cli.read_patch_records_lenient_with_timeout
+        agent_cli.read_required_patch_records_with_timeout = fake_required_read
+        agent_cli.read_patch_records_lenient_with_timeout = fake_required_read
         try:
             with tempfile.TemporaryDirectory() as directory:
                 output = Path(directory) / "export.json"
@@ -65,11 +68,13 @@ class AgentCLITests(unittest.TestCase):
                 ])
                 result = agent_cli.cmd_patch_export(args)
         finally:
-            agent_cli.read_patch_records_lenient_with_timeout = original
+            agent_cli.read_patch_records_lenient_with_timeout = original_lenient
+            agent_cli.read_required_patch_records_with_timeout = original_required
 
         self.assertEqual(result["patchCount"], 1)
         self.assertEqual(calls, [
-            ("patch export U10-1 --live core records", 7.0, len(agent_cli.patch_edit.clone_core_read_requests("U10-1"))),
+            ("patch export U10-1 --live required record", 7.0, 2),
+            ("patch export U10-1 --live core records", 7.0, len(agent_cli.patch_edit.clone_core_read_requests("U10-1")) - 2),
             ("patch export U10-1 --live active FX records", 7.0, 4),
         ])
 
@@ -97,9 +102,115 @@ class AgentCLITests(unittest.TestCase):
         self.assertEqual(sorted(result), [agent_cli.live.address_key(request.address) for request in requests])
         self.assertEqual(live_call.call_count, 1)
         self.assertEqual(live_call.call_args_list[0].args[0], "records")
-        self.assertEqual(live_call.call_args_list[0].args[1], 9)
+        self.assertEqual(live_call.call_args_list[0].args[1], agent_cli.patch_record_process_timeout(9, len(requests)))
         self.assertIs(live_call.call_args_list[0].args[2], agent_cli.patch_edit.read_data_sets_batched)
         self.assertEqual(len(live_call.call_args_list[0].kwargs["requests"]), len(requests))
+
+    def test_patch_record_timeout_helper_prefers_larger_duplicate_address_read(self):
+        requests = [
+            agent_cli.live.PatchReadRequest("Patch Name", [0x10, 0x00, 0x00, 0x00], [0, 0, 0, 0x10]),
+            agent_cli.live.PatchReadRequest("Patch Common", [0x10, 0x00, 0x00, 0x00], [0, 0, 0, 0x7E]),
+        ]
+
+        def fake_live_call(label, process_timeout, func, *, timeout, requests):
+            return {agent_cli.live.address_key(requests[0].address): [0] * agent_cli.live.seven_bit_address_value(requests[0].size)}
+
+        original = agent_cli.live_call_with_timeout
+        agent_cli.live_call_with_timeout = MagicMock(side_effect=fake_live_call)
+        try:
+            result = agent_cli.read_patch_records_with_timeout("records", 9, requests)
+            sent_requests = agent_cli.live_call_with_timeout.call_args.kwargs["requests"]
+        finally:
+            agent_cli.live_call_with_timeout = original
+
+        self.assertEqual(len(sent_requests), 1)
+        self.assertEqual(sent_requests[0].label, "Patch Common")
+        self.assertEqual(len(result["10 00 00 00"]), 0x7E)
+
+    def test_verify_plan_uses_single_session_reader(self):
+        plan = agent_cli.patch_edit.PatchPlan(
+            "verify-test",
+            "Verify test",
+            [agent_cli.live.PatchWrite("Write", [0x20, 0x00, 0x00, 0x00], [1])],
+        )
+
+        def fake_live_call(label, process_timeout, func, *, timeout, requests):
+            return {agent_cli.live.address_key(requests[0].address): [1]}
+
+        live_call = MagicMock(side_effect=fake_live_call)
+        original = agent_cli.live_call_with_timeout
+        agent_cli.live_call_with_timeout = live_call
+        try:
+            result = agent_cli.verify_plan_with_timeout(plan, timeout=9)
+        finally:
+            agent_cli.live_call_with_timeout = original
+
+        self.assertTrue(result["ok"])
+        self.assertIs(live_call.call_args_list[0].args[2], agent_cli.patch_edit.read_data_sets_sequential_session)
+
+    def test_restore_point_captures_previous_bytes_for_writes(self):
+        plan = agent_cli.patch_edit.PatchPlan(
+            "restore-test",
+            "Restore test",
+            [agent_cli.live.PatchWrite("Write", [0x20, 0x00, 0x00, 0x00], [9])],
+        )
+
+        def fake_read(label, timeout, requests, reader=agent_cli.patch_edit.read_data_sets_batched, attempts=3):
+            return {agent_cli.live.address_key(requests[0].address): [1, 2, 3]}
+
+        original = agent_cli.read_patch_records_with_timeout
+        agent_cli.read_patch_records_with_timeout = fake_read
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                with unittest.mock.patch.dict(agent_cli.os.environ, {"GT1000_RESTORE_DIR": directory}):
+                    path = agent_cli.create_restore_point(plan, timeout=9)
+                    latest = agent_cli.latest_restore_point_path()
+                    self.assertTrue(path.is_file())
+                    self.assertTrue(latest.is_file())
+                    restore = agent_cli.load_json(path)
+                    undo_plan = agent_cli.restore_plan_from_data(restore)
+        finally:
+            agent_cli.read_patch_records_with_timeout = original
+
+        self.assertEqual(restore["plan"], "restore-test")
+        self.assertEqual(restore["records"][0]["dataHex"], "01 02 03")
+        self.assertEqual(undo_plan.id, "undo-last:restore-test")
+        self.assertEqual(undo_plan.writes[0].address, [0x20, 0x00, 0x00, 0x00])
+        self.assertEqual(undo_plan.writes[0].data, [1, 2, 3])
+
+    def test_undo_last_uses_latest_restore_without_creating_another_restore_point(self):
+        restore = {
+            "format": "gt1000-agent-restore-v1",
+            "createdAt": "2026-05-21T00:00:00-0400",
+            "plan": "set:delay1:time",
+            "records": [
+                {
+                    "label": "Delay Time",
+                    "address": ["20", "00", "10", "00"],
+                    "size": ["00", "00", "00", "02"],
+                    "dataHex": "01 02",
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            with unittest.mock.patch.dict(agent_cli.os.environ, {"GT1000_RESTORE_DIR": directory}):
+                agent_cli.restore_point_dir().mkdir(parents=True, exist_ok=True)
+                agent_cli.latest_restore_point_path().write_text(json.dumps(restore), encoding="utf-8")
+                args = agent_cli.build_parser().parse_args(["patch", "undo-last", "--live", "--verify"])
+                original_apply = agent_cli.apply_plan_cli
+                agent_cli.apply_plan_cli = MagicMock(return_value={"plan": "undo-last:set:delay1:time", "writeCount": 1, "verified": True})
+                try:
+                    result = agent_cli.cmd_patch_undo_last(args)
+                    plan = agent_cli.apply_plan_cli.call_args.args[0]
+                    kwargs = agent_cli.apply_plan_cli.call_args.kwargs
+                finally:
+                    agent_cli.apply_plan_cli = original_apply
+
+        self.assertEqual(result["restoredPlan"], "set:delay1:time")
+        self.assertEqual(plan.id, "undo-last:set:delay1:time")
+        self.assertEqual(plan.writes[0].data, [1, 2])
+        self.assertFalse(kwargs["create_restore"])
+        self.assertTrue(kwargs["verify"])
 
     def test_patch_record_timeout_helper_retries_failed_batch(self):
         requests = [agent_cli.live.PatchReadRequest("Read", [0x20, 0x00, 0x00, 0x00], [0, 0, 0, 1])]
@@ -127,6 +238,172 @@ class AgentCLITests(unittest.TestCase):
         self.assertEqual(result, {"20 00 00 00": [1]})
         self.assertEqual(live_call.call_count, 2)
         sleep.assert_any_call(0.5)
+
+    def test_lenient_patch_read_retries_missing_records(self):
+        requests = [
+            agent_cli.live.PatchReadRequest("Read 0", [0x20, 0x00, 0x00, 0x00], [0, 0, 0, 1]),
+            agent_cli.live.PatchReadRequest("Read 1", [0x20, 0x00, 0x01, 0x00], [0, 0, 0, 1]),
+            agent_cli.live.PatchReadRequest("Read 2", [0x20, 0x00, 0x02, 0x00], [0, 0, 0, 1]),
+        ]
+
+        def fake_live_call(label, process_timeout, func, *, timeout, requests):
+            if label == "records":
+                return {agent_cli.live.address_key(requests[0].address): [0]}
+            return {
+                agent_cli.live.address_key(request.address): [request.address[2]]
+                for request in requests
+            }
+
+        live_call = MagicMock(side_effect=fake_live_call)
+        original = agent_cli.live_call_with_timeout
+        agent_cli.live_call_with_timeout = live_call
+        try:
+            result = agent_cli.read_patch_records_lenient_with_timeout("records", 9, requests)
+        finally:
+            agent_cli.live_call_with_timeout = original
+
+        self.assertEqual(result, {
+            "20 00 00 00": [0],
+            "20 00 01 00": [1],
+            "20 00 02 00": [2],
+        })
+        self.assertEqual(live_call.call_count, 2)
+        self.assertEqual(live_call.call_args_list[1].args[0], "records missing records retry")
+        self.assertEqual(live_call.call_args_list[1].kwargs["timeout"], 9)
+        self.assertEqual([request.address for request in live_call.call_args_list[1].kwargs["requests"]], [
+            [0x20, 0x00, 0x01, 0x00],
+            [0x20, 0x00, 0x02, 0x00],
+        ])
+
+    def test_lenient_patch_read_chunks_and_stops_after_empty_chunk(self):
+        requests = [
+            agent_cli.live.PatchReadRequest(f"Read {index}", [0x20, 0x00, index, 0x00], [0, 0, 0, 1])
+            for index in range(5)
+        ]
+
+        def fake_live_call(label, process_timeout, func, *, timeout, requests):
+            if requests[0].address[2] == 0:
+                return {
+                    agent_cli.live.address_key(requests[0].address): [0],
+                    agent_cli.live.address_key(requests[1].address): [1],
+                }
+            return {}
+
+        live_call = MagicMock(side_effect=fake_live_call)
+        original = agent_cli.live_call_with_timeout
+        agent_cli.live_call_with_timeout = live_call
+        try:
+            with unittest.mock.patch.dict(agent_cli.os.environ, {"GT1000_LENIENT_READ_BATCH_SIZE": "2"}):
+                result = agent_cli.read_patch_records_lenient_chunks("records", 2, requests)
+        finally:
+            agent_cli.live_call_with_timeout = original
+
+        self.assertEqual(result, {
+            "20 00 00 00": [0],
+            "20 00 01 00": [1],
+        })
+        self.assertEqual(live_call.call_count, 2)
+        self.assertEqual([request.address[2] for request in live_call.call_args_list[0].kwargs["requests"]], [0, 1])
+        self.assertEqual([request.address[2] for request in live_call.call_args_list[1].kwargs["requests"]], [2, 3])
+
+    def test_lenient_batch_size_defaults_and_ignores_bad_env(self):
+        with unittest.mock.patch.dict(agent_cli.os.environ, {}, clear=False):
+            agent_cli.os.environ.pop("GT1000_LENIENT_READ_BATCH_SIZE", None)
+            self.assertEqual(agent_cli.lenient_read_batch_size(), 8)
+        with unittest.mock.patch.dict(agent_cli.os.environ, {"GT1000_LENIENT_READ_BATCH_SIZE": "3"}):
+            self.assertEqual(agent_cli.lenient_read_batch_size(), 3)
+        with unittest.mock.patch.dict(agent_cli.os.environ, {"GT1000_LENIENT_READ_BATCH_SIZE": "bad"}):
+            self.assertEqual(agent_cli.lenient_read_batch_size(), 8)
+        with unittest.mock.patch.dict(agent_cli.os.environ, {"GT1000_LENIENT_READ_BATCH_SIZE": "0"}):
+            self.assertEqual(agent_cli.lenient_read_batch_size(), 1)
+
+    def test_required_patch_read_retries_records_independently(self):
+        requests = [
+            agent_cli.live.PatchReadRequest("Patch Common", [0x20, 0x00, 0x00, 0x00], [0, 0, 0, 1]),
+            agent_cli.live.PatchReadRequest("Patch Effect", [0x20, 0x00, 0x10, 0x00], [0, 0, 0, 1]),
+        ]
+        calls = []
+
+        def fake_strict_read(label, timeout, requests, reader=agent_cli.patch_edit.read_data_sets_batched, attempts=3):
+            request = requests[0]
+            calls.append(request.label)
+            if request.label == "Patch Common" and calls.count("Patch Common") == 1:
+                raise agent_cli.CLIError("transient")
+            return {agent_cli.live.address_key(request.address): [len(calls)]}
+
+        original_strict = agent_cli.read_patch_records_with_timeout
+        original_lenient = agent_cli.read_patch_records_lenient_with_timeout
+        original_sleep = agent_cli.time.sleep
+        agent_cli.read_patch_records_with_timeout = fake_strict_read
+        agent_cli.read_patch_records_lenient_with_timeout = MagicMock(return_value={})
+        agent_cli.time.sleep = MagicMock()
+        try:
+            with unittest.mock.patch.dict(agent_cli.os.environ, {"GT1000_REQUIRED_RECORD_ATTEMPTS": "2"}):
+                result = agent_cli.read_required_patch_records_with_timeout("records", 9, requests)
+        finally:
+            agent_cli.time.sleep = original_sleep
+            agent_cli.read_patch_records_lenient_with_timeout = original_lenient
+            agent_cli.read_patch_records_with_timeout = original_strict
+
+        self.assertEqual(calls, ["Patch Common", "Patch Effect", "Patch Common"])
+        self.assertEqual(sorted(result), ["20 00 00 00", "20 00 10 00"])
+
+    def test_clone_read_reads_required_core_records_before_optional_core(self):
+        core_requests = agent_cli.patch_edit.clone_core_read_requests("U10-1")
+        patch_effect = next(request for request in core_requests if request.label == "Patch Effect")
+        patch_common = next(request for request in core_requests if request.label == "Patch Common")
+        patch_effect_key = agent_cli.live.address_key(patch_effect.address)
+
+        required_calls = []
+
+        def fake_required_read(label, timeout, requests):
+            required_calls.append((label, timeout, requests))
+            return {
+                agent_cli.live.address_key(request.address): [0] * agent_cli.live.seven_bit_address_value(request.size)
+                for request in requests
+            }
+
+        def fake_lenient_read(label, timeout, requests):
+            if label.endswith("active FX records"):
+                return {}
+            return {
+                agent_cli.live.address_key(request.address): [0] * agent_cli.live.seven_bit_address_value(request.size)
+                for request in requests
+            }
+
+        original_required = agent_cli.read_required_patch_records_with_timeout
+        original_lenient = agent_cli.read_patch_records_lenient_with_timeout
+        agent_cli.read_required_patch_records_with_timeout = fake_required_read
+        agent_cli.read_patch_records_lenient_with_timeout = fake_lenient_read
+        try:
+            result = agent_cli.read_clone_records_with_timeout("patch export U10-1 --live", 20, "U10-1")
+        finally:
+            agent_cli.read_patch_records_lenient_with_timeout = original_lenient
+            agent_cli.read_required_patch_records_with_timeout = original_required
+
+        self.assertIn(agent_cli.live.address_key(patch_common.address), result)
+        self.assertIn(patch_effect_key, result)
+        self.assertEqual(len(required_calls), 1)
+        label, timeout, requests = required_calls[0]
+        self.assertEqual(label, "patch export U10-1 --live required record")
+        self.assertEqual(timeout, 20)
+        self.assertEqual(requests, [patch_common, patch_effect])
+
+    def test_missing_required_records_error_checks_connectivity_before_restart_guidance(self):
+        original = agent_cli.probe_gt1000_connectivity
+        try:
+            agent_cli.probe_gt1000_connectivity = MagicMock(return_value=(True, "ok"))
+            retryable = agent_cli.missing_required_records_error("patch export U10-1 --live", ["Patch Effect"], 20)
+            self.assertIn("recoverable live-read timeout", str(retryable))
+            self.assertNotIn("power-cycle", str(retryable))
+
+            agent_cli.probe_gt1000_connectivity = MagicMock(return_value=(False, "endpoint check failed"))
+            fatal = agent_cli.missing_required_records_error("patch export U10-1 --live", ["Patch Effect"], 20)
+            self.assertIn("connectivity probe failed", str(fatal))
+            self.assertIn("power-cycle", str(fatal))
+            self.assertIn("restart macOS only if", str(fatal))
+        finally:
+            agent_cli.probe_gt1000_connectivity = original
 
     def test_offline_overview(self):
         snapshot = agent_cli.load_json(FIXTURE)
@@ -361,6 +638,7 @@ class AgentCLITests(unittest.TestCase):
             "tsl-export",
             "tsl-import",
             "tsl-list",
+            "undo-last",
         }
         live_paths = live_verified_command_paths()
 

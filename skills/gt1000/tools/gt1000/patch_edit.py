@@ -658,7 +658,14 @@ def tsl_paramset_writes(patch: dict[str, Any], destination: str, patch_index: in
 
 
 def is_ignorable_tsl_paramset_key(key: str) -> bool:
-    return key in {"UserPatch%PatchName", "UserPatch%Patch_0"}
+    return key in {
+        "UserPatch%PatchName",
+        "UserPatch%Patch_0",
+        "User_patch3%fx1MasterFx",
+        "User_patch3%fx2MasterFx",
+        "User_patch3%fx3MasterFx",
+        "User_patch3%fx4MasterFx",
+    }
 
 
 def unsupported_tsl_paramset_keys(patch: dict[str, Any]) -> list[str]:
@@ -677,11 +684,12 @@ def tsl_paramset_specs() -> dict[str, tuple[str, list[int], int]]:
         "User_patch%stompBox": ("Patch Stompbox", live.TEMPORARY_PATCH_STOMPBOX, 0x68),
         "User_patch%led": ("Patch Led", live.TEMPORARY_PATCH_LED, 0x20),
         "User_patch%efct": ("Patch Effect A", live.TEMPORARY_PATCH_EFFECT, 0x68),
-        "User_patch%efctB": ("Patch Effect B", live.address_adding(live.TEMPORARY_PATCH_EFFECT, 0x68), 0x38),
+        "User_patch%efctB": ("Patch Effect B", live.address_adding(live.TEMPORARY_PATCH_EFFECT, 0x68), 0x39),
         "User_patch2%stompBox": ("Patch Stompbox 2", live.TEMPORARY_PATCH2_STOMPBOX, 0x11),
-        "User_patch2%efct": ("Patch Effect 2", live.address_adding(live.TEMPORARY_PATCH2_STOMPBOX, 0x0A00), 0x07),
+        "User_patch2%efct": ("Patch Effect 2", [0x10, 0x01, 0x0A, 0x00], 0x07),
+        "User_patch2%mstDelay": ("Master Delay 2", [0x10, 0x01, 0x07, 0x00], 0x04),
         "User_patch3%stompBox": ("Patch Stompbox 3", live.TEMPORARY_PATCH3_STOMPBOX, 0x25),
-        "User_patch3%fx(4)%fx": ("FX 4", live.address_adding(live.TEMPORARY_PATCH3_STOMPBOX, 0x0100), 0x02),
+        "User_patch3%fx(4)%fx": ("FX 4", [0x10, 0x02, 0x01, 0x00], 0x02),
     }
     for number in range(1, 17):
         specs[f"User_patch%assign({number})"] = (
@@ -718,43 +726,36 @@ def tsl_paramset_specs() -> dict[str, tuple[str, list[int], int]]:
         block = blocks_by_id[block_id]
         specs[key] = (block.display_name, block.address, 0x80)
     for block in live.FX_ALGORITHM_BLOCKS:
-        for number in range(1, 4):
+        for number in range(1, 5):
             prefix = f"fx{number}"
             if block.id.startswith(prefix):
                 suffix = block.id[len(prefix):]
-                specs[f"User_patch%fx({number})%fx{suffix}"] = (block.display_name, block.address, 0x80)
+                if number == 4:
+                    key = f"User_patch3%fx4{suffix}"
+                else:
+                    key = f"User_patch%fx({number})%fx{suffix}"
+                specs[key] = (block.display_name, block.address, 0x80)
                 break
-    for offset, suffix in [
-        (0x0100, "fx1ChorusBass"), (0x0200, "fx1FlangerBass"),
-        (0x0300, "fx2ChorusBass"), (0x0400, "fx2FlangerBass"),
-        (0x0500, "fx3ChorusBass"), (0x0600, "fx3FlangerBass"),
+    for offset, suffix, label, size in [
+        (0x01, "fx1ChorusBass", "FX 1 Chorus Bass", 0x06),
+        (0x02, "fx1FlangerBass", "FX 1 Flanger Bass", 0x10),
+        (0x03, "fx2ChorusBass", "FX 2 Chorus Bass", 0x06),
+        (0x04, "fx2FlangerBass", "FX 2 Flanger Bass", 0x10),
+        (0x05, "fx3ChorusBass", "FX 3 Chorus Bass", 0x06),
+        (0x06, "fx3FlangerBass", "FX 3 Flanger Bass", 0x10),
     ]:
-        specs[f"User_patch2%{suffix}"] = (
-            " ".join(part.capitalize() for part in suffix.replace("fx", "FX ").replace("Bass", " Bass").split()),
-            live.address_adding(live.TEMPORARY_PATCH2_STOMPBOX, offset),
-            0x80,
-        )
-    fx4_suffix_offsets = {
-        "AGSim": 0x0200, "AcReso": 0x0300, "AWah": 0x0400, "Chorus": 0x0500,
-        "CVibe": 0x0600, "Comp": 0x0700, "Defretter": 0x0800, "Feedbacker": 0x0900,
-        "Flanger": 0x0A00, "Harmonist": 0x0B00, "Humanizer": 0x0C00, "Octave": 0x0D00,
-        "Overtone": 0x0E00, "Pan": 0x0F00, "Phaser": 0x1000, "PitchShift": 0x1100,
-        "RingMod": 0x1200, "Rotary": 0x1300, "SitarSim": 0x1400, "Slicer": 0x1500,
-        "SlowGear": 0x1600, "SoundHold": 0x1700, "SBend": 0x1800, "Tremolo": 0x1900,
-        "TWah": 0x1A00, "Vibrato": 0x1B00, "ChorusBass": 0x1C00, "FlangerBass": 0x1D00,
-        "Dist": 0x2200,
-    }
-    for suffix, offset in fx4_suffix_offsets.items():
-        specs[f"User_patch3%fx4{suffix}"] = (
-            f"FX 4 {suffix}",
-            live.address_adding(live.TEMPORARY_PATCH3_STOMPBOX, offset),
-            0x80,
-        )
-    for number, offset in [(1, 0x1F00), (2, 0x2000), (3, 0x2100)]:
+        specs[f"User_patch2%{suffix}"] = (label, [0x10, 0x01, offset, 0x00], size)
+    for suffix, label, offset, size in [
+        ("ChorusBass", "FX 4 Chorus Bass", 0x1C, 0x06),
+        ("FlangerBass", "FX 4 Flanger Bass", 0x1D, 0x10),
+        ("Dist", "FX 4 Dist", 0x22, 0x08),
+    ]:
+        specs[f"User_patch3%fx4{suffix}"] = (label, [0x10, 0x02, offset, 0x00], size)
+    for number, offset in [(1, 0x1F), (2, 0x20), (3, 0x21)]:
         specs[f"User_patch3%fx{number}Dist"] = (
             f"FX {number} DIST",
-            live.address_adding(live.TEMPORARY_PATCH3_STOMPBOX, offset),
-            0x80,
+            [0x10, 0x02, offset, 0x00],
+            0x08,
         )
     return specs
 
@@ -1508,7 +1509,7 @@ def encode_parameter_value(parameter: live.Parameter, value: int) -> list[int]:
 
 def verify_plan(plan: PatchPlan, *, timeout: float) -> dict[str, Any]:
     requests = [write.read_request for write in plan.writes]
-    raw = read_data_sets_batched(timeout=timeout, requests=requests)
+    raw = read_data_sets_sequential_session(timeout=timeout, requests=requests)
     checks = []
     for write in plan.writes:
         key = live.address_key(write.address)
@@ -1522,6 +1523,12 @@ def verify_plan(plan: PatchPlan, *, timeout: float) -> dict[str, Any]:
             "actualHex": live.hex_string(actual or []),
         })
     return {"ok": all(check["ok"] for check in checks), "checks": checks}
+
+
+def read_data_sets_sequential_session(*, timeout: float, requests: list[live.PatchReadRequest]) -> dict[str, list[int]]:
+    if not requests:
+        return {}
+    return live.read_data_sets(timeout=timeout, requests=requests)
 
 
 def read_data_sets_batched(*, timeout: float, requests: list[live.PatchReadRequest]) -> dict[str, list[int]]:
@@ -1556,6 +1563,7 @@ def clone_record_definitions() -> list[live.PatchReadRequest]:
         *primary_patch_record_definitions(include_fx_algorithms=True),
         live.PatchReadRequest("Patch Stompbox 2", live.TEMPORARY_PATCH2_STOMPBOX, [0x00, 0x00, 0x00, 0x11]),
         live.PatchReadRequest("Patch Stompbox 3", live.TEMPORARY_PATCH3_STOMPBOX, [0x00, 0x00, 0x00, 0x25]),
+        *extended_patch_record_definitions(),
     ]
 
 
@@ -1564,6 +1572,26 @@ def clone_core_record_definitions() -> list[live.PatchReadRequest]:
         *primary_patch_record_definitions(include_fx_algorithms=False),
         live.PatchReadRequest("Patch Stompbox 2", live.TEMPORARY_PATCH2_STOMPBOX, [0x00, 0x00, 0x00, 0x11]),
         live.PatchReadRequest("Patch Stompbox 3", live.TEMPORARY_PATCH3_STOMPBOX, [0x00, 0x00, 0x00, 0x25]),
+        *extended_patch_record_definitions(),
+    ]
+
+
+def extended_patch_record_definitions() -> list[live.PatchReadRequest]:
+    return [
+        live.PatchReadRequest("FX 1 Chorus Bass", [0x10, 0x01, 0x01, 0x00], [0x00, 0x00, 0x00, 0x06]),
+        live.PatchReadRequest("FX 1 Flanger Bass", [0x10, 0x01, 0x02, 0x00], [0x00, 0x00, 0x00, 0x10]),
+        live.PatchReadRequest("FX 2 Chorus Bass", [0x10, 0x01, 0x03, 0x00], [0x00, 0x00, 0x00, 0x06]),
+        live.PatchReadRequest("FX 2 Flanger Bass", [0x10, 0x01, 0x04, 0x00], [0x00, 0x00, 0x00, 0x10]),
+        live.PatchReadRequest("FX 3 Chorus Bass", [0x10, 0x01, 0x05, 0x00], [0x00, 0x00, 0x00, 0x06]),
+        live.PatchReadRequest("FX 3 Flanger Bass", [0x10, 0x01, 0x06, 0x00], [0x00, 0x00, 0x00, 0x10]),
+        live.PatchReadRequest("Master Delay 2", [0x10, 0x01, 0x07, 0x00], [0x00, 0x00, 0x00, 0x04]),
+        live.PatchReadRequest("Patch Effect 2", [0x10, 0x01, 0x0A, 0x00], [0x00, 0x00, 0x00, 0x07]),
+        live.PatchReadRequest("FX 4 Chorus Bass", [0x10, 0x02, 0x1C, 0x00], [0x00, 0x00, 0x00, 0x06]),
+        live.PatchReadRequest("FX 4 Flanger Bass", [0x10, 0x02, 0x1D, 0x00], [0x00, 0x00, 0x00, 0x10]),
+        live.PatchReadRequest("FX 1 DIST", [0x10, 0x02, 0x1F, 0x00], [0x00, 0x00, 0x00, 0x08]),
+        live.PatchReadRequest("FX 2 DIST", [0x10, 0x02, 0x20, 0x00], [0x00, 0x00, 0x00, 0x08]),
+        live.PatchReadRequest("FX 3 DIST", [0x10, 0x02, 0x21, 0x00], [0x00, 0x00, 0x00, 0x08]),
+        live.PatchReadRequest("FX 4 Dist", [0x10, 0x02, 0x22, 0x00], [0x00, 0x00, 0x00, 0x08]),
     ]
 
 
