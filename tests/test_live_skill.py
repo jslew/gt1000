@@ -78,6 +78,7 @@ LIVE_VERIFIED_COMMAND_PATHS = {
     ("patch", "schema"),
     ("patch", "select"),
     ("patch", "set"),
+    ("patch", "setlist-audit"),
     ("patch", "set-bpm"),
     ("patch", "slot"),
     ("patch", "stompbox"),

@@ -750,6 +750,64 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(read_slot.call_args_list[0].args, ("patch diff U10-1 --live", 8.0, "U10-1"))
         self.assertEqual(read_slot.call_args_list[1].args, ("patch diff U10-2 --live", 8.0, "U10-2"))
 
+    def test_setlist_audit_flags_level_tuner_and_expression_risks(self):
+        performances = [
+            {"slot": "U10-1", "performance": self.performance_view("A", level=80, bpm=120.0, tuner=True, exp1="Direct: FOOT VOLUME")},
+            {"slot": "U10-2", "performance": self.performance_view("B", level=94, bpm=128.0, tuner=False, exp1="Direct: PEDAL FX")},
+        ]
+
+        audit = agent_cli.setlist_audit_from_performances(["U10-1", "U10-2"], performances)
+
+        self.assertEqual(audit["id"], "setlistAudit")
+        self.assertEqual(audit["patchCount"], 2)
+        categories = [finding["category"] for finding in audit["findings"]]
+        self.assertIn("level", categories)
+        self.assertIn("tuner", categories)
+        self.assertIn("tempo", categories)
+        self.assertIn("expression", categories)
+
+    def test_setlist_audit_keeps_partial_patch_when_controls_do_not_decode(self):
+        performance = {
+            "patchName": "PARTIAL",
+            "masterPatchLevel": 80,
+            "masterBPM": 120.0,
+            "tunerAvailable": False,
+            "controls": [],
+            "partial": True,
+        }
+
+        audit = agent_cli.setlist_audit_from_performances(["U10-1"], [{"slot": "U10-1", "performance": performance}])
+
+        self.assertTrue(audit["patches"][0]["partial"])
+        self.assertIn("read", [finding["category"] for finding in audit["findings"]])
+
+    def test_live_setlist_audit_reads_requested_slots(self):
+        args = agent_cli.build_parser().parse_args(["patch", "setlist-audit", "U10-1", "U10-2", "--live"])
+        snapshots = [
+            self.performance_snapshot("A", level=80, delay_enabled=False, ctl1_function=33, assign_target=987),
+            self.performance_snapshot("B", level=82, delay_enabled=False, ctl1_function=33, assign_target=987),
+        ]
+
+        with mock.patch.object(agent_cli, "read_user_slot_snapshot_lenient", side_effect=snapshots) as read_slot:
+            result = agent_cli.cmd_patch_setlist_audit(args)
+
+        self.assertEqual(result["slots"], ["U10-1", "U10-2"])
+        self.assertEqual(read_slot.call_args_list[0].args, ("U10-1", 8.0))
+        self.assertEqual(read_slot.call_args_list[0].kwargs, {"view": "performance"})
+        self.assertEqual(read_slot.call_args_list[1].args, ("U10-2", 8.0))
+
+    def performance_view(self, name: str, *, level: int, bpm: float, tuner: bool, exp1: str) -> dict:
+        return {
+            "patchName": name,
+            "masterPatchLevel": level,
+            "masterBPM": bpm,
+            "tunerAvailable": tuner,
+            "controls": [
+                {"control": "EXP 1", "action": exp1, "preference": "PATCH"},
+                {"control": "EXP 2", "action": "No patch action", "preference": "PATCH"},
+            ],
+        }
+
     def performance_snapshot(self, name: str, *, level: int, delay_enabled: bool, ctl1_function: int, assign_target: int) -> dict:
         patch_common = [0] * 0x7E
         patch_common[0x31] = ctl1_function

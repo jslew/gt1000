@@ -155,6 +155,12 @@ def build_parser() -> argparse.ArgumentParser:
     diff.add_argument("--timeout", type=float, default=8.0, help="Live read timeout in seconds per slot.")
     diff.set_defaults(func=cmd_patch_diff)
 
+    setlist_audit = patch_subcommands.add_parser("setlist-audit", help="Audit live-use risks across a bank or slot list.")
+    setlist_audit.add_argument("slots", nargs="+", help="One user bank such as U10, or user slots such as U10-1 U10-2.")
+    setlist_audit.add_argument("--live", action="store_true", help="Required because setlist audit reads live user slots.")
+    setlist_audit.add_argument("--timeout", type=float, default=8.0, help="Live read timeout in seconds per slot.")
+    setlist_audit.set_defaults(func=cmd_patch_setlist_audit)
+
     schema = patch_subcommands.add_parser("schema", help="Show editable parameter schema for decoded blocks.")
     schema.add_argument("block_id", nargs="?", help="Optional block id such as delay1, fx1, or sendReturn1.")
     schema.add_argument("--raw", action="store_true", help="Enumerate every bounded raw-editable offset for the selected block.")
@@ -1139,6 +1145,48 @@ def cmd_patch_diff(args: argparse.Namespace) -> Any:
         source_label=str(source_path),
         target_label=str(target_path),
     )
+
+
+def cmd_patch_setlist_audit(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch setlist-audit requires --live because it reads persistent GT-1000 user slots", 64)
+    try:
+        slots = audit_slots_from_args(args.slots)
+        performances = []
+        for index, slot in enumerate(slots):
+            snapshot = read_user_slot_snapshot_lenient(slot, args.timeout, view="performance")
+            performances.append({"slot": slot, "performance": performance_from_snapshot_safe(snapshot)})
+            delay_between_slot_reads(index, len(slots))
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    return setlist_audit_from_performances(slots, performances)
+
+
+def audit_slots_from_args(values: list[str]) -> list[str]:
+    if len(values) == 1 and "-" not in values[0]:
+        return live.user_bank_slots(values[0])
+    return [live.normalize_user_slot(value) for value in values]
+
+
+def performance_from_snapshot_safe(snapshot: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return performance_from_full(snapshot)
+    except CLIError as error:
+        overview = overview_from_full(snapshot)
+        return {
+            "id": "patchPerformance",
+            "overview": overview,
+            "patchName": overview.get("patchName"),
+            "masterBPM": overview.get("masterBPM"),
+            "masterPatchLevel": overview.get("masterPatchLevel"),
+            "tunerAvailable": False,
+            "controlCount": 0,
+            "activeAssignCount": 0,
+            "controls": [],
+            "externalAssigns": [],
+            "notes": [f"Performance controls could not be decoded: {error}"],
+            "partial": True,
+        }
 
 
 def cmd_patch_schema(args: argparse.Namespace) -> Any:
@@ -2252,6 +2300,100 @@ def diff_summary(
         else:
             summary.append(f"{change['assign']}: {change.get('change')}.")
     return summary or ["No decoded musical differences found."]
+
+
+def setlist_audit_from_performances(slots: list[str], performances: list[dict[str, Any]]) -> dict[str, Any]:
+    patches = []
+    findings = []
+    for item in performances:
+        performance = item["performance"]
+        controls = {control["control"]: control for control in performance.get("controls", [])}
+        patch = {
+            "slot": item["slot"],
+            "patchName": performance.get("patchName"),
+            "masterPatchLevel": performance.get("masterPatchLevel"),
+            "masterBPM": performance.get("masterBPM"),
+            "tunerAvailable": performance.get("tunerAvailable"),
+            "partial": performance.get("partial", False),
+            "expressionActions": {
+                name: controls.get(name, {}).get("action")
+                for name in ["EXP 1", "EXP 2", "EXP 3"]
+                if name in controls
+            },
+            "systemPreferenceControls": [
+                name
+                for name, control in controls.items()
+                if control.get("preference") == "SYSTEM"
+            ],
+        }
+        patches.append(patch)
+        if patch["partial"]:
+            findings.append({
+                "severity": "warning",
+                "slot": item["slot"],
+                "category": "read",
+                "message": "Performance controls were only partially decoded for this slot.",
+            })
+        if not patch["tunerAvailable"]:
+            findings.append({
+                "severity": "warning",
+                "slot": item["slot"],
+                "category": "tuner",
+                "message": "No tuner access is mapped in decoded direct controls or active Assigns.",
+            })
+        if patch["systemPreferenceControls"]:
+            findings.append({
+                "severity": "info",
+                "slot": item["slot"],
+                "category": "controls",
+                "message": "Some controls use SYSTEM preference: " + ", ".join(patch["systemPreferenceControls"]),
+            })
+
+    for previous, current in zip(patches, patches[1:]):
+        previous_level = previous.get("masterPatchLevel")
+        current_level = current.get("masterPatchLevel")
+        if isinstance(previous_level, (int, float)) and isinstance(current_level, (int, float)):
+            delta = current_level - previous_level
+            if abs(delta) >= 10:
+                findings.append({
+                    "severity": "warning",
+                    "slot": current["slot"],
+                    "category": "level",
+                    "message": f"Patch level changes by {delta:+g} from {previous['slot']} to {current['slot']}.",
+                })
+
+    bpms = {patch.get("masterBPM") for patch in patches if patch.get("masterBPM") is not None}
+    if len(bpms) > 1:
+        findings.append({
+            "severity": "info",
+            "slot": None,
+            "category": "tempo",
+            "message": "Patches use different master BPM values: " + ", ".join(str(value) for value in sorted(bpms)),
+        })
+
+    for expression in ["EXP 1", "EXP 2", "EXP 3"]:
+        actions = {
+            patch["slot"]: patch["expressionActions"].get(expression)
+            for patch in patches
+            if patch["expressionActions"].get(expression)
+        }
+        if len(set(actions.values())) > 1:
+            findings.append({
+                "severity": "info",
+                "slot": None,
+                "category": "expression",
+                "message": f"{expression} changes behavior across slots.",
+                "actions": actions,
+            })
+
+    return {
+        "id": "setlistAudit",
+        "slots": slots,
+        "patchCount": len(patches),
+        "patches": patches,
+        "findingCount": len(findings),
+        "findings": findings,
+    }
 
 
 

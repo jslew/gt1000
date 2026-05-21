@@ -256,6 +256,15 @@ scripts/gt1000-agent --pretty patch diff before.json after.json
 - Without `--live`, `source` and `target` are full patch JSON dump files.
 - Reports overview changes, signal-chain changes, block on/off/type changes, control changes, and active Assign changes.
 
+### `patch setlist-audit`
+Audit live-use risks across a bank or explicit slot list.
+```sh
+scripts/gt1000-agent --pretty patch setlist-audit U10 --live --timeout 15
+scripts/gt1000-agent --pretty patch setlist-audit U10-1 U10-2 U10-3 --live --timeout 15
+```
+- Flags patch-level jumps, missing tuner access, mixed BPM values, expression-pedal behavior changes, and SYSTEM-preference controls.
+- A single bank argument such as `U10` expands to all five slots in that bank.
+
 ### `patch undo-last`
 Restore the latest automatic restore point created before a CLI write.
 ```sh

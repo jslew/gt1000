@@ -14,7 +14,7 @@ Build these in order. Prefer commands that answer practical rehearsal and giggin
    - Save a small restore point before every verified write.
    - Provide a direct undo command that restores and verifies the last changed ranges.
 
-4. [ ] Setlist audit
+4. [x] Setlist audit
    - Read a bank or slot range and flag live-use risks: patch level jumps, BPM mismatches, missing tuner access, inconsistent EXP behavior, and unusual CTL mappings.
 
 5. [ ] Musician summary mode
