@@ -21,7 +21,7 @@ Build these in order. Prefer commands that answer practical rehearsal and giggin
    - Add a concise narrative description focused on tone, playable controls, and live-use intent.
    - Avoid raw data unless explicitly requested.
 
-6. [ ] Patch level normalization helpers
+6. [x] Patch level normalization helpers
    - Compare and adjust patch/master levels across slots with read-back verification.
    - Surface boosts and gain-stage changes that may affect perceived loudness.
 

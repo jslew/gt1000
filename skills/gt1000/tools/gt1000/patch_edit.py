@@ -177,8 +177,8 @@ MASTER_KEY_VALUES = {
 }
 
 PATCH_MASTER_FIELDS = {
-    "level": (0x5F, "nibbles2", 0, 200),
-    "patch-level": (0x5F, "nibbles2", 0, 200),
+    "level": (0x60, "byte", 0, 200),
+    "patch-level": (0x60, "byte", 0, 200),
     "key": (0x65, "key", 0, 11),
     "master-key": (0x65, "key", 0, 11),
     "amp-ctl1": (0x66, "bool", 0, 1),

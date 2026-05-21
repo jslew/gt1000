@@ -165,6 +165,22 @@ def build_parser() -> argparse.ArgumentParser:
     setlist_audit.add_argument("--timeout", type=float, default=8.0, help="Live read timeout in seconds per slot.")
     setlist_audit.set_defaults(func=cmd_patch_setlist_audit)
 
+    level_audit = patch_subcommands.add_parser("level-audit", help="Compare patch levels and live-use gain hints across slots.")
+    level_audit.add_argument("slots", nargs="+", help="One user bank such as U10, or user slots such as U10-1 U10-2.")
+    level_audit.add_argument("--target", type=int, help="Optional target patch level 0...200; defaults to the median decoded level.")
+    level_audit.add_argument("--live", action="store_true", help="Required because level audit reads live user slots.")
+    level_audit.add_argument("--timeout", type=float, default=8.0, help="Live read timeout in seconds per slot.")
+    level_audit.set_defaults(func=cmd_patch_level_audit)
+
+    normalize_levels = patch_subcommands.add_parser("normalize-levels", help="Set multiple user-slot patch levels with read-back verification.")
+    normalize_levels.add_argument("slots", nargs="+", help="One user bank such as U10, or user slots such as U10-1 U10-2.")
+    normalize_levels.add_argument("--target", type=int, required=True, help="Target patch level 0...200.")
+    normalize_levels.add_argument("--dry-run", action="store_true", help="Report the changes that would be made without writing.")
+    normalize_levels.add_argument("--live", action="store_true", help="Required because normalization writes live user slots.")
+    normalize_levels.add_argument("--verify", action="store_true", help="Re-read written Patch Effect records and compare exact bytes.")
+    normalize_levels.add_argument("--timeout", type=float, default=20.0, help="Read/verification timeout in seconds per slot.")
+    normalize_levels.set_defaults(func=cmd_patch_normalize_levels)
+
     schema = patch_subcommands.add_parser("schema", help="Show editable parameter schema for decoded blocks.")
     schema.add_argument("block_id", nargs="?", help="Optional block id such as delay1, fx1, or sendReturn1.")
     schema.add_argument("--raw", action="store_true", help="Enumerate every bounded raw-editable offset for the selected block.")
@@ -1170,10 +1186,82 @@ def cmd_patch_setlist_audit(args: argparse.Namespace) -> Any:
     return setlist_audit_from_performances(slots, performances)
 
 
+def cmd_patch_level_audit(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch level-audit requires --live because it reads persistent GT-1000 user slots", 64)
+    try:
+        validate_patch_level(args.target) if args.target is not None else None
+        slots = audit_slots_from_args(args.slots)
+        performances = read_slot_performances(slots, args.timeout)
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    return level_audit_from_performances(slots, performances, target=args.target)
+
+
+def cmd_patch_normalize_levels(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch normalize-levels requires --live because it writes persistent GT-1000 user slots", 64)
+    try:
+        target = validate_patch_level(args.target)
+        slots = audit_slots_from_args(args.slots)
+        performances = read_slot_performances(slots, args.timeout)
+        audit = level_audit_from_performances(slots, performances, target=target)
+        plan, planned_patches = level_normalization_plan(slots, target, timeout=args.timeout)
+        result = {
+            "id": "patchLevelNormalization",
+            "slots": slots,
+            "targetLevel": target,
+            "dryRun": args.dry_run,
+            "patches": planned_patches,
+            "audit": audit,
+            "writeCount": len(plan.writes),
+        }
+        if args.dry_run or not plan.writes:
+            result["applied"] = False
+            result["verified"] = False
+            result["plan"] = plan.id
+            return result
+        applied = apply_plan_cli(plan, timeout=args.timeout, verify=args.verify)
+        result.update(applied)
+        result["applied"] = True
+        return result
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
 def audit_slots_from_args(values: list[str]) -> list[str]:
     if len(values) == 1 and "-" not in values[0]:
         return live.user_bank_slots(values[0])
     return [live.normalize_user_slot(value) for value in values]
+
+
+def read_slot_performances(slots: list[str], timeout: float) -> list[dict[str, Any]]:
+    performances = []
+    for index, slot in enumerate(slots):
+        snapshot = read_user_slot_level_snapshot(slot, timeout)
+        performance = performance_from_snapshot_safe(snapshot)
+        performance = recover_level_from_user_patch_effect(slot, performance, timeout)
+        performances.append({"slot": slot, "performance": performance})
+        delay_between_slot_reads(index, len(slots))
+    return performances
+
+
+def recover_level_from_user_patch_effect(slot: str, performance: dict[str, Any], timeout: float) -> dict[str, Any]:
+    if performance.get("masterPatchLevel") is not None:
+        return performance
+    try:
+        data = read_user_patch_effect_record(slot, timeout, label=f"patch level-audit {slot} Patch Effect fallback")
+    except CLIError as error:
+        recovered = dict(performance)
+        recovered["notes"] = list(performance.get("notes", [])) + [f"Patch level fallback read failed: {error}"]
+        return recovered
+    level = data[0x60] if len(data) > 0x60 else None
+    recovered = dict(performance)
+    recovered["masterPatchLevel"] = level
+    recovered["notes"] = list(performance.get("notes", [])) + ["Patch level recovered from Patch Effect after a partial performance read."]
+    return recovered
 
 
 def performance_from_snapshot_safe(snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -2519,6 +2607,161 @@ def setlist_audit_from_performances(slots: list[str], performances: list[dict[st
     }
 
 
+def validate_patch_level(value: int | None) -> int:
+    if value is None:
+        raise ValueError("patch level is required")
+    if not 0 <= value <= 200:
+        raise ValueError("patch level must be 0...200")
+    return value
+
+
+def level_audit_from_performances(
+    slots: list[str],
+    performances: list[dict[str, Any]],
+    *,
+    target: int | None,
+) -> dict[str, Any]:
+    decoded_levels = [
+        item["performance"].get("masterPatchLevel")
+        for item in performances
+        if isinstance(item["performance"].get("masterPatchLevel"), (int, float))
+    ]
+    target_level = validate_patch_level(target) if target is not None else recommended_patch_level(decoded_levels)
+    patches = []
+    findings = []
+    for item in performances:
+        performance = item["performance"]
+        level = performance.get("masterPatchLevel")
+        delta = level - target_level if isinstance(level, (int, float)) and target_level is not None else None
+        gain_hints = gain_stage_hints_from_performance(performance)
+        patch = {
+            "slot": item["slot"],
+            "patchName": performance.get("patchName"),
+            "masterPatchLevel": level,
+            "targetLevel": target_level,
+            "deltaFromTarget": delta,
+            "gainStageHints": gain_hints,
+            "partial": performance.get("partial", False),
+        }
+        patches.append(patch)
+        if patch["partial"]:
+            findings.append({
+                "severity": "warning",
+                "slot": item["slot"],
+                "category": "read",
+                "message": "Performance controls were only partially decoded for this slot.",
+            })
+        if delta is None:
+            findings.append({
+                "severity": "warning",
+                "slot": item["slot"],
+                "category": "level",
+                "message": "Patch level could not be decoded.",
+            })
+        elif abs(delta) >= 10:
+            findings.append({
+                "severity": "warning",
+                "slot": item["slot"],
+                "category": "level",
+                "message": f"Patch level is {delta:+g} from target {target_level}.",
+            })
+        if gain_hints:
+            findings.append({
+                "severity": "info",
+                "slot": item["slot"],
+                "category": "gain-stage",
+                "message": "Playable controls or Assigns may change loudness.",
+                "hints": gain_hints,
+            })
+
+    return {
+        "id": "patchLevelAudit",
+        "slots": slots,
+        "patchCount": len(patches),
+        "targetLevel": target_level,
+        "targetSource": "explicit" if target is not None else "median-decoded-level",
+        "patches": patches,
+        "findingCount": len(findings),
+        "findings": findings,
+    }
+
+
+def recommended_patch_level(levels: list[int | float]) -> int | None:
+    if not levels:
+        return None
+    ordered = sorted(int(round(level)) for level in levels)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return int(round((ordered[middle - 1] + ordered[middle]) / 2))
+
+
+def gain_stage_hints_from_performance(performance: dict[str, Any]) -> list[dict[str, Any]]:
+    hints = []
+    keywords = ("LEVEL", "VOLUME", "GAIN", "BOOST")
+    for control in performance.get("controls", []):
+        action = control.get("action") or ""
+        if action == "No patch action":
+            continue
+        if any(keyword in action.upper() for keyword in keywords):
+            hints.append({
+                "source": "control",
+                "control": control.get("control"),
+                "action": action,
+            })
+    for assign in performance.get("externalAssigns", []):
+        summary = assign.get("summary") or ""
+        if any(keyword in summary.upper() for keyword in keywords):
+            hints.append({
+                "source": "assign",
+                "assign": assign.get("id"),
+                "action": summary,
+            })
+    return hints
+
+
+def level_normalization_plan(
+    slots: list[str],
+    target: int,
+    *,
+    timeout: float,
+) -> tuple[patch_edit.PatchPlan, list[dict[str, Any]]]:
+    writes = []
+    patches = []
+    for slot in slots:
+        data = read_user_patch_effect_record(slot, timeout, label=f"patch normalize-levels {slot} source record")
+        current = data[0x60] if len(data) > 0x60 else None
+        changed = current != target
+        patches.append({
+            "slot": slot,
+            "currentLevel": current,
+            "targetLevel": target,
+            "delta": target - current if isinstance(current, int) else None,
+            "changed": changed,
+        })
+        if changed:
+            writes.extend(patch_edit.build_master_set_record_plan("level", str(target), data, slot=slot).writes)
+    return patch_edit.PatchPlan(
+        id=f"normalize-levels:{target}",
+        description=f"Normalize patch master level to {target} for {', '.join(slots)}.",
+        writes=writes,
+    ), patches
+
+
+def read_user_patch_effect_record(slot: str, timeout: float, *, label: str) -> list[int]:
+    normalized = live.normalize_user_slot(slot)
+    address = live.remap_temporary_patch_address(live.TEMPORARY_PATCH_EFFECT, live.user_patch_base(normalized))
+    request = live.PatchReadRequest("Patch Effect", address, [0x00, 0x00, 0x01, 0x1C])
+    read_timeout = max(timeout, 20.0)
+    raw = read_patch_records_with_timeout(
+        label,
+        read_timeout,
+        [request],
+        reader=patch_edit.read_data_sets_sequential_session,
+    )
+    return raw[live.address_key(address)]
+
+
 
 def read_live_snapshot(timeout: float, requests: list[live.PatchReadRequest] | None = None) -> dict[str, Any]:
     try:
@@ -2544,6 +2787,41 @@ def read_performance_snapshot_with_timeout(label: str, timeout: float) -> dict[s
     raw.update(read_patch_records_lenient_with_timeout(f"{label} Assign records", timeout, assign_requests))
     source_requests = required_requests + assign_requests
     return snapshot_from_patch_records(source_requests, source_requests, raw)
+
+
+def read_user_slot_level_snapshot(slot: str, timeout: float) -> dict[str, Any]:
+    try:
+        source_slot = live.normalize_user_slot(slot)
+        patch_base = live.user_patch_base(source_slot)
+        source_requests = level_audit_read_requests()
+        remapped_requests = [
+            live.PatchReadRequest(request.label, live.remap_temporary_patch_address(request.address, patch_base), request.size)
+            for request in source_requests
+        ]
+        raw: dict[str, list[int]] = {}
+        for source_request, remapped_request in zip(source_requests, remapped_requests):
+            read_timeout = max(timeout, 20.0) if source_request.label == "Patch Effect" else timeout
+            try:
+                raw.update(read_patch_records_with_timeout(
+                    f"patch level-audit {source_slot} {source_request.label}",
+                    read_timeout,
+                    [remapped_request],
+                    reader=patch_edit.read_data_sets_sequential_session,
+                    attempts=3 if source_request.label == "Patch Effect" else 1,
+                ))
+            except CLIError:
+                if source_request.label == "Patch Effect":
+                    raise
+        return snapshot_from_patch_records(
+            source_requests,
+            remapped_requests,
+            raw,
+            source_slot=source_slot,
+            source_address=patch_base,
+            source_type="user",
+        )
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
 
 
 def read_user_slot_snapshot(slot: str, timeout: float, *, view: str) -> dict[str, Any]:
@@ -3097,6 +3375,14 @@ def performance_required_read_requests() -> list[live.PatchReadRequest]:
     ]
 
 
+def level_audit_read_requests() -> list[live.PatchReadRequest]:
+    return [
+        request
+        for request in live.INITIAL_READS
+        if request.label in {"Patch Effect", "Patch Common", "System Control"}
+    ]
+
+
 def assign_read_requests() -> list[live.PatchReadRequest]:
     return [
         live.PatchReadRequest(f"Assign {i}", live.address_adding(live.ASSIGN_BASE, (i - 1) * live.ASSIGN_STRIDE), [0x00, 0x00, 0x00, 0x2C])
@@ -3183,9 +3469,9 @@ def master_schema() -> dict[str, Any]:
         {
             "id": "level",
             "displayName": "PATCH LEVEL",
-            "offset": 0x5F,
-            "kind": "nibbles2",
-            "byteCount": 2,
+            "offset": 0x60,
+            "kind": "byte",
+            "byteCount": 1,
             "minimum": 0,
             "maximum": 200,
         },

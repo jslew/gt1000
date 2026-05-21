@@ -362,7 +362,7 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(read_records.call_args.args[2][0].address, [0x20, 0x0B, 0x10, 0x00])
         plan = apply_plan.call_args.args[0]
         self.assertEqual(plan.writes[0].address, [0x20, 0x0B, 0x10, 0x00])
-        self.assertEqual(plan.writes[0].data[0x5F:0x61], [0x05, 0x0F])
+        self.assertEqual(plan.writes[0].data[0x60], 95)
         self.assertTrue(apply_plan.call_args.kwargs["verify"])
         self.assertEqual(result["plan"], "master-set:level:U03-2")
 
@@ -806,6 +806,67 @@ class UserPatchReadTests(unittest.TestCase):
 
         self.assertTrue(audit["patches"][0]["partial"])
         self.assertIn("read", [finding["category"] for finding in audit["findings"]])
+
+    def test_level_audit_flags_target_delta_and_gain_stage_hints(self):
+        boosted = self.performance_view("BOOST", level=80, bpm=120.0, tuner=True, exp1="Direct: FOOT VOLUME")
+        boosted["controls"].append({"control": "CTL 2", "action": "Direct: LEVEL +10", "preference": "PATCH"})
+        performances = [
+            {"slot": "U10-1", "performance": boosted},
+            {"slot": "U10-2", "performance": self.performance_view("LOUD", level=104, bpm=120.0, tuner=True, exp1="Direct: FOOT VOLUME")},
+        ]
+
+        audit = agent_cli.level_audit_from_performances(["U10-1", "U10-2"], performances, target=90)
+
+        self.assertEqual(audit["id"], "patchLevelAudit")
+        self.assertEqual(audit["targetLevel"], 90)
+        self.assertEqual(audit["patches"][0]["deltaFromTarget"], -10)
+        categories = [finding["category"] for finding in audit["findings"]]
+        self.assertIn("level", categories)
+        self.assertIn("gain-stage", categories)
+
+    def test_read_slot_performances_recovers_missing_level_from_patch_effect(self):
+        snapshot = {"rawSections": []}
+
+        def patch_effect(label, timeout, requests, reader=agent_cli.patch_edit.read_data_sets_batched, attempts=3):
+            data = [0] * agent_cli.live.seven_bit_address_value([0x00, 0x00, 0x01, 0x1C])
+            data[0x60] = 90
+            return {agent_cli.live.address_key(requests[0].address): data}
+
+        with mock.patch.object(agent_cli, "read_user_slot_level_snapshot", return_value=snapshot):
+            with mock.patch.object(agent_cli, "read_patch_records_with_timeout", side_effect=patch_effect):
+                performances = agent_cli.read_slot_performances(["U10-1"], 8.0)
+
+        self.assertEqual(performances[0]["performance"]["masterPatchLevel"], 90)
+        self.assertIn("recovered", performances[0]["performance"]["notes"][-1])
+
+    def test_normalize_levels_builds_verified_patch_effect_writes(self):
+        args = agent_cli.build_parser().parse_args(["patch", "normalize-levels", "U10-1", "U10-2", "--target", "90", "--live", "--verify"])
+        performances = [
+            {"slot": "U10-1", "performance": self.performance_view("A", level=80, bpm=120.0, tuner=True, exp1="Direct: FOOT VOLUME")},
+            {"slot": "U10-2", "performance": self.performance_view("B", level=90, bpm=120.0, tuner=True, exp1="Direct: FOOT VOLUME")},
+        ]
+
+        def source_record(label, timeout, requests, reader=agent_cli.patch_edit.read_data_sets_batched, attempts=3):
+            data = [0] * agent_cli.live.seven_bit_address_value([0x00, 0x00, 0x01, 0x1C])
+            data[0x60] = 80 if "U10-1" in label else 90
+            return {agent_cli.live.address_key(requests[0].address): data}
+
+        with mock.patch.object(agent_cli, "read_slot_performances", return_value=performances):
+            with mock.patch.object(agent_cli, "read_patch_records_with_timeout", side_effect=source_record):
+                with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"plan": "normalize-levels:90", "writeCount": 1, "verified": True}) as apply_plan:
+                    result = agent_cli.cmd_patch_normalize_levels(args)
+
+        plan = apply_plan.call_args.args[0]
+        self.assertEqual(plan.id, "normalize-levels:90")
+        self.assertEqual(len(plan.writes), 1)
+        self.assertEqual(
+            plan.writes[0].address,
+            agent_cli.live.remap_temporary_patch_address(agent_cli.live.TEMPORARY_PATCH_EFFECT, agent_cli.live.user_patch_base("U10-1")),
+        )
+        self.assertEqual(plan.writes[0].data[0x60], 90)
+        self.assertTrue(apply_plan.call_args.kwargs["verify"])
+        self.assertTrue(result["applied"])
+        self.assertEqual(result["writeCount"], 1)
 
     def test_live_setlist_audit_reads_requested_slots(self):
         args = agent_cli.build_parser().parse_args(["patch", "setlist-audit", "U10-1", "U10-2", "--live"])

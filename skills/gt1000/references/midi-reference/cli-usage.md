@@ -274,6 +274,26 @@ scripts/gt1000-agent --pretty patch setlist-audit U10-1 U10-2 U10-3 --live --tim
 - Flags patch-level jumps, missing tuner access, mixed BPM values, expression-pedal behavior changes, and SYSTEM-preference controls.
 - A single bank argument such as `U10` expands to all five slots in that bank.
 
+### `patch level-audit`
+Compare patch master levels and loudness-related performance controls across a bank or slot list.
+```sh
+scripts/gt1000-agent --pretty patch level-audit U10-1 U10-2 --target 90 --live --timeout 15
+scripts/gt1000-agent --pretty patch level-audit U10 --live --timeout 15
+```
+- Reports each slot's decoded master patch level, delta from the explicit target, or delta from the median decoded level when `--target` is omitted.
+- Flags large level offsets and playable controls or Assigns that mention level, volume, gain, or boost.
+
+### `patch normalize-levels`
+Set several user-slot patch master levels while preserving the rest of each Patch Effect record.
+```sh
+scripts/gt1000-agent --pretty patch normalize-levels U10-1 U10-2 --target 90 --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch normalize-levels U10 --target 90 --dry-run --live --timeout 20
+```
+- `--target`: patch master level `0`...`200`.
+- `--dry-run`: read and report intended changes without writing.
+- `--verify`: re-read each written Patch Effect record and compare exact bytes.
+- This is a persistent write to the selected user slots; inspect and back up slots first when their contents matter.
+
 ### `patch undo-last`
 Restore the latest automatic restore point created before a CLI write.
 ```sh

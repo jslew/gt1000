@@ -523,9 +523,9 @@ class AgentCLITests(unittest.TestCase):
         self.assertEqual(master["id"], "master")
         self.assertEqual(master["command"], "patch master-set <field> <value>")
         master_parameters = {parameter["id"]: parameter for parameter in master["namedParameters"]}
-        self.assertEqual(master_parameters["level"]["offset"], 0x5F)
-        self.assertEqual(master_parameters["level"]["kind"], "nibbles2")
-        self.assertEqual(master_parameters["level"]["byteCount"], 2)
+        self.assertEqual(master_parameters["level"]["offset"], 0x60)
+        self.assertEqual(master_parameters["level"]["kind"], "byte")
+        self.assertEqual(master_parameters["level"]["byteCount"], 1)
         self.assertIn("input-sensitivity", master_parameters)
 
         controls = agent_cli.cmd_patch_schema(agent_cli.build_parser().parse_args(["patch", "schema", "controls"]))
@@ -630,6 +630,7 @@ class AgentCLITests(unittest.TestCase):
             "liveset-remove",
             "liveset-rename",
             "master-set",
+            "normalize-levels",
             "raw-set",
             "rename",
             "restore-preset",
@@ -694,6 +695,14 @@ class AgentCLITests(unittest.TestCase):
 
         musician_summary = parser.parse_args(["patch", "musician-summary", "--live"])
         self.assertEqual(musician_summary.patch_command, "musician-summary")
+
+        level_audit = parser.parse_args(["patch", "level-audit", "U10-1", "U10-2", "--target", "90", "--live"])
+        self.assertEqual(level_audit.patch_command, "level-audit")
+        self.assertEqual(level_audit.target, 90)
+
+        normalize_levels = parser.parse_args(["patch", "normalize-levels", "U10-1", "U10-2", "--target", "90", "--live", "--verify"])
+        self.assertEqual(normalize_levels.patch_command, "normalize-levels")
+        self.assertEqual(normalize_levels.target, 90)
 
         dump = parser.parse_args(["patch", "dump", "--live"])
         self.assertEqual(dump.patch_command, "dump")
