@@ -25,7 +25,7 @@ Build these in order. Prefer commands that answer practical rehearsal and giggin
    - Compare and adjust patch/master levels across slots with read-back verification.
    - Surface boosts and gain-stage changes that may affect perceived loudness.
 
-7. [ ] Intent-based edits
+7. [x] Intent-based edits
    - Add commands such as solo boost, tap tempo, delay toggle, tuner mapping, and expression-volume setup.
    - Keep writes typed, validated, and read-back verified.
 

@@ -868,6 +868,36 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertTrue(result["applied"])
         self.assertEqual(result["writeCount"], 1)
 
+    def test_intent_solo_boost_uses_validated_control_plan(self):
+        args = agent_cli.build_parser().parse_args(["patch", "intent", "solo-boost", "--control", "ctl4", "--amount", "20", "--live", "--verify"])
+
+        with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"plan": "control:ctl4:level-plus-20", "writeCount": 1, "verified": True}) as apply_plan:
+            result = agent_cli.cmd_patch_intent(args)
+
+        plan = apply_plan.call_args.args[0]
+        self.assertEqual(plan.id, "control:ctl4:level-plus-20")
+        self.assertEqual(plan.writes[0].data, [6, 0])
+        self.assertTrue(apply_plan.call_args.kwargs["verify"])
+        self.assertEqual(result["id"], "patchIntent")
+        self.assertEqual(result["intent"], "solo-boost")
+
+    def test_intent_expression_volume_uses_exp_pedal_plan(self):
+        args = agent_cli.build_parser().parse_args(["patch", "intent", "expression-volume", "--control", "exp2", "--include-pedal-fx", "--live"])
+
+        with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"plan": "control:exp2:foot-volume-pedal-fx", "writeCount": 1}) as apply_plan:
+            result = agent_cli.cmd_patch_intent(args)
+
+        plan = apply_plan.call_args.args[0]
+        self.assertEqual(plan.id, "control:exp2:foot-volume-pedal-fx")
+        self.assertEqual(plan.writes[0].data, [3])
+        self.assertEqual(result["intentSummary"]["control"], "exp2")
+
+    def test_intent_delay_toggle_rejects_unknown_delay_block(self):
+        args = agent_cli.build_parser().parse_args(["patch", "intent", "delay-toggle", "--block", "chorus", "--live"])
+
+        with self.assertRaises(agent_cli.CLIError):
+            agent_cli.cmd_patch_intent(args)
+
     def test_live_setlist_audit_reads_requested_slots(self):
         args = agent_cli.build_parser().parse_args(["patch", "setlist-audit", "U10-1", "U10-2", "--live"])
         snapshots = [

@@ -181,6 +181,19 @@ def build_parser() -> argparse.ArgumentParser:
     normalize_levels.add_argument("--timeout", type=float, default=20.0, help="Read/verification timeout in seconds per slot.")
     normalize_levels.set_defaults(func=cmd_patch_normalize_levels)
 
+    intent = patch_subcommands.add_parser("intent", help="Apply a validated musician-intent edit.")
+    intent.add_argument("intent", choices=["solo-boost", "tap-tempo", "delay-toggle", "tuner", "expression-volume"])
+    intent.add_argument("--control", help="Physical control such as ctl1, ctl2, or exp1. Defaults depend on the intent.")
+    intent.add_argument("--amount", type=int, choices=[10, 20], default=10, help="Solo boost amount for solo-boost.")
+    intent.add_argument("--block", default="delay1", help="Delay block for delay-toggle: delay1...delay4 or master-delay.")
+    intent.add_argument("--include-pedal-fx", action="store_true", help="For expression-volume, map EXP to FV + PEDAL FX instead of FOOT VOLUME.")
+    intent.add_argument("--mode", choices=["toggle", "moment"], default="toggle", help="Footswitch mode for switch-based intents.")
+    intent.add_argument("--user-slot", help="Persist to a user patch slot instead of the temporary patch.")
+    intent.add_argument("--live", action="store_true", help="Required because intent edits write to the connected GT-1000.")
+    intent.add_argument("--verify", action="store_true", help="Re-read the written range and compare exact bytes.")
+    intent.add_argument("--timeout", type=float, default=12.0, help="Verification read timeout in seconds.")
+    intent.set_defaults(func=cmd_patch_intent)
+
     schema = patch_subcommands.add_parser("schema", help="Show editable parameter schema for decoded blocks.")
     schema.add_argument("block_id", nargs="?", help="Optional block id such as delay1, fx1, or sendReturn1.")
     schema.add_argument("--raw", action="store_true", help="Enumerate every bounded raw-editable offset for the selected block.")
@@ -1229,6 +1242,67 @@ def cmd_patch_normalize_levels(args: argparse.Namespace) -> Any:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
         raise CLIError(str(error)) from error
+
+
+def cmd_patch_intent(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch intent requires --live because it writes to the connected GT-1000", 64)
+    try:
+        plan, summary = build_intent_plan(args)
+        result = apply_plan_cli(plan, timeout=args.timeout, verify=args.verify)
+        result["id"] = "patchIntent"
+        result["intent"] = args.intent
+        result["intentSummary"] = summary
+        return result
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
+def build_intent_plan(args: argparse.Namespace) -> tuple[patch_edit.PatchPlan, dict[str, Any]]:
+    intent = args.intent
+    slot = args.user_slot
+    if intent == "solo-boost":
+        control = args.control or "ctl1"
+        function = f"level-plus-{args.amount}"
+        plan = patch_edit.build_control_set_plan(control, function, mode=args.mode, slot=slot)
+        return plan, {"control": control, "action": f"Toggle patch level +{args.amount}"}
+    if intent == "tap-tempo":
+        control = args.control or "ctl2"
+        plan = patch_edit.build_control_set_plan(control, "bpm-tap", mode=args.mode, slot=slot)
+        return plan, {"control": control, "action": "Tap patch BPM"}
+    if intent == "delay-toggle":
+        control = args.control or "ctl1"
+        block = normalize_delay_intent_block(args.block)
+        plan = patch_edit.build_control_set_plan(control, block, mode=args.mode, slot=slot)
+        return plan, {"control": control, "block": block, "action": f"Toggle {block}"}
+    if intent == "tuner":
+        control = args.control or "ctl3"
+        plan = patch_edit.build_control_set_plan(control, "tuner", mode=args.mode, slot=slot)
+        return plan, {"control": control, "action": "Open tuner from a patch control"}
+    if intent == "expression-volume":
+        control = args.control or "exp1"
+        function = "foot-volume-pedal-fx" if args.include_pedal_fx else "foot-volume"
+        plan = patch_edit.build_control_set_plan(control, function, slot=slot)
+        return plan, {"control": control, "action": "Map expression pedal to " + function.replace("-", " ")}
+    raise ValueError(f"unsupported intent {intent}")
+
+
+def normalize_delay_intent_block(value: str) -> str:
+    block = normalize_cli_key(value)
+    aliases = {
+        "delay": "delay1",
+        "delay-1": "delay1",
+        "delay-2": "delay2",
+        "delay-3": "delay3",
+        "delay-4": "delay4",
+        "master-delay": "master-delay",
+    }
+    block = aliases.get(block, block)
+    if block not in {"delay1", "delay2", "delay3", "delay4", "master-delay"}:
+        raise ValueError("delay-toggle block must be delay1, delay2, delay3, delay4, or master-delay")
+    return block
 
 
 def audit_slots_from_args(values: list[str]) -> list[str]:

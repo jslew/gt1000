@@ -294,6 +294,20 @@ scripts/gt1000-agent --pretty patch normalize-levels U10 --target 90 --dry-run -
 - `--verify`: re-read each written Patch Effect record and compare exact bytes.
 - This is a persistent write to the selected user slots; inspect and back up slots first when their contents matter.
 
+### `patch intent`
+Apply a validated musician-intent edit through existing typed patch editors.
+```sh
+scripts/gt1000-agent --pretty patch intent solo-boost --control ctl4 --amount 10 --live --verify
+scripts/gt1000-agent --pretty patch intent tap-tempo --control ctl3 --live --verify
+scripts/gt1000-agent --pretty patch intent delay-toggle --control ctl2 --block delay1 --live --verify
+scripts/gt1000-agent --pretty patch intent tuner --control ctl3 --live --verify
+scripts/gt1000-agent --pretty patch intent expression-volume --control exp1 --include-pedal-fx --live --verify
+```
+- Supported intents are `solo-boost`, `tap-tempo`, `delay-toggle`, `tuner`, and `expression-volume`.
+- The command maps each intent to a bounded control/EXP editor plan; it does not accept arbitrary SysEx.
+- Add `--user-slot U10-1` to persist the mapping to a user slot; omit it for the temporary patch.
+- Use `--verify` for read-back verification.
+
 ### `patch undo-last`
 Restore the latest automatic restore point created before a CLI write.
 ```sh

@@ -59,6 +59,7 @@ LIVE_VERIFIED_COMMAND_PATHS = {
     ("patch", "import"),
     ("patch", "initialize"),
     ("patch", "insert"),
+    ("patch", "intent"),
     ("patch", "inspect"),
     ("patch", "led-set"),
     ("patch", "liveset-copy"),

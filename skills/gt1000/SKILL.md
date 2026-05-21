@@ -68,6 +68,7 @@ Use this routing:
 - Patch comparison questions: use `patch diff <source> <target> --live` for user slots or `patch diff <before.json> <after.json>` for saved full patch dumps before opening lower-level views.
 - Setlist readiness questions: use `patch setlist-audit <bank-or-slots> --live` to check patch-level jumps, tuner access, BPM mismatches, expression-pedal changes, and SYSTEM-preference controls.
 - Patch loudness matching questions: use `patch level-audit <bank-or-slots> --live` before writing, then `patch normalize-levels <bank-or-slots> --target <level> --live --verify` when the user wants user-slot levels changed.
+- Common musician edit requests such as solo boost, tap tempo, delay toggle, tuner-on-control, or expression-volume setup: use `patch intent <intent> --live --verify` before dropping to lower-level control editors.
 - Switch/control questions: run `patch performance` first for stage-use questions and `patch controls` for raw control/Assign details. Open `references/midi-reference/patch-controls.md` only if a raw/unknown function appears or the user asks how a physical control is encoded.
 - Assign behavior, MIDI CC, tuner control, or assigned-off-block reachability: run `patch controls` or `patch summary` first. Open `references/midi-reference/assigns.md` only for source IDs, target min/max encoding, target table caveats, or write planning.
 - Installing tuner control: use `patch tuner-assign --live --verify` to install the tested Assign 16 / CC#80 tuner mapping. Ask before writing it persistently with `--user-slot`.
@@ -107,6 +108,7 @@ scripts/gt1000-agent --pretty patch diff U10-1 U10-2 --live --timeout 15
 scripts/gt1000-agent --pretty patch setlist-audit U10 --live --timeout 15
 scripts/gt1000-agent --pretty patch level-audit U10-1 U10-2 --live --timeout 15
 scripts/gt1000-agent --pretty patch normalize-levels U10-1 U10-2 --target 90 --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch intent solo-boost --control ctl4 --amount 10 --live --verify
 scripts/gt1000-agent --pretty patch block delay1 --user-slot U01-1
 scripts/gt1000-agent --pretty patch clone U10-1 U10-2 --live --verify --timeout 20
 scripts/gt1000-agent --pretty midi cc 80 127 --channel 1 --live
@@ -166,6 +168,7 @@ scripts/gt1000-agent --pretty patch assign-cc 3 delay1 sw --cc 80 --mode moment 
 scripts/gt1000-agent --pretty patch set-bpm 120.0 --live --verify
 scripts/gt1000-agent --pretty patch tuner-assign --live --verify
 scripts/gt1000-agent --pretty patch normalize-levels U10-1 U10-2 --target 90 --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch intent delay-toggle --control ctl2 --block delay1 --live --verify
 ```
 
 Ask before persistent operations such as patch write, exchange, initialize, or insert.

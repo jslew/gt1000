@@ -621,6 +621,7 @@ class AgentCLITests(unittest.TestCase):
             "exchange",
             "export",
             "import",
+            "intent",
             "initialize",
             "insert",
             "led-set",
@@ -703,6 +704,11 @@ class AgentCLITests(unittest.TestCase):
         normalize_levels = parser.parse_args(["patch", "normalize-levels", "U10-1", "U10-2", "--target", "90", "--live", "--verify"])
         self.assertEqual(normalize_levels.patch_command, "normalize-levels")
         self.assertEqual(normalize_levels.target, 90)
+
+        intent = parser.parse_args(["patch", "intent", "solo-boost", "--control", "ctl4", "--amount", "20", "--live", "--verify"])
+        self.assertEqual(intent.patch_command, "intent")
+        self.assertEqual(intent.intent, "solo-boost")
+        self.assertEqual(intent.amount, 20)
 
         dump = parser.parse_args(["patch", "dump", "--live"])
         self.assertEqual(dump.patch_command, "dump")
