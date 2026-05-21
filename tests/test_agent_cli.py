@@ -46,6 +46,27 @@ class AgentCLITests(unittest.TestCase):
         self.assertEqual(agent_cli.live_call_with_timeout("mock", 2, mock, timeout=8.0), {"ok": True})
         mock.assert_called_once_with(timeout=8.0)
 
+    def test_doctor_parser_and_status_from_mocked_checks(self):
+        args = agent_cli.build_parser().parse_args(["doctor", "--live", "--user-slot", "U10-1", "--write-check"])
+        self.assertEqual(args.command, "doctor")
+        self.assertTrue(args.write_check)
+
+        checks = [
+            {"name": "endpoints", "ok": True},
+            {"name": "sysex", "ok": True},
+            {"name": "currentPatch", "ok": True},
+            {"name": "userSlot", "ok": False, "error": "partial"},
+            {"name": "midiRxChannel", "ok": True},
+            {"name": "writeVerify", "ok": True},
+        ]
+
+        with unittest.mock.patch.object(agent_cli, "doctor_check", side_effect=checks):
+            result = agent_cli.cmd_doctor(args)
+
+        self.assertEqual(result["id"], "doctor")
+        self.assertEqual(result["status"], "warning")
+        self.assertEqual(result["failedOptionalChecks"], ["userSlot"])
+
     def test_patch_export_uses_process_timeout_guard_for_slot_reads(self):
         calls = []
 
@@ -656,9 +677,10 @@ class AgentCLITests(unittest.TestCase):
             if getattr(action, "dest", None) == "command"
         )
         live_paths = live_verified_command_paths()
-        parser_paths = {("ports",)}
+        parser_paths = {("doctor",), ("ports",)}
 
         self.assertIn(("ports",), live_paths)
+        self.assertIn(("doctor",), live_paths)
         for group in ["patch", "midi", "system"]:
             subparser = command_parsers[group]
             subcommands = next(

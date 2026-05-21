@@ -80,6 +80,16 @@ scripts/gt1000-agent --pretty ports --live --timeout 8
 - `--live`: Required for MIDI port discovery.
 - `--timeout`: CoreMIDI port inventory timeout in seconds. If this times out, quit other MIDI clients such as BOSS Tone Studio, then power-cycle or reconnect the GT-1000.
 
+### `doctor`
+Run live connectivity and health checks without aborting on the first partial failure.
+```sh
+scripts/gt1000-agent --pretty doctor --live --timeout 8
+scripts/gt1000-agent --pretty doctor --live --write-check --timeout 20
+```
+- Reports normal endpoint discovery, SysEx Patch Effect responsiveness, current patch read health, user-slot read health, MIDI RX channel, and optional no-op temporary write/read-back verification.
+- `--user-slot`: slot used for persistent user-slot read health, default `U10-1`.
+- `--write-check`: writes the current temporary patch level back to the same value and verifies the read-back.
+
 ## MIDI Send Commands
 
 Typed channel-voice send commands are intentionally narrow. Use them for validated workflows such as exercising a known Assign source; do not emit raw arbitrary MIDI bytes.

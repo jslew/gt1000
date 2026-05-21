@@ -58,6 +58,13 @@ def build_parser() -> argparse.ArgumentParser:
     ports.add_argument("--timeout", type=float, default=8.0, help="Live CoreMIDI port inventory timeout in seconds.")
     ports.set_defaults(func=cmd_ports)
 
+    doctor = subcommands.add_parser("doctor", help="Run live GT-1000 connectivity and read/write health checks.")
+    doctor.add_argument("--live", action="store_true", help="Required because doctor checks live device state.")
+    doctor.add_argument("--timeout", type=float, default=8.0, help="Live read timeout in seconds.")
+    doctor.add_argument("--user-slot", default="U10-1", help="User slot for persistent-slot read health, default U10-1.")
+    doctor.add_argument("--write-check", action="store_true", help="Also perform a no-op temporary patch write with read-back verification.")
+    doctor.set_defaults(func=cmd_doctor)
+
     midi = subcommands.add_parser("midi", help="Send typed MIDI channel-voice messages.")
     midi_subcommands = midi.add_subparsers(dest="midi_command", required=True)
     cc = midi_subcommands.add_parser("cc", help="Send a typed MIDI Control Change message.")
@@ -566,6 +573,167 @@ def cmd_ports(args: argparse.Namespace) -> Any:
     if not args.live:
         raise CLIError("ports requires --live because MIDI ports are live device state", 64)
     return live_call_with_timeout("ports --live", args.timeout, live.list_ports)
+
+
+def cmd_doctor(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("doctor requires --live because it checks live device state", 64)
+    try:
+        user_slot = live.normalize_user_slot(args.user_slot)
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+
+    checks = [
+        doctor_check("endpoints", lambda: doctor_endpoint_check(args.timeout)),
+        doctor_check("sysex", lambda: doctor_sysex_check(args.timeout)),
+        doctor_check("currentPatch", lambda: overview_from_full(read_live_snapshot_with_timeout(
+            "doctor current patch overview",
+            args.timeout,
+            requests=requests_for_view("overview"),
+        ))),
+        doctor_check("userSlot", lambda: {
+            "slot": user_slot,
+            "overview": overview_from_full(read_user_slot_level_snapshot(user_slot, args.timeout)),
+        }),
+        doctor_check("midiRxChannel", lambda: doctor_midi_rx_channel_check(args.timeout)),
+    ]
+    if args.write_check:
+        checks.append(doctor_check("writeVerify", lambda: doctor_write_verify_check(args.timeout)))
+    else:
+        checks.append({
+            "name": "writeVerify",
+            "ok": True,
+            "skipped": True,
+            "message": "Use --write-check to perform a no-op temporary patch write with read-back verification.",
+        })
+
+    required = {"endpoints", "sysex", "currentPatch"}
+    failed_required = [check["name"] for check in checks if check["name"] in required and not check.get("ok")]
+    failed_optional = [check["name"] for check in checks if check["name"] not in required and not check.get("ok")]
+    status = "ok"
+    if failed_required:
+        status = "error"
+    elif failed_optional:
+        status = "warning"
+    return {
+        "id": "doctor",
+        "status": status,
+        "userSlot": user_slot,
+        "checkCount": len(checks),
+        "failedRequiredChecks": failed_required,
+        "failedOptionalChecks": failed_optional,
+        "checks": checks,
+    }
+
+
+def doctor_check(name: str, func: Callable[[], Any]) -> dict[str, Any]:
+    started = time.monotonic()
+    try:
+        data = func()
+        return {
+            "name": name,
+            "ok": True,
+            "durationSeconds": round(time.monotonic() - started, 3),
+            "data": data,
+        }
+    except CLIError as error:
+        return {
+            "name": name,
+            "ok": False,
+            "durationSeconds": round(time.monotonic() - started, 3),
+            "error": str(error),
+            "exitCode": error.exit_code,
+        }
+    except live.LiveMIDIError as error:
+        return {
+            "name": name,
+            "ok": False,
+            "durationSeconds": round(time.monotonic() - started, 3),
+            "error": str(error),
+        }
+    except Exception as error:
+        return {
+            "name": name,
+            "ok": False,
+            "durationSeconds": round(time.monotonic() - started, 3),
+            "error": str(error),
+        }
+
+
+def doctor_endpoint_check(timeout: float) -> dict[str, Any]:
+    ports = live_call_with_timeout("doctor ports --live", timeout, live.list_ports)
+    destinations = ports.get("destinations", [])
+    sources = ports.get("sources", [])
+    normal_destinations = [port for port in destinations if port.get("name") == "GT-1000" and port.get("isDefaultGT1000Endpoint")]
+    normal_sources = [port for port in sources if port.get("name") == "GT-1000" and port.get("isDefaultGT1000Endpoint")]
+    if not normal_destinations or not normal_sources:
+        raise CLIError("normal GT-1000 source/destination endpoints were not both found")
+    return {
+        "destinationCount": len(destinations),
+        "sourceCount": len(sources),
+        "normalDestination": normal_destinations[0],
+        "normalSource": normal_sources[0],
+    }
+
+
+def doctor_sysex_check(timeout: float) -> dict[str, Any]:
+    data = read_current_patch_effect_record(timeout, label="doctor SysEx Patch Effect")
+    return {
+        "address": live.hex_bytes(live.TEMPORARY_PATCH_EFFECT),
+        "byteCount": len(data),
+        "masterPatchLevel": data[0x60] if len(data) > 0x60 else None,
+    }
+
+
+def doctor_midi_rx_channel_check(timeout: float) -> dict[str, Any]:
+    raw = live_call_with_timeout(
+        "doctor system midi --live",
+        patch_record_process_timeout(max(timeout, 20.0), 1),
+        live.read_system_section,
+        live.SYSTEM_MIDI,
+        [0x00, 0x00, 0x00, 0x1B],
+        timeout=max(timeout, 20.0),
+    )
+    data = raw.get(live.address_key(live.SYSTEM_MIDI), [])
+    decoded = decode_system_midi(data)
+    return {
+        "rxChannelRaw": decoded.get("rxChannelRaw"),
+        "rxChannel": decoded.get("rxChannel"),
+        "omniMode": decoded.get("omniMode"),
+        "txChannel": decoded.get("txChannel"),
+    }
+
+
+def doctor_write_verify_check(timeout: float) -> dict[str, Any]:
+    data = read_current_patch_effect_record(timeout, label="doctor write-check source level")
+    if len(data) <= 0x60:
+        raise CLIError("Patch Effect record is too short to read current patch level")
+    level = data[0x60]
+    plan = patch_edit.build_master_set_plan("level", str(level))
+    result = apply_plan_cli(plan, timeout=max(timeout, 20.0), verify=False, create_restore=False)
+    verified_data = read_current_patch_effect_record(timeout, label="doctor write-check Patch Effect verify")
+    actual_level = verified_data[0x60] if len(verified_data) > 0x60 else None
+    verified = actual_level == level
+    if not verified:
+        raise CLIError(f"doctor write-check verification failed: expected level {level}, got {actual_level}")
+    return {
+        "plan": result.get("plan"),
+        "writeCount": result.get("writeCount"),
+        "verified": verified,
+        "levelWritten": level,
+        "actualLevel": actual_level,
+    }
+
+
+def read_current_patch_effect_record(timeout: float, *, label: str) -> list[int]:
+    request = live.PatchReadRequest("Patch Effect", live.TEMPORARY_PATCH_EFFECT, [0x00, 0x00, 0x01, 0x1C])
+    raw = read_patch_records_with_timeout(
+        label,
+        max(timeout, 20.0),
+        [request],
+        reader=patch_edit.read_data_sets_sequential_session,
+    )
+    return raw[live.address_key(live.TEMPORARY_PATCH_EFFECT)]
 
 
 def live_call_with_timeout(label: str, process_timeout: float, func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:

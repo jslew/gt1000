@@ -78,6 +78,7 @@ Use this routing:
 - Signal-chain routing, divider/mixer behavior, chain element values, or reserved elements: run `patch chain` or `patch summary` first. Open `references/midi-reference/patch-effect.md` only when raw chain/routing details matter.
 - STOMPBOX questions: explain the user-facing caution from `references/gt1000-wiki/owner-manual.md`; use `patch stompbox --live` when the user asks whether a patch is using shared STOMPBOX slots.
 - System/global MIDI, IN/OUT, or control preference questions: use the relevant `system` CLI view first. Open `references/midi-reference/README.md` or address-map notes only when addresses, sizes, or SysEx behavior need explanation.
+- Connectivity or intermittent-timeout diagnosis: use `doctor --live` first so endpoint, SysEx, patch-read, user-slot, MIDI RX channel, and optional write/verify health are reported together.
 - System metronome BPM questions: use `system common` first. Open address-map notes only if the user asks about the underlying System Common address or BPM nibble encoding.
 - Manual-mode switch questions: use `system manual` first. Open address-map notes only if the user asks how manual-mode NUM functions are encoded.
 - Program Change mapping questions: use `system pcmap --bank N` first for a focused bank read, or omit `--bank` only when comparing the full map. Open address-map notes only if the user asks about storage layout or patch-value encoding.
@@ -96,6 +97,7 @@ These commands read the current/temporary patch buffer (`10 00 00 00`) unless a 
 
 ```sh
 scripts/gt1000-agent --pretty ports --live --timeout 8
+scripts/gt1000-agent --pretty doctor --live --timeout 8
 scripts/gt1000-agent --pretty patch summary --live --timeout 8
 scripts/gt1000-agent --pretty patch overview --live --timeout 8
 scripts/gt1000-agent --pretty patch chain --live --timeout 8

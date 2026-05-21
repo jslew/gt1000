@@ -29,5 +29,5 @@ Build these in order. Prefer commands that answer practical rehearsal and giggin
    - Add commands such as solo boost, tap tempo, delay toggle, tuner mapping, and expression-volume setup.
    - Keep writes typed, validated, and read-back verified.
 
-8. [ ] `doctor --live`
+8. [x] `doctor --live`
    - Report endpoint health, SysEx responsiveness, patch read health, user-slot read health, MIDI RX channel, and optional write/verify capability.

@@ -32,6 +32,7 @@ def live_process_timeout(timeout: int) -> float:
     return timeout * LIVE_PROCESS_TIMEOUT_MULTIPLIER
 LIVE_WRITE_RESTORE_SLOTS = ["U10-1", "U10-2", "U10-3", "U10-4", "U10-5", "U11-1", "U11-2"]
 LIVE_VERIFIED_COMMAND_PATHS = {
+    ("doctor",),
     ("ports",),
     ("midi", "bank-select"),
     ("midi", "cc"),
