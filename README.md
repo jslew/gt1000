@@ -142,12 +142,16 @@ For recording, an agent may care about:
 
 The skill can use a local profile so advice is grounded in your setup instead of generic GT-1000 assumptions.
 
-Agents look for:
+Agents look for a local profile using a harness-neutral path order:
 
 ```text
-$CODEX_HOME/memories/gt1000-profile.md
-~/.codex/memories/gt1000-profile.md
+GT1000_PROFILE_PATH
+GT1000_PROFILE_DIR/gt1000-profile.md
+$XDG_CONFIG_HOME/gt1000/gt1000-profile.md
+~/.config/gt1000/gt1000-profile.md
 ```
+
+Harness-specific memory directories may also be used when the active agent environment exposes one. Older Codex-local profile paths are treated as legacy fallback locations and should be migrated to one of the neutral paths.
 
 You can ask:
 

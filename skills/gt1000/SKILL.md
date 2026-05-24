@@ -1,6 +1,6 @@
 ---
 name: gt1000
-description: GT-1000 v4+ musician-facing interface for conversing with a connected BOSS/Roland device: patch inspection, signal-chain explanation, physical controls, performance behavior, patch library/user-slot workflows, and safe validated musical edits. Use when working on GT-1000 or GT-1000CORE sounds, controls, routing, patch libraries, manual concepts, parameter meanings, live patch descriptions, or edit planning. Discuss CLI, SysEx, MIDI internals, or implementation details only when directly asked or when needed internally to keep an edit safe.
+description: "GT-1000 v4+ musician-facing interface for conversing with a connected BOSS/Roland device: patch inspection, signal-chain explanation, physical controls, performance behavior, patch library/user-slot workflows, and safe validated musical edits. Use when working on GT-1000 or GT-1000CORE sounds, controls, routing, patch libraries, manual concepts, parameter meanings, live patch descriptions, or edit planning. Discuss CLI, SysEx, MIDI internals, or implementation details only when directly asked or when needed internally to keep an edit safe."
 ---
 
 # GT-1000 Musician Interface
@@ -32,18 +32,23 @@ Resolve paths relative to this `SKILL.md` file:
 
 ## Operational Principles
 
+- Always check for the user profile first, before live reads, summaries, edit planning, or reference lookups. If no profile exists, run the onboarding flow in `references/user-profile-onboarding.md` before continuing with the GT-1000 task.
 - Always use the bundled CLI and markdown internally to interact with the device.
 - Use `scripts/gt1000-agent --pretty patch musician-summary --live` as the default live read for patch descriptions; use `summary` when more structured detail is needed.
 - Run live reads sequentially. Separate processes can interleave GT-1000 replies on the same MIDI source.
 
 ## User Profile Memory
 
-At the start of patch description, signal-chain advice, edit planning, or control-mapping work, check for a user-local profile at:
+At the start of every GT-1000 skill interaction, before any device read, answer, edit plan, or reference lookup, check for a user-local profile. Do not tie this lookup to a specific LLM harness. Resolve the profile path in this order:
 
-- `$CODEX_HOME/memories/gt1000-profile.md`
-- `~/.codex/memories/gt1000-profile.md`
+1. A profile path explicitly provided by the user.
+2. `$GT1000_PROFILE_PATH`.
+3. `$GT1000_PROFILE_DIR/gt1000-profile.md`.
+4. A harness-provided persistent user memory/config directory, if the active agent environment exposes one, using `gt1000-profile.md` inside it.
+5. `$XDG_CONFIG_HOME/gt1000/gt1000-profile.md`, or `~/.config/gt1000/gt1000-profile.md` when `XDG_CONFIG_HOME` is unset.
+6. Legacy fallback only: `$CODEX_HOME/memories/gt1000-profile.md` or `~/.codex/memories/gt1000-profile.md`. If a legacy profile is found, load it and copy it to the first usable harness-neutral path before continuing.
 
-If present, load it before making rig-specific judgments. If absent, proceed with generic guidance unless the missing preference would materially affect the answer. For onboarding or profile updates, use `references/user-profile-onboarding.md`.
+If present, load it before doing anything else. If absent, do not proceed with generic guidance; use `references/user-profile-onboarding.md` to run a compact onboarding interview and create the profile first. If the user provides enough profile context unprompted, write the profile from that context and ask only for missing details that materially affect the immediate task.
 
 Use the profile as preference context, not device truth. Live CLI reads and current patch data remain authoritative.
 
@@ -69,7 +74,7 @@ Keep routine patch work on compact device summaries first. Do not load low-level
 
 Use this routing:
 
-- Patch description, "what is this sound?", or quick signal-chain review: load the optional user profile, run `patch musician-summary` for a concise answer or `patch summary` when you need more structured detail, and use `descriptionSignalChainSummary`, `descriptionElements`, `controls`, and `activeAssigns`. Do not open MIDI reference pages unless a decoded field is unclear.
+- Patch description, "what is this sound?", or quick signal-chain review: load the user profile first, run onboarding if it is missing, then run `patch musician-summary` for a concise answer or `patch summary` when you need more structured detail, and use `descriptionSignalChainSummary`, `descriptionElements`, `controls`, and `activeAssigns`. Do not open MIDI reference pages unless a decoded field is unclear.
 - Patch comparison questions: use `patch diff <source> <target> --live` for user slots or `patch diff <before.json> <after.json>` for saved full patch dumps before opening lower-level views. Report the result as musical differences in sound, level, controls, routing, and library placement.
 - Setlist readiness questions: use `patch setlist-audit <bank-or-slots> --live` to check patch-level jumps, tuner access, BPM mismatches, expression-pedal changes, and SYSTEM-preference controls.
 - Patch loudness matching questions: use `patch level-audit <bank-or-slots> --live` before writing, then `patch normalize-levels <bank-or-slots> --target <level> --live --verify` when the user wants user-slot levels changed.
@@ -184,7 +189,7 @@ Ask before persistent operations such as patch write, exchange, initialize, or i
 
 For a human patch description:
 
-1. Load the optional user profile memory if it exists.
+1. Load the user profile memory; if it does not exist, complete onboarding and create it before reading the patch.
 2. Read `summary`.
 3. Use `descriptionSignalChainSummary` and `descriptionElements` as the default human-facing chain.
 4. Mention only the audible/playable chain first.
@@ -198,7 +203,7 @@ For an initialized or sparse patch, keep the answer short and avoid listing dorm
 
 For physical switch mapping:
 
-1. Load the optional user profile memory if it exists.
+1. Load the user profile memory; if it does not exist, complete onboarding and create it before reading controls.
 2. Use `scripts/gt1000-agent --pretty patch performance --live --timeout 8` for musician-facing stage behavior.
 3. Use `scripts/gt1000-agent --pretty patch controls --live --timeout 8` when raw control/Assign details are needed.
 4. If output is ambiguous, consult `references/midi-reference/patch-controls.md` and `references/midi-reference/assigns.md`.

@@ -1,21 +1,25 @@
 # GT-1000 User Profile Onboarding
 
-Use this when `gt1000-profile.md` is missing or when the user asks to create/update remembered GT-1000 context.
+Use this whenever `gt1000-profile.md` is missing, before any GT-1000 device read, patch summary, control explanation, recommendation, or edit planning. Also use it when the user asks to create/update remembered GT-1000 context.
 
 ## Profile Path
 
-Write user-specific memory to the first usable path:
+The profile location must be independent of any specific LLM harness. Read/write user-specific memory at the first usable path:
 
-1. `$CODEX_HOME/memories/gt1000-profile.md`
-2. `~/.codex/memories/gt1000-profile.md`
+1. A profile path explicitly provided by the user.
+2. `$GT1000_PROFILE_PATH`.
+3. `$GT1000_PROFILE_DIR/gt1000-profile.md`.
+4. A harness-provided persistent user memory/config directory, if the active agent environment exposes one, using `gt1000-profile.md` inside it.
+5. `$XDG_CONFIG_HOME/gt1000/gt1000-profile.md`, or `~/.config/gt1000/gt1000-profile.md` when `XDG_CONFIG_HOME` is unset.
+6. Legacy fallback only: `$CODEX_HOME/memories/gt1000-profile.md` or `~/.codex/memories/gt1000-profile.md`.
 
-Create the `memories` directory if needed. Do not store this profile inside the reusable skill directory.
+Create the parent directory if needed. Do not store this profile inside the reusable skill directory. If a legacy harness-specific profile is found, load it and copy it to the first usable harness-neutral path before continuing.
 
 ## When To Ask
 
-Ask onboarding questions before rig-dependent recommendations, patch edit planning, or control-layout advice if no profile exists. For simple factual reads, answer first and offer onboarding only if it would improve future answers.
+Ask onboarding questions whenever no profile exists. Do not answer from generic assumptions first; establish the profile, write it locally, then continue with the user's GT-1000 request.
 
-If the user provides enough profile context unprompted, skip questions and write a concise profile from what they gave. Ask only for missing details that materially affect the immediate task.
+If the user provides enough profile context unprompted, skip the full interview and write a concise profile from what they gave. Ask only for missing details that materially affect the immediate task.
 
 ## Questions
 
