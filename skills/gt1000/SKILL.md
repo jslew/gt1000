@@ -1,34 +1,39 @@
 ---
 name: gt1000
-description: GT-1000 v4+ domain knowledge and bundled Python CLI for BOSS/Roland patch inspection, signal-chain explanation, physical switch/control mapping, Assign decoding, MIDI/SysEx reference lookup, and safe validated patch edits. Use when working on GT-1000 or GT-1000CORE behavior, manuals, parameter meanings, live patch descriptions, control assignments, or validated edit planning.
+description: GT-1000 v4+ musician-facing interface for conversing with a connected BOSS/Roland device: patch inspection, signal-chain explanation, physical controls, performance behavior, patch library/user-slot workflows, and safe validated musical edits. Use when working on GT-1000 or GT-1000CORE sounds, controls, routing, patch libraries, manual concepts, parameter meanings, live patch descriptions, or edit planning. Discuss CLI, SysEx, MIDI internals, or implementation details only when directly asked or when needed internally to keep an edit safe.
 ---
 
-# GT-1000 Knowledge And CLI
+# GT-1000 Musician Interface
 
 ## Scope
 
-Use the bundled GT-1000 references and CLI to inspect, explain, and safely edit a connected BOSS/Roland GT-1000 or GT-1000CORE.
+Use the bundled GT-1000 references and CLI internally to help a musician inspect, understand, organize, and safely edit a connected BOSS/Roland GT-1000 or GT-1000CORE.
 
-Do not emit arbitrary SysEx for writes. Use structured CLI commands and typed/validated builders.
+Do not send arbitrary low-level writes. Use supported, validated commands and intents.
 
-The skill scope is the GT-1000 as a whole: current patch buffer, user patches, Assigns, physical controls, MIDI behavior, and global/system settings. A narrow helper command is an implementation limitation, not a conceptual product boundary. When the current CLI cannot perform a requested edit, add or use a typed validator before writing instead of falling back to raw byte arrays.
+The user-facing scope is the GT-1000 as a musical device: sounds, signal chains, routing, blocks, patch/user-slot libraries, Assigns, physical controls, MIDI-facing performance behavior, and global/system settings. A narrow helper command is not a conceptual device boundary. If a requested edit is not supported by the current tooling, do not fake it or send arbitrary low-level data; explain the limitation or ask to extend the toolchain.
 
-## Skill Layout
+## Response Style
+
+Default to musician-facing language. Talk about what the patch sounds like, where blocks sit in the signal chain, what switches and pedals do, how user slots/banks/libraries behave, and what an edit will change while playing.
+
+Do not mention CLI commands, JSON fields, raw MIDI/SysEx addresses, encoded values, parser behavior, or implementation files in normal answers. Use those details internally, and surface them only when the user directly asks how the tooling works, asks for debugging details, or needs enough technical context to approve a potentially persistent or risky change.
+
+For edits, describe the musical intent and safety boundary first: what will change, whether it affects the temporary patch or a user slot/global setting, and whether verification/read-back succeeded. Keep protocol details out of the answer unless requested.
+
+## Runtime Resources
 
 Resolve paths relative to this `SKILL.md` file:
 
 - CLI wrapper: `scripts/gt1000-agent`
-- Python CLI implementation: `tools/gt1000/agent_cli.py`
 - Manual/wiki references: `references/gt1000-wiki/`
 - MIDI/SysEx references: `references/midi-reference/`
 - User profile onboarding: `references/user-profile-onboarding.md`
-- Manual refresh helper: `scripts/fetch-current-manuals.sh`
 
 ## Operational Principles
 
-- Always use the bundled CLI and markdown to interact with the device.
-- Use `scripts/gt1000-agent --pretty patch summary --live` as the default live read for patch descriptions.
-- Do not inspect `tools/gt1000/*.py` unless the CLI fails, returns ambiguous output, or the user asks to modify the toolchain.
+- Always use the bundled CLI and markdown internally to interact with the device.
+- Use `scripts/gt1000-agent --pretty patch musician-summary --live` as the default live read for patch descriptions; use `summary` when more structured detail is needed.
 - Run live reads sequentially. Separate processes can interleave GT-1000 replies on the same MIDI source.
 
 ## User Profile Memory
@@ -60,25 +65,25 @@ Load only the reference needed for the task:
 
 ## Progressive Disclosure Routing
 
-Keep routine patch work on the compact CLI outputs first. Do not load low-level MIDI tables, long manual extracts, or obscure parameter references unless the user request needs them or the CLI output is ambiguous.
+Keep routine patch work on compact device summaries first. Do not load low-level MIDI tables, long manual extracts, or obscure parameter references unless the user request needs them, the device output is ambiguous, or a safe edit requires internal validation.
 
 Use this routing:
 
 - Patch description, "what is this sound?", or quick signal-chain review: load the optional user profile, run `patch musician-summary` for a concise answer or `patch summary` when you need more structured detail, and use `descriptionSignalChainSummary`, `descriptionElements`, `controls`, and `activeAssigns`. Do not open MIDI reference pages unless a decoded field is unclear.
-- Patch comparison questions: use `patch diff <source> <target> --live` for user slots or `patch diff <before.json> <after.json>` for saved full patch dumps before opening lower-level views.
+- Patch comparison questions: use `patch diff <source> <target> --live` for user slots or `patch diff <before.json> <after.json>` for saved full patch dumps before opening lower-level views. Report the result as musical differences in sound, level, controls, routing, and library placement.
 - Setlist readiness questions: use `patch setlist-audit <bank-or-slots> --live` to check patch-level jumps, tuner access, BPM mismatches, expression-pedal changes, and SYSTEM-preference controls.
 - Patch loudness matching questions: use `patch level-audit <bank-or-slots> --live` before writing, then `patch normalize-levels <bank-or-slots> --target <level> --live --verify` when the user wants user-slot levels changed.
 - Common musician edit requests such as solo boost, tap tempo, delay toggle, tuner-on-control, or expression-volume setup: use `patch intent <intent> --live --verify` before dropping to lower-level control editors.
 - Switch/control questions: run `patch performance` first for stage-use questions and `patch controls` for raw control/Assign details. Open `references/midi-reference/patch-controls.md` only if a raw/unknown function appears or the user asks how a physical control is encoded.
 - Assign behavior, MIDI CC, tuner control, or assigned-off-block reachability: run `patch controls` or `patch summary` first. Open `references/midi-reference/assigns.md` only for source IDs, target min/max encoding, target table caveats, or write planning.
-- Installing tuner control: use `patch tuner-assign --live --verify` to install the tested Assign 16 / CC#80 tuner mapping. Ask before writing it persistently with `--user-slot`.
+- Installing tuner control: use `patch tuner-assign --live --verify` to install the supported tuner control mapping. Ask before writing it persistently with `--user-slot`.
 - Sending a MIDI CC for a known Assign source: use `midi cc <controller> <value> --channel N --live` only after confirming the mapped source and RX channel. Do not send raw MIDI bytes.
 - Sending a Program Change directly: prefer `patch select <slot>` for user-slot selection; use `midi pc <program> --channel N --live` only when the user explicitly asks for Program Change numbers or after checking `system pcmap`.
 - Sending Bank Select: use `midi bank-select <msb> [lsb] --channel N --live` only when the user explicitly needs bank-select/channel-voice behavior; follow it with `midi pc` if selecting via an external-style bank/program sequence. For selecting the GT-1000 itself, prefer `patch select` unless the user is deliberately testing Bank Select.
 - Signal-chain routing, divider/mixer behavior, chain element values, or reserved elements: run `patch chain` or `patch summary` first. Open `references/midi-reference/patch-effect.md` only when raw chain/routing details matter.
 - STOMPBOX questions: explain the user-facing caution from `references/gt1000-wiki/owner-manual.md`; use `patch stompbox --live` when the user asks whether a patch is using shared STOMPBOX slots.
 - System/global MIDI, IN/OUT, or control preference questions: use the relevant `system` CLI view first. Open `references/midi-reference/README.md` or address-map notes only when addresses, sizes, or SysEx behavior need explanation.
-- Connectivity or intermittent-timeout diagnosis: use `doctor --live` first so endpoint, SysEx, patch-read, user-slot, MIDI RX channel, and optional write/verify health are reported together.
+- Connectivity or intermittent-timeout diagnosis: use `doctor --live` first. Report user-actionable device connection findings first; include protocol/tooling details only if the user asks or they are needed for recovery.
 - System metronome BPM questions: use `system common` first. Open address-map notes only if the user asks about the underlying System Common address or BPM nibble encoding.
 - Manual-mode switch questions: use `system manual` first. Open address-map notes only if the user asks how manual-mode NUM functions are encoded.
 - Program Change mapping questions: use `system pcmap --bank N` first for a focused bank read, or omit `--bank` only when comparing the full map. Open address-map notes only if the user asks about storage layout or patch-value encoding.
@@ -93,7 +98,7 @@ Use this routing:
 
 ## Live Patch Inspection
 
-These commands read the current/temporary patch buffer (`10 00 00 00`) unless a command explicitly targets a user slot.
+Use these commands internally for live patch and library inspection. The musician-facing answer should describe the patch, controls, routing, levels, or user-slot/library behavior rather than the command output.
 
 ```sh
 scripts/gt1000-agent --pretty ports --live --timeout 8
@@ -143,14 +148,14 @@ scripts/gt1000-agent --pretty patch plan default
 scripts/gt1000-agent --pretty patch plan 4cm-template
 ```
 
-Temporary patch writes through validated CLI plans should be read-back verified:
+Temporary patch writes through validated CLI plans should be read-back verified internally:
 
 ```sh
 scripts/gt1000-agent --pretty patch apply default --live --verify --timeout 20
 scripts/gt1000-agent --pretty patch apply 4cm-template --live --verify --timeout 20
 ```
 
-Persistent patch writes may target any valid user slot. For global settings, MIDI settings, or unsupported edit intents, use or add a typed command that validates:
+Persistent patch writes may target any valid user slot. For global settings, MIDI settings, or unsupported edit intents, use or add a typed command that validates internally:
 
 - target memory area and patch/global address
 - parameter range and encoding
@@ -199,22 +204,9 @@ For physical switch mapping:
 4. If output is ambiguous, consult `references/midi-reference/patch-controls.md` and `references/midi-reference/assigns.md`.
 5. Report direct switch functions plus active Assign overlays.
 
-## Wiki Updates
-
-For reference updates:
-
-1. Refresh official manuals into scratch space with `scripts/fetch-current-manuals.sh`.
-2. Search extracted text with `rg`.
-3. Add concise paraphrased entries to `references/gt1000-wiki` or `references/midi-reference`.
-4. Do not commit downloaded PDFs or full extracted manual text.
-
 ## Safety Rules
 
 - The normal endpoint is `GT-1000`; avoid `GT-1000 DAW CTRL` unless deliberately targeting DAW control.
 - Ask before changing user patches, global/system settings, patch order, initialize/exchange operations, Assigns, or anything persistent.
 - SysEx writes are not gated the same way as Channel Voice messages; verify MIDI RX channel when CCs do not work.
-- Prefer typed intents and validators over raw byte arrays for every write.
-- Preserve tests that assert exact SysEx byte output when changing builders.
-- GT-1000/GT-1000CORE SysEx model ID is `00 00 00 4F`.
-- Roland/BOSS DT1/RQ1 checksums are calculated over address plus data/size only.
-- BPM values are encoded as four 4-bit nibbles of `BPM * 10`.
+- Use supported, validated intents for every write.

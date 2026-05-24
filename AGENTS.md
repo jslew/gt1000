@@ -6,6 +6,7 @@
 - Main code lives in `skills/gt1000/tools/gt1000`.
 - Top-level `tools/gt1000` files are compatibility wrappers only.
 - Main command surface is `scripts/gt1000-agent`.
+- The runtime skill at `skills/gt1000/SKILL.md` is a musician-facing interface. Keep CLI development, maintenance, and testing guidance in this `AGENTS.md` file or deeper implementation references, not in the skill, unless the detail directly guides a musician-facing device interaction.
 - Every CLI command should have unit test coverage and an explicit live test verification path. For commands that write, the live verification must use the command's validated/read-back verification flow where practical.
 - Useful checks:
   - `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -q`
@@ -17,10 +18,19 @@
   - `scripts/gt1000-agent --pretty patch plan default`
   - `scripts/gt1000-agent --pretty patch plan 4cm-template`
 
+## Skill Maintenance
+
+- Keep `skills/gt1000/SKILL.md` focused on musician-facing conversational behavior: sounds, signal chains, routing, controls, user slots/banks/libraries, and safe musical edits.
+- Do not put unit-test commands, destructive live-test recovery, CLI implementation notes, or package-maintenance workflow in the runtime skill.
+- Inspect `skills/gt1000/tools/gt1000/*.py` when developing or debugging the CLI, but avoid pulling implementation details into normal musician-facing answers unless directly asked.
+- If the current CLI cannot perform a requested musical edit, add or use a typed validator in the CLI rather than placing raw SysEx, naked byte arrays, or implementation workarounds in the skill.
+- For reference/wiki updates, refresh official manuals into scratch space with `skills/gt1000/scripts/fetch-current-manuals.sh`, search extracted text with `rg`, then add concise paraphrased entries to `skills/gt1000/references/gt1000-wiki` or `skills/gt1000/references/midi-reference`.
+- Do not commit downloaded PDFs or full extracted manual text.
+
 ## GT-1000 MIDI Details
 
 - Local MIDI reference wiki: start at `skills/gt1000/references/midi-reference/README.md` before changing SysEx, control/assign decoding, CLI patch inspection, or write behavior.
-- Local GT-1000 v4+ knowledge skill: `skills/gt1000/SKILL.md`; use it for manual/parameter-guide lookups, patch explanations, controls, and wiki updates.
+- Local GT-1000 v4+ knowledge skill: `skills/gt1000/SKILL.md`; use it for musician-facing manual/parameter-guide lookups, patch explanations, controls, and device workflows.
 - The GT-1000/GT-1000CORE SysEx model ID is `00 00 00 4F`.
 - Roland/BOSS DT1/RQ1 checksums are calculated over address plus data/size only.
 - GT-1000 BPM values are encoded as four 4-bit nibbles of `BPM * 10`; for example 120.0 BPM is `00 04 0B 00`.
