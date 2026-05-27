@@ -74,31 +74,55 @@ MIDI and system behavior:
 
 ## Install
 
-Install from this GitHub repo into an agent project:
+To install this skill, you can use the `skills` package manager. You can target all installed agents or specify a particular environment like Antigravity, Gemini, Claude, Codex, or ChatGPT.
 
+### Install for all agents on your system
+The easiest way is to install the skill for all detected agent environments at once:
 ```sh
-npx skills add jslew/gt1000 --skill gt1000 --agent codex
+npx skills add jslew/gt1000 --all
 ```
 
-Or install from the full URL:
+### Install for specific agents
+You can also target specific agent platforms using the `--agent` (or `-a`) flag:
 
+* **Antigravity**:
+  ```sh
+  npx skills add jslew/gt1000 --agent antigravity
+  ```
+* **Gemini**:
+  ```sh
+  npx skills add jslew/gt1000 --agent gemini
+  ```
+* **Claude / Claude Code**:
+  ```sh
+  npx skills add jslew/gt1000 --agent claude-code
+  ```
+* **Codex**:
+  ```sh
+  npx skills add jslew/gt1000 --agent codex
+  ```
+* **ChatGPT**:
+  ```sh
+  npx skills add jslew/gt1000 --agent chatgpt
+  ```
+* **Cursor**:
+  ```sh
+  npx skills add jslew/gt1000 --agent cursor
+  ```
+
+### Install from a local checkout
+If you have cloned the repository locally and want to install/link it:
 ```sh
-npx skills add https://github.com/jslew/gt1000 --skill gt1000 --agent codex
+npx skills add . --skill gt1000 --agent * --copy -y
 ```
 
-From a local checkout:
-
+List the available skills in a directory or repository without installing:
 ```sh
-npx skills add . --skill gt1000 --agent codex --copy -y
-```
-
-List available skills in the repo:
-
-```sh
-npx skills add . --list
+npx skills add jslew/gt1000 --list
 ```
 
 Restart or reload your agent environment after installation if it does not pick up new skills automatically.
+
 
 ## Requirements
 
