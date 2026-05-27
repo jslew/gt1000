@@ -123,6 +123,18 @@ npx skills add jslew/gt1000 --list
 
 Restart or reload your agent environment after installation if it does not pick up new skills automatically.
 
+### Alternative Installer Options
+
+#### GitHub CLI (`gh skill`)
+If you use the GitHub CLI, you can use the native `gh skill` extension to install the skill for your agents:
+```sh
+gh skill install jslew/gt1000 --agent antigravity
+```
+
+#### Manual / Direct Installation
+If you prefer not to use a CLI tool, you can copy the `skills/gt1000` directory directly into your project's local `.agents/skills/` directory. Most IDE-based agents (like Cursor, Cline, or Antigravity) will automatically discover and load the skill from there.
+
+
 
 ## Requirements
 
