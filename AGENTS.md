@@ -14,7 +14,9 @@
   - `GT1000_LIVE=1 GT1000_ALLOW_DESTRUCTIVE=1 GT1000_LIVE_BACKUP_DIR=/tmp/gt1000-live-backups PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_live_skill -q`
   - `scripts/gt1000-agent --pretty ports --live --timeout 8`
   - `scripts/gt1000-agent --pretty patch overview --live --timeout 8`
-  - `scripts/gt1000-agent --pretty patch chain --live --timeout 8`
+  - `scripts/gt1000-agent --pretty patch chain --live --timeout 15`
+  - `scripts/gt1000-agent --pretty patch musician-summary --live --timeout 15`
+  - `scripts/gt1000-agent --pretty patch slot U01-1 --live --view musician-summary --timeout 30`
   - `scripts/gt1000-agent --pretty patch plan default`
   - `scripts/gt1000-agent --pretty patch plan 4cm-template`
 
@@ -50,6 +52,7 @@
 ## Python Live MIDI Notes
 
 - `skills/gt1000/tools/gt1000/live.py` uses Python `ctypes` against CoreMIDI.
+- Codex CLI live MIDI verification must run outside the normal workspace/read-only sandbox, for example with yolo/`--dangerously-bypass-approvals-and-sandbox` or `-s danger-full-access`. The normal sandbox can deny CoreMIDI Mach service access and look like a GT-1000 timeout; the CLI includes a fast-fail sandbox/CoreMIDI preflight for live commands.
 - CoreMIDI callbacks run on CoreMIDI-owned threads. Copy packet bytes in the callback, then update guarded Python state.
 - Run live patch reads sequentially. Separate CLI processes can interleave GT-1000 replies on the same MIDI source.
 - If `ports --live` itself hangs or times out, stop live testing and recover CoreMIDI/the USB connection before continuing. Quit BOSS Tone Studio if it is open, then power-cycle or reconnect the GT-1000. If USB still shows `GT-1000` but CoreMIDI `MIDIGetNumberOfDestinations()` hangs, restart macOS before more live verification.
@@ -69,10 +72,10 @@
 - Current proven commands:
   - `scripts/gt1000-agent --pretty patch apply default --live --verify --timeout 20`
   - `scripts/gt1000-agent --pretty patch apply 4cm-template --live --verify --timeout 20`
-  - `scripts/gt1000-agent --pretty patch apply default --live --user-slot U10-1 --verify --timeout 20`
-  - `scripts/gt1000-agent --pretty patch apply 4cm-template --live --user-slot U10-2 --verify --timeout 20`
-  - `scripts/gt1000-agent --pretty patch set delay1 time 380 --live --user-slot U10-3 --verify`
-  - `scripts/gt1000-agent --pretty patch clone U10-4 U11-1 --live --verify --timeout 20`
+  - `scripts/gt1000-agent --pretty patch apply default --live --user-slot U10-1 --verify --timeout 30`
+  - `scripts/gt1000-agent --pretty patch apply 4cm-template --live --user-slot U10-2 --verify --timeout 30`
+  - `scripts/gt1000-agent --pretty patch set delay1 time 380 --live --user-slot U10-3 --verify --timeout 30`
+  - `scripts/gt1000-agent --pretty patch clone U10-4 U11-1 --live --verify --timeout 30`
 
 ## Agent-Control Direction
 

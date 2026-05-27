@@ -25,7 +25,7 @@ Offsets are relative to PatchEfct.
 | `44` | Looper play level |
 | `45`...`51` | Main speaker simulator L/R |
 | `52`...`5E` | Sub speaker simulator L/R |
-| `60` | Master patch level |
+| `5F`...`60` | Master patch level, two nibbles |
 | `61`...`64` | Master BPM, four nibbles of `BPM * 10` |
 | `65` | Master key |
 | `66` | Master Amp CTL1 |

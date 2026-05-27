@@ -688,15 +688,15 @@ class PatchEditTests(unittest.TestCase):
     def test_master_set_plan_encodes_named_patch_master_fields(self):
         level = patch_edit.build_master_set_plan("level", "95", slot="U03-2")
         self.assertEqual(level.id, "master-set:level:U03-2")
-        self.assertEqual(level.writes[0].address, [0x20, 0x0B, 0x10, 0x60])
-        self.assertEqual(level.writes[0].data, [95])
+        self.assertEqual(level.writes[0].address, [0x20, 0x0B, 0x10, 0x5F])
+        self.assertEqual(level.writes[0].data, [5, 15])
 
         record = [0] * live.seven_bit_address_value([0x00, 0x00, 0x01, 0x1C])
         record_level = patch_edit.build_master_set_record_plan("level", "95", record, slot="U03-2")
         self.assertEqual(record_level.id, "master-set:level:U03-2")
         self.assertEqual(record_level.writes[0].address, [0x20, 0x0B, 0x10, 0x00])
         self.assertEqual(len(record_level.writes[0].data), len(record))
-        self.assertEqual(record_level.writes[0].data[0x60], 95)
+        self.assertEqual(record_level.writes[0].data[0x5F:0x61], [5, 15])
 
         key = patch_edit.build_master_set_plan("key", "Db(Bbm)")
         self.assertEqual(key.writes[0].address, [0x10, 0x00, 0x10, 0x65])

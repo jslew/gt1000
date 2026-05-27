@@ -1,4 +1,6 @@
 import json
+import io
+import multiprocessing
 import sys
 import time
 import tempfile
@@ -25,6 +27,19 @@ def live_verified_command_paths():
 
 
 class AgentCLITests(unittest.TestCase):
+    def setUp(self):
+        self._validation_log_dir = tempfile.TemporaryDirectory()
+        self._validation_log_env = unittest.mock.patch.dict(
+            agent_cli.os.environ,
+            {agent_cli.ENCODING_VALIDATION_LOG_ENV: str(Path(self._validation_log_dir.name) / "encoding-validations.jsonl")},
+            clear=False,
+        )
+        self._validation_log_env.start()
+
+    def tearDown(self):
+        self._validation_log_env.stop()
+        self._validation_log_dir.cleanup()
+
     def test_ports_parser_and_live_timeout_wrapper(self):
         args = agent_cli.build_parser().parse_args(["ports", "--live", "--timeout", "2"])
         self.assertEqual(args.command, "ports")
@@ -35,6 +50,20 @@ class AgentCLITests(unittest.TestCase):
         with self.assertRaises(agent_cli.CLIError) as context:
             agent_cli.live_call_with_timeout("test", 0.1, time.sleep, 5)
         self.assertIn("did not finish", str(context.exception))
+        self.assertIn("Verify BOSS Tone Studio", str(context.exception))
+
+    def test_stop_live_process_kills_running_child(self):
+        context = multiprocessing.get_context("spawn")
+        process = context.Process(target=time.sleep, args=(30,))
+        process.start()
+        try:
+            agent_cli.stop_live_process(process, terminate_timeout=0.1)
+            self.assertFalse(process.is_alive())
+        finally:
+            if process.is_alive():
+                process.kill()
+                process.join(1)
+            process.close()
 
     def test_live_timeout_wrapper_preserves_kwargs_and_mock_fallback(self):
         def kwonly(*, value):
@@ -45,6 +74,286 @@ class AgentCLITests(unittest.TestCase):
         mock = MagicMock(return_value={"ok": True})
         self.assertEqual(agent_cli.live_call_with_timeout("mock", 2, mock, timeout=8.0), {"ok": True})
         mock.assert_called_once_with(timeout=8.0)
+
+    def test_diagnostic_log_option_writes_jsonl_events(self):
+        parser = agent_cli.build_parser()
+        args = parser.parse_args(["--diagnostic-log", "diag.jsonl", "ports", "--live"])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / args.diagnostic_log
+            old_value = agent_cli.os.environ.get(agent_cli.DIAGNOSTIC_LOG_ENV)
+            try:
+                args.diagnostic_log = str(path)
+                result = agent_cli.configure_diagnostic_logging(args)
+                agent_cli.diagnostic_event("test.event", value=7)
+            finally:
+                if old_value is None:
+                    agent_cli.os.environ.pop(agent_cli.DIAGNOSTIC_LOG_ENV, None)
+                else:
+                    agent_cli.os.environ[agent_cli.DIAGNOSTIC_LOG_ENV] = old_value
+
+            self.assertEqual(result, str(path))
+            lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(lines[0]["event"], "diagnostic.start")
+            self.assertEqual(lines[1]["event"], "test.event")
+            self.assertEqual(lines[1]["value"], 7)
+
+    def test_diagnostic_log_normalization_keeps_subcommand_when_value_is_omitted(self):
+        argv = ["--pretty", "--diagnostic-log", "patch", "encoding-status"]
+        normalized = agent_cli.normalize_diagnostic_log_argv(argv)
+
+        self.assertEqual(normalized, ["--pretty", "--diagnostic-log=auto", "patch", "encoding-status"])
+        args = agent_cli.build_parser().parse_args(normalized)
+        self.assertEqual(args.diagnostic_log, "auto")
+        self.assertEqual(args.command, "patch")
+        self.assertEqual(args.patch_command, "encoding-status")
+
+    def test_diagnostic_log_normalization_preserves_explicit_path(self):
+        argv = ["--diagnostic-log", "diag.jsonl", "ports", "--live"]
+
+        self.assertEqual(agent_cli.normalize_diagnostic_log_argv(argv), argv)
+
+    def test_validate_encoding_auto_enables_diagnostic_log(self):
+        parser = agent_cli.build_parser()
+        args = parser.parse_args(["patch", "validate-encoding", "master", "level", "90", "--live"])
+
+        with tempfile.TemporaryDirectory() as directory:
+            old_value = agent_cli.os.environ.get(agent_cli.DIAGNOSTIC_LOG_ENV)
+            try:
+                with unittest.mock.patch.dict(agent_cli.os.environ, {"GT1000_DIAGNOSTIC_DIR": directory}, clear=False):
+                    path = agent_cli.configure_diagnostic_logging(args)
+            finally:
+                if old_value is None:
+                    agent_cli.os.environ.pop(agent_cli.DIAGNOSTIC_LOG_ENV, None)
+                else:
+                    agent_cli.os.environ[agent_cli.DIAGNOSTIC_LOG_ENV] = old_value
+
+            self.assertIsNotNone(path)
+            self.assertTrue(Path(path).is_file())
+            self.assertEqual(Path(path).parent, Path(directory))
+
+    def test_validate_encoding_batch_auto_enables_diagnostic_log(self):
+        parser = agent_cli.build_parser()
+        args = parser.parse_args(["patch", "validate-encoding-batch", "master.level=90", "--live"])
+
+        with tempfile.TemporaryDirectory() as directory:
+            old_value = agent_cli.os.environ.get(agent_cli.DIAGNOSTIC_LOG_ENV)
+            try:
+                with unittest.mock.patch.dict(agent_cli.os.environ, {"GT1000_DIAGNOSTIC_DIR": directory}, clear=False):
+                    path = agent_cli.configure_diagnostic_logging(args)
+            finally:
+                if old_value is None:
+                    agent_cli.os.environ.pop(agent_cli.DIAGNOSTIC_LOG_ENV, None)
+                else:
+                    agent_cli.os.environ[agent_cli.DIAGNOSTIC_LOG_ENV] = old_value
+
+            self.assertIsNotNone(path)
+            self.assertTrue(Path(path).is_file())
+            self.assertEqual(Path(path).parent, Path(directory))
+
+    def test_validate_encoding_scope_auto_enables_diagnostic_log(self):
+        parser = agent_cli.build_parser()
+        args = parser.parse_args(["patch", "validate-encoding-scope", "master", "--live"])
+
+        with tempfile.TemporaryDirectory() as directory:
+            old_value = agent_cli.os.environ.get(agent_cli.DIAGNOSTIC_LOG_ENV)
+            try:
+                with unittest.mock.patch.dict(agent_cli.os.environ, {"GT1000_DIAGNOSTIC_DIR": directory}, clear=False):
+                    path = agent_cli.configure_diagnostic_logging(args)
+            finally:
+                if old_value is None:
+                    agent_cli.os.environ.pop(agent_cli.DIAGNOSTIC_LOG_ENV, None)
+                else:
+                    agent_cli.os.environ[agent_cli.DIAGNOSTIC_LOG_ENV] = old_value
+
+            self.assertIsNotNone(path)
+            self.assertTrue(Path(path).is_file())
+            self.assertEqual(Path(path).parent, Path(directory))
+
+    def test_parse_encoding_validation_case_accepts_dot_and_colon_forms(self):
+        self.assertEqual(
+            agent_cli.parse_encoding_validation_case("master.level=90"),
+            ("master", "level", "90"),
+        )
+        self.assertEqual(
+            agent_cli.parse_encoding_validation_case("block:delay1.sw=on"),
+            ("block", "delay1.sw", "on"),
+        )
+        with self.assertRaises(ValueError):
+            agent_cli.parse_encoding_validation_case("delay1.sw=on")
+
+    def test_record_encoding_validation_writes_compact_jsonl_record(self):
+        result = {
+            "area": "master",
+            "field": "level",
+            "slot": "U10-1",
+            "targetValue": "90",
+            "confidenceBefore": {"confidence": "legacy"},
+            "confidenceRecommendation": "live-verified",
+            "write": {"verified": True},
+            "restored": True,
+            "restore": {"verified": True},
+            "before": [
+                {
+                    "address": ["20", "2D", "10", "5F"],
+                    "readAddress": ["20", "2D", "10", "5F"],
+                    "readSize": ["00", "00", "00", "02"],
+                    "readOffset": 0,
+                    "data": [5, 10],
+                    "dataHex": "05 0A",
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = Path(directory) / "encoding-validations.jsonl"
+            with unittest.mock.patch.dict(
+                agent_cli.os.environ,
+                {
+                    agent_cli.DIAGNOSTIC_LOG_ENV: str(Path(directory) / "diag.jsonl"),
+                    agent_cli.ENCODING_VALIDATION_LOG_ENV: str(log_path),
+                },
+                clear=False,
+            ):
+                path = agent_cli.record_encoding_validation(result, "patch.master.level")
+
+            self.assertEqual(path, str(log_path))
+            record = json.loads(log_path.read_text(encoding="utf-8").splitlines()[0])
+            self.assertEqual(record["fieldId"], "patch.master.level")
+            self.assertEqual(record["confidenceRecommendation"], "live-verified")
+            self.assertEqual(record["before"][0]["dataHex"], "05 0A")
+            self.assertNotIn("data", record["before"][0])
+
+    def test_encoding_status_includes_validation_log_summary(self):
+        records = [
+            {"fieldId": "patch.block.delay3.sw", "confidenceRecommendation": "not-verified", "slot": "U10-1"},
+            {
+                "fieldId": "patch.block.delay3.sw",
+                "createdAt": "2026-05-25T20:30:00-0400",
+                "confidenceRecommendation": "live-verified",
+                "slot": "U10-1",
+                "targetValue": "on",
+                "diagnosticLog": "/tmp/diag.jsonl",
+                "writeVerified": True,
+                "restored": True,
+                "restoreVerified": True,
+            },
+            {"malformed": True},
+        ]
+
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = Path(directory) / "encoding-validations.jsonl"
+            log_path.write_text(
+                "\n".join(json.dumps(record) for record in records) + "\nnot json\n",
+                encoding="utf-8",
+            )
+            with unittest.mock.patch.dict(agent_cli.os.environ, {agent_cli.ENCODING_VALIDATION_LOG_ENV: str(log_path)}, clear=False):
+                status = agent_cli.cmd_patch_encoding_status(
+                    agent_cli.build_parser().parse_args(["patch", "encoding-status", "patch.block.delay3.sw"])
+                )
+
+        self.assertEqual(status["validationLog"], str(log_path))
+        self.assertEqual(status["trustedCount"], 1)
+        self.assertEqual(status["untrustedCount"], 0)
+        entry = status["entries"][0]
+        self.assertEqual(entry["id"], "patch.block.delay3.sw")
+        self.assertEqual(entry["confidence"], "legacy")
+        self.assertEqual(entry["effectiveConfidence"], "live-verified")
+        self.assertTrue(entry["trustedEncoding"])
+        self.assertEqual(entry["validationCount"], 2)
+        self.assertEqual(entry["validationRecommendations"]["live-verified"], 1)
+        self.assertEqual(entry["validationSuggestedConfidence"], "live-verified")
+        self.assertEqual(entry["latestValidation"]["targetValue"], "on")
+        self.assertNotIn("before", entry["latestValidation"])
+
+    def test_encoding_status_infers_block_family_from_representative_validations(self):
+        records = [
+            {
+                "fieldId": field_id,
+                "confidenceRecommendation": "live-verified",
+                "writeVerified": True,
+                "restored": False,
+                "restoreVerified": None,
+                "slot": "U10-1",
+            }
+            for field_id in [
+                "patch.block.chorus.effectLevel",
+                "patch.block.delay1.effectLevel",
+                "patch.block.fx1AWah.effectLevel",
+            ]
+        ]
+        log_path = Path(agent_cli.os.environ[agent_cli.ENCODING_VALIDATION_LOG_ENV])
+        log_path.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
+
+        status = agent_cli.cmd_patch_encoding_status(
+            agent_cli.build_parser().parse_args(["patch", "encoding-status", "patch.block.delay2.effectLevel"])
+        )
+
+        entry = status["entries"][0]
+        self.assertEqual(entry["confidence"], "legacy")
+        self.assertEqual(entry["effectiveConfidence"], "inferred")
+        self.assertFalse(entry["trustedEncoding"])
+        self.assertEqual(entry["familyValidation"]["successfulBlockCount"], 3)
+        effective = agent_cli.effective_encoding_confidence("patch.block.delay2.effectLevel")
+        self.assertEqual(effective["confidence"], "inferred")
+        self.assertEqual(effective["semanticConfidence"], "legacy")
+        self.assertIn("layout/encoding evidence only", effective["evidence"])
+
+    def test_parser_defaults_use_live_timeout_strategy(self):
+        parser = agent_cli.build_parser()
+        cases = [
+            (["ports", "--live"], agent_cli.QUICK_TIMEOUT),
+            (["patch", "overview", "--live"], agent_cli.QUICK_TIMEOUT),
+            (["patch", "musician-summary", "--live"], agent_cli.FOCUSED_TIMEOUT),
+            (["patch", "performance", "--live"], agent_cli.FOCUSED_TIMEOUT),
+            (["patch", "summary", "--live"], agent_cli.FULL_READ_TIMEOUT),
+            (["patch", "slot", "U01-1", "--live", "--view", "musician-summary"], agent_cli.PERSISTENT_TIMEOUT),
+            (["patch", "bank", "U01", "--live", "--view", "musician-summary"], agent_cli.PERSISTENT_TIMEOUT),
+            (["patch", "setlist-audit", "U10", "--live"], agent_cli.FULL_READ_TIMEOUT),
+            (["patch", "diff", "U10-1", "U10-2", "--live"], agent_cli.PERSISTENT_TIMEOUT),
+            (["patch", "clone", "U10-1", "U10-2", "--live"], agent_cli.PERSISTENT_TIMEOUT),
+            (["patch", "export", "U10-1", "--output", "backup.json", "--live"], agent_cli.PERSISTENT_TIMEOUT),
+            (["patch", "enable", "delay1", "--live", "--verify"], agent_cli.FULL_READ_TIMEOUT),
+            (["patch", "system-control-set", "ctl1", "tuner", "--live", "--verify"], agent_cli.PERSISTENT_TIMEOUT),
+        ]
+        for argv, expected_timeout in cases:
+            with self.subTest(argv=argv):
+                self.assertEqual(parser.parse_args(argv).timeout, expected_timeout)
+
+    def test_live_midi_environment_fast_fails_in_codex_sandbox(self):
+        with unittest.mock.patch.dict(agent_cli.os.environ, {"CODEX_SANDBOX": "workspace-write"}, clear=False):
+            with unittest.mock.patch.object(agent_cli, "macos_coremidi_mach_lookup_allowed", return_value=True):
+                reason = agent_cli.live_midi_environment_block_reason()
+
+        self.assertEqual(reason, "workspace-write sandbox is active")
+
+    def test_live_midi_environment_fast_fails_when_seatbelt_denies_coremidi(self):
+        with unittest.mock.patch.dict(agent_cli.os.environ, {}, clear=False):
+            agent_cli.os.environ.pop("CODEX_SANDBOX", None)
+            agent_cli.os.environ.pop("SANDBOX_MODE", None)
+            with unittest.mock.patch.object(agent_cli, "macos_coremidi_mach_lookup_allowed", return_value=False):
+                reason = agent_cli.live_midi_environment_block_reason()
+
+        self.assertIn("CoreMIDI", reason)
+
+    def test_live_midi_sandbox_override_allows_experimental_probe(self):
+        with unittest.mock.patch.dict(agent_cli.os.environ, {
+            "CODEX_SANDBOX": "workspace-write",
+            "GT1000_ALLOW_SANDBOXED_COREMIDI": "1",
+        }, clear=False):
+            reason = agent_cli.live_midi_environment_block_reason()
+
+        self.assertIsNone(reason)
+
+    def test_main_fast_fails_live_command_before_touching_coremidi(self):
+        stderr = io.StringIO()
+        with unittest.mock.patch.dict(agent_cli.os.environ, {"CODEX_SANDBOX": "workspace-write"}, clear=False):
+            with unittest.mock.patch.object(agent_cli.live, "list_ports") as list_ports:
+                with unittest.mock.patch("sys.stderr", stderr):
+                    code = agent_cli.main(["ports", "--live", "--timeout", "8"])
+
+        self.assertEqual(code, 77)
+        self.assertIn("execution sandbox", stderr.getvalue())
+        list_ports.assert_not_called()
 
     def test_doctor_parser_and_status_from_mocked_checks(self):
         args = agent_cli.build_parser().parse_args(["doctor", "--live", "--user-slot", "U10-1", "--write-check"])
@@ -168,6 +477,216 @@ class AgentCLITests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertIs(live_call.call_args_list[0].args[2], agent_cli.patch_edit.read_data_sets_sequential_session)
+
+    def test_verify_plan_reads_exact_bytes_for_live_verified_level_write(self):
+        address = agent_cli.patch_master_level_address("U10-1")
+        plan = agent_cli.patch_edit.PatchPlan(
+            "verify-level",
+            "Verify level",
+            [agent_cli.live.PatchWrite("Level", address, [5, 10])],
+        )
+
+        def fake_live_call(label, process_timeout, func, *, timeout, requests):
+            self.assertEqual(requests[0].address, address)
+            self.assertEqual(requests[0].size, [0x00, 0x00, 0x00, 0x02])
+            return {agent_cli.live.address_key(requests[0].address): [5, 10]}
+
+        live_call = MagicMock(side_effect=fake_live_call)
+        original = agent_cli.live_call_with_timeout
+        agent_cli.live_call_with_timeout = live_call
+        try:
+            result = agent_cli.verify_plan_with_timeout(plan, timeout=9)
+        finally:
+            agent_cli.live_call_with_timeout = original
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["checks"][0]["readOffset"], 0)
+        self.assertEqual(result["checks"][0]["actualHex"], "05 0A")
+
+    def test_verify_plan_uses_short_timeout_for_tiny_exact_reads(self):
+        address = agent_cli.patch_master_level_address("U10-1")
+        plan = agent_cli.patch_edit.PatchPlan(
+            "verify-level",
+            "Verify level",
+            [agent_cli.live.PatchWrite("Level", address, [5, 10])],
+        )
+
+        def fake_live_call(label, process_timeout, func, *, timeout, requests):
+            self.assertEqual(timeout, agent_cli.TARGETED_READ_TIMEOUT)
+            self.assertLess(process_timeout, 10)
+            return {agent_cli.live.address_key(requests[0].address): [5, 10]}
+
+        live_call = MagicMock(side_effect=fake_live_call)
+        original = agent_cli.live_call_with_timeout
+        agent_cli.live_call_with_timeout = live_call
+        try:
+            result = agent_cli.verify_plan_with_timeout(plan, timeout=20)
+        finally:
+            agent_cli.live_call_with_timeout = original
+
+        self.assertTrue(result["ok"])
+
+    def test_verify_plan_exact_mode_reads_write_range_without_confidence_gate(self):
+        address = agent_cli.patch_edit.remap_clone_address(
+            agent_cli.patch_edit.parameter_address(
+                agent_cli.patch_edit.find_patch_block("delay3"),
+                0,
+            ),
+            "U10-1",
+        )
+        plan = agent_cli.patch_edit.PatchPlan(
+            "verify-delay3-sw",
+            "Verify Delay 3 switch",
+            [agent_cli.live.PatchWrite("Delay 3 switch", address, [1])],
+        )
+
+        def fake_live_call(label, process_timeout, func, *, timeout, requests):
+            self.assertEqual(requests[0].address, address)
+            self.assertEqual(requests[0].size, [0x00, 0x00, 0x00, 0x01])
+            return {agent_cli.live.address_key(requests[0].address): [1]}
+
+        live_call = MagicMock(side_effect=fake_live_call)
+        original = agent_cli.live_call_with_timeout
+        agent_cli.live_call_with_timeout = live_call
+        try:
+            result = agent_cli.verify_plan_with_timeout(plan, timeout=20, exact=True)
+        finally:
+            agent_cli.live_call_with_timeout = original
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["checks"][0]["readOffset"], 0)
+
+    def test_verify_plan_reads_exact_bytes_for_live_verified_block_parameter(self):
+        address = agent_cli.patch_edit.remap_clone_address(
+            agent_cli.patch_edit.parameter_address(
+                agent_cli.patch_edit.find_patch_block("delay1"),
+                0,
+            ),
+            "U10-1",
+        )
+        plan = agent_cli.patch_edit.PatchPlan(
+            "verify-delay1-sw",
+            "Verify Delay 1 switch",
+            [agent_cli.live.PatchWrite("Delay 1 switch", address, [1])],
+        )
+
+        def fake_live_call(label, process_timeout, func, *, timeout, requests):
+            self.assertEqual(requests[0].address, address)
+            self.assertEqual(requests[0].size, [0x00, 0x00, 0x00, 0x01])
+            return {agent_cli.live.address_key(requests[0].address): [1]}
+
+        live_call = MagicMock(side_effect=fake_live_call)
+        original = agent_cli.live_call_with_timeout
+        agent_cli.live_call_with_timeout = live_call
+        try:
+            result = agent_cli.verify_plan_with_timeout(plan, timeout=9)
+        finally:
+            agent_cli.live_call_with_timeout = original
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["checks"][0]["readOffset"], 0)
+        self.assertEqual(result["checks"][0]["actualHex"], "01")
+
+    def test_verify_plan_reads_exact_bytes_for_live_verified_nibble_block_parameter(self):
+        address = agent_cli.patch_edit.remap_clone_address(
+            agent_cli.patch_edit.parameter_address(
+                agent_cli.patch_edit.find_patch_block("delay1"),
+                1,
+            ),
+            "U10-1",
+        )
+        expected = [0x00, 0x01, 0x0A, 0x04]
+        plan = agent_cli.patch_edit.PatchPlan(
+            "verify-delay1-time",
+            "Verify Delay 1 time",
+            [agent_cli.live.PatchWrite("Delay 1 time", address, expected)],
+        )
+
+        def fake_live_call(label, process_timeout, func, *, timeout, requests):
+            self.assertEqual(requests[0].address, address)
+            self.assertEqual(requests[0].size, [0x00, 0x00, 0x00, 0x04])
+            return {agent_cli.live.address_key(requests[0].address): expected}
+
+        live_call = MagicMock(side_effect=fake_live_call)
+        original = agent_cli.live_call_with_timeout
+        agent_cli.live_call_with_timeout = live_call
+        try:
+            result = agent_cli.verify_plan_with_timeout(plan, timeout=9)
+        finally:
+            agent_cli.live_call_with_timeout = original
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["checks"][0]["readOffset"], 0)
+        self.assertEqual(result["checks"][0]["actualHex"], "00 01 0A 04")
+
+    def test_verify_plan_uses_validation_log_for_effective_exact_read(self):
+        address = agent_cli.patch_edit.remap_clone_address(
+            agent_cli.patch_edit.parameter_address(
+                agent_cli.patch_edit.find_patch_block("delay3"),
+                1,
+            ),
+            "U10-1",
+        )
+        expected = [0x00, 0x01, 0x0A, 0x04]
+        plan = agent_cli.patch_edit.PatchPlan(
+            "verify-delay3-time",
+            "Verify Delay 3 time",
+            [agent_cli.live.PatchWrite("Delay 3 time", address, expected)],
+        )
+
+        def fake_live_call(label, process_timeout, func, *, timeout, requests):
+            self.assertEqual(requests[0].address, address)
+            self.assertEqual(requests[0].size, [0x00, 0x00, 0x00, 0x04])
+            return {agent_cli.live.address_key(requests[0].address): expected}
+
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = Path(directory) / "encoding-validations.jsonl"
+            log_path.write_text(json.dumps({
+                "fieldId": "patch.block.delay3.time",
+                "confidenceRecommendation": "live-verified",
+                "writeVerified": True,
+                "restored": True,
+                "restoreVerified": True,
+                "diagnosticLog": "/tmp/diag.jsonl",
+            }) + "\n", encoding="utf-8")
+            live_call = MagicMock(side_effect=fake_live_call)
+            original = agent_cli.live_call_with_timeout
+            agent_cli.live_call_with_timeout = live_call
+            try:
+                with unittest.mock.patch.dict(agent_cli.os.environ, {agent_cli.ENCODING_VALIDATION_LOG_ENV: str(log_path)}, clear=False):
+                    result = agent_cli.verify_plan_with_timeout(plan, timeout=9)
+            finally:
+                agent_cli.live_call_with_timeout = original
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["checks"][0]["readOffset"], 0)
+        self.assertEqual(result["checks"][0]["actualHex"], "00 01 0A 04")
+
+    def test_validation_record_requires_verified_write_and_restore_for_effective_confidence(self):
+        self.assertTrue(agent_cli.validation_record_supports_effective_confidence({
+            "confidenceRecommendation": "live-verified",
+            "writeVerified": True,
+            "restored": True,
+            "restoreVerified": True,
+        }))
+        self.assertTrue(agent_cli.validation_record_supports_effective_confidence({
+            "confidenceRecommendation": "live-verified",
+            "writeVerified": True,
+            "restored": False,
+            "restoreVerified": None,
+        }))
+        self.assertFalse(agent_cli.validation_record_supports_effective_confidence({
+            "confidenceRecommendation": "live-verified",
+            "writeVerified": True,
+            "restored": True,
+            "restoreVerified": False,
+        }))
+        self.assertFalse(agent_cli.validation_record_supports_effective_confidence({
+            "confidenceRecommendation": "live-verified",
+            "writeVerified": False,
+            "restored": True,
+            "restoreVerified": True,
+        }))
 
     def test_restore_point_captures_previous_bytes_for_writes(self):
         plan = agent_cli.patch_edit.PatchPlan(
@@ -338,7 +857,7 @@ class AgentCLITests(unittest.TestCase):
         with unittest.mock.patch.dict(agent_cli.os.environ, {"GT1000_LENIENT_READ_BATCH_SIZE": "0"}):
             self.assertEqual(agent_cli.lenient_read_batch_size(), 1)
 
-    def test_required_patch_read_retries_records_independently(self):
+    def test_required_patch_read_batches_required_records_and_retries_missing(self):
         requests = [
             agent_cli.live.PatchReadRequest("Patch Common", [0x20, 0x00, 0x00, 0x00], [0, 0, 0, 1]),
             agent_cli.live.PatchReadRequest("Patch Effect", [0x20, 0x00, 0x10, 0x00], [0, 0, 0, 1]),
@@ -346,10 +865,13 @@ class AgentCLITests(unittest.TestCase):
         calls = []
 
         def fake_strict_read(label, timeout, requests, reader=agent_cli.patch_edit.read_data_sets_batched, attempts=3):
+            self.assertIs(reader, agent_cli.patch_edit.read_data_sets_lenient_session)
+            self.assertEqual(attempts, 1)
+            calls.append([request.label for request in requests])
+            if len(calls) == 1:
+                request = requests[1]
+                return {agent_cli.live.address_key(request.address): [len(calls)]}
             request = requests[0]
-            calls.append(request.label)
-            if request.label == "Patch Common" and calls.count("Patch Common") == 1:
-                raise agent_cli.CLIError("transient")
             return {agent_cli.live.address_key(request.address): [len(calls)]}
 
         original_strict = agent_cli.read_patch_records_with_timeout
@@ -366,7 +888,7 @@ class AgentCLITests(unittest.TestCase):
             agent_cli.read_patch_records_lenient_with_timeout = original_lenient
             agent_cli.read_patch_records_with_timeout = original_strict
 
-        self.assertEqual(calls, ["Patch Common", "Patch Effect", "Patch Common"])
+        self.assertEqual(calls, [["Patch Common", "Patch Effect"], ["Patch Common"]])
         self.assertEqual(sorted(result), ["20 00 00 00", "20 00 10 00"])
 
     def test_clone_read_reads_required_core_records_before_optional_core(self):
@@ -544,25 +1066,159 @@ class AgentCLITests(unittest.TestCase):
         self.assertEqual(master["id"], "master")
         self.assertEqual(master["command"], "patch master-set <field> <value>")
         master_parameters = {parameter["id"]: parameter for parameter in master["namedParameters"]}
-        self.assertEqual(master_parameters["level"]["offset"], 0x60)
-        self.assertEqual(master_parameters["level"]["kind"], "byte")
-        self.assertEqual(master_parameters["level"]["byteCount"], 1)
+        self.assertEqual(master_parameters["level"]["offset"], 0x5F)
+        self.assertEqual(master_parameters["level"]["kind"], "nibbles2")
+        self.assertEqual(master_parameters["level"]["byteCount"], 2)
+        self.assertEqual(master_parameters["level"]["encodingConfidence"]["confidence"], "live-verified")
         self.assertIn("input-sensitivity", master_parameters)
 
         controls = agent_cli.cmd_patch_schema(agent_cli.build_parser().parse_args(["patch", "schema", "controls"]))
         self.assertEqual(controls["id"], "controls")
+        self.assertEqual(controls["encodingConfidence"]["confidence"], "legacy")
         self.assertIn("ctl1", controls["controls"])
         self.assertIn("dist1", controls["switchFunctions"])
 
         assign = agent_cli.cmd_patch_schema(agent_cli.build_parser().parse_args(["patch", "schema", "assign"]))
         self.assertEqual(assign["id"], "assign")
+        self.assertEqual(assign["encodingConfidence"]["confidence"], "legacy")
         self.assertIn("general", assign["commands"])
         self.assertIn("tuner", assign["targetAliases"])
 
         led = agent_cli.cmd_patch_schema(agent_cli.build_parser().parse_args(["patch", "schema", "led"]))
         self.assertEqual(led["id"], "led")
+        self.assertEqual(led["encodingConfidence"]["confidence"], "legacy")
         self.assertIn("ctl1", led["controls"])
         self.assertIn("auto-cyan", led["onColors"])
+
+    def test_encoding_status_reports_confidence_inventory(self):
+        args = agent_cli.build_parser().parse_args(["patch", "encoding-status", "master"])
+
+        with tempfile.TemporaryDirectory() as directory:
+            with unittest.mock.patch.dict(agent_cli.os.environ, {agent_cli.ENCODING_VALIDATION_LOG_ENV: str(Path(directory) / "empty.jsonl")}, clear=False):
+                status = agent_cli.cmd_patch_encoding_status(args)
+
+        self.assertEqual(status["id"], "encodingStatus")
+        self.assertEqual(status["filter"], "all")
+        self.assertIn("live-verified", status["confidenceLevels"])
+        self.assertIn("official", status["semanticConfidenceLevels"])
+        self.assertGreater(status["trustedCount"], 0)
+        self.assertEqual(status["untrustedCount"], 0)
+        self.assertEqual(status["entryCount"], status["trustedCount"] + status["untrustedCount"])
+        self.assertGreater(status["effectiveConfidenceCounts"]["live-verified"], 0)
+        self.assertGreater(status["semanticConfidenceCounts"]["official"], 0)
+        entries = {entry["id"]: entry for entry in status["entries"]}
+        self.assertEqual(entries["patch.master.level"]["confidence"], "live-verified")
+        self.assertEqual(entries["patch.master.level"]["effectiveConfidence"], "live-verified")
+        self.assertEqual(entries["patch.master.level"]["semanticConfidence"], "official")
+        self.assertTrue(entries["patch.master.level"]["trustedEncoding"])
+        self.assertEqual(entries["patch.master.patch-level"]["confidence"], "live-verified")
+        self.assertEqual(entries["patch.master.patch-level"]["canonicalId"], "patch.master.level")
+        self.assertTrue(entries["patch.master.patch-level"]["trustedEncoding"])
+        self.assertEqual(entries["patch.master.key"]["confidence"], "live-verified")
+        self.assertEqual(entries["patch.master.key"]["effectiveConfidence"], "live-verified")
+        self.assertTrue(entries["patch.master.key"]["trustedEncoding"])
+        self.assertNotIn("patch.block.masterDelay.time", entries)
+
+        with tempfile.TemporaryDirectory() as directory:
+            with unittest.mock.patch.dict(agent_cli.os.environ, {agent_cli.ENCODING_VALIDATION_LOG_ENV: str(Path(directory) / "empty.jsonl")}, clear=False):
+                control_status = agent_cli.cmd_patch_encoding_status(agent_cli.build_parser().parse_args(["patch", "encoding-status", "patch.controls"]))
+        self.assertEqual(control_status["entries"][0]["id"], "patch.controls")
+        self.assertEqual(control_status["entries"][0]["confidence"], "legacy")
+        self.assertEqual(control_status["trustedCount"], 0)
+        self.assertEqual(control_status["untrustedCount"], 1)
+
+    def test_encoding_status_filters_trusted_and_untrusted_entries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with unittest.mock.patch.dict(agent_cli.os.environ, {agent_cli.ENCODING_VALIDATION_LOG_ENV: str(Path(directory) / "empty.jsonl")}, clear=False):
+                untrusted = agent_cli.cmd_patch_encoding_status(
+                    agent_cli.build_parser().parse_args(["patch", "encoding-status", "patch.block.delay3", "--untrusted"])
+                )
+                trusted = agent_cli.cmd_patch_encoding_status(
+                    agent_cli.build_parser().parse_args(["patch", "encoding-status", "master", "--trusted"])
+                )
+
+        self.assertEqual(untrusted["filter"], "untrusted")
+        self.assertEqual(untrusted["trustedCount"], 0)
+        self.assertEqual(untrusted["entryCount"], untrusted["untrustedCount"])
+        self.assertTrue(all(not entry["trustedEncoding"] for entry in untrusted["entries"]))
+        self.assertIn("validationTemplate", {key for entry in untrusted["entries"] for key in entry})
+        self.assertIn("block.delay3.sw=on", untrusted["validationCases"])
+        self.assertIn("block.delay3.time=1", untrusted["validationCases"])
+        self.assertIn("patch validate-encoding-batch", untrusted["batchValidationCommand"])
+        self.assertIn("block.delay3.sw=on", untrusted["batchValidationCommand"])
+        self.assertEqual(trusted["filter"], "trusted")
+        self.assertEqual(trusted["untrustedCount"], 0)
+        self.assertEqual(trusted["entryCount"], trusted["trustedCount"])
+        self.assertTrue(all(entry["trustedEncoding"] for entry in trusted["entries"]))
+        self.assertNotIn("validationCases", trusted)
+
+    def test_encoding_validation_case_generation_for_block_parameters(self):
+        self.assertEqual(
+            agent_cli.encoding_validation_case_for_field_id("patch.block.delay3.sw"),
+            "block.delay3.sw=on",
+        )
+        self.assertEqual(
+            agent_cli.encoding_validation_command_for_case("block.delay3.sw=on"),
+            "patch validate-encoding block delay3.sw on --user-slot U10-1 --live --timeout 20",
+        )
+        self.assertEqual(
+            agent_cli.encoding_validation_case_for_field_id("patch.block.delay3.time"),
+            "block.delay3.time=1",
+        )
+
+    def test_encoding_validation_scope_generates_cases_from_inventory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with unittest.mock.patch.dict(agent_cli.os.environ, {agent_cli.ENCODING_VALIDATION_LOG_ENV: str(Path(directory) / "empty.jsonl")}, clear=False):
+                cases = agent_cli.encoding_validation_cases_for_scope("master")
+                trusted_cases = agent_cli.encoding_validation_cases_for_scope("master", include_trusted=True)
+
+        self.assertEqual(cases, [])
+        self.assertIn("master.key=1", trusted_cases)
+        self.assertIn("master.amp-ctl1=on", trusted_cases)
+        self.assertNotIn("master.amp-control1=on", trusted_cases)
+        self.assertNotIn("master.level=1", cases)
+        self.assertNotIn("master.patch-level=1", trusted_cases)
+
+    def test_validate_encoding_scope_dry_run_lists_generated_cases(self):
+        args = agent_cli.build_parser().parse_args(["patch", "validate-encoding-scope", "patch.block.delay3", "--limit", "2", "--dry-run"])
+
+        with tempfile.TemporaryDirectory() as directory:
+            with unittest.mock.patch.dict(agent_cli.os.environ, {agent_cli.ENCODING_VALIDATION_LOG_ENV: str(Path(directory) / "empty.jsonl")}, clear=False):
+                result = agent_cli.cmd_patch_validate_encoding_scope(args)
+
+        self.assertEqual(result["id"], "encodingValidationScope")
+        self.assertTrue(result["dryRun"])
+        self.assertEqual(result["caseCount"], 2)
+        self.assertEqual(len(result["cases"]), 2)
+        self.assertIn("patch validate-encoding-scope patch.block.delay3", result["batchValidationCommand"])
+
+    def test_validate_encoding_scope_filters_by_parameter_and_kind(self):
+        args = agent_cli.build_parser().parse_args([
+            "patch",
+            "validate-encoding-scope",
+            "patch.block",
+            "--parameter",
+            "sw",
+            "--kind",
+            "bool",
+            "--current-value",
+            "--limit",
+            "3",
+            "--dry-run",
+        ])
+
+        with tempfile.TemporaryDirectory() as directory:
+            with unittest.mock.patch.dict(agent_cli.os.environ, {agent_cli.ENCODING_VALIDATION_LOG_ENV: str(Path(directory) / "empty.jsonl")}, clear=False):
+                result = agent_cli.cmd_patch_validate_encoding_scope(args)
+
+        self.assertEqual(result["parameters"], ["sw"])
+        self.assertEqual(result["kinds"], ["bool"])
+        self.assertTrue(result["currentValue"])
+        self.assertEqual(result["caseCount"], 3)
+        self.assertTrue(all(case.endswith(".sw=on") for case in result["cases"]))
+        self.assertIn("--parameter sw", result["batchValidationCommand"])
+        self.assertIn("--kind bool", result["batchValidationCommand"])
+        self.assertIn("--current-value", result["batchValidationCommand"])
 
     def test_all_patch_block_definitions_have_schema(self):
         blocks = (
@@ -662,6 +1318,9 @@ class AgentCLITests(unittest.TestCase):
             "tsl-import",
             "tsl-list",
             "undo-last",
+            "validate-encoding",
+            "validate-encoding-batch",
+            "validate-encoding-scope",
         }
         live_paths = live_verified_command_paths()
 
@@ -726,6 +1385,44 @@ class AgentCLITests(unittest.TestCase):
         normalize_levels = parser.parse_args(["patch", "normalize-levels", "U10-1", "U10-2", "--target", "90", "--live", "--verify"])
         self.assertEqual(normalize_levels.patch_command, "normalize-levels")
         self.assertEqual(normalize_levels.target, 90)
+
+        encoding_status = parser.parse_args(["patch", "encoding-status", "master"])
+        self.assertEqual(encoding_status.patch_command, "encoding-status")
+        self.assertEqual(encoding_status.scope, "master")
+
+        encoding_status_untrusted = parser.parse_args(["patch", "encoding-status", "master", "--untrusted"])
+        self.assertEqual(encoding_status_untrusted.patch_command, "encoding-status")
+        self.assertTrue(encoding_status_untrusted.untrusted)
+
+        validate_encoding = parser.parse_args(["patch", "validate-encoding", "master", "level", "90", "--live"])
+        self.assertEqual(validate_encoding.patch_command, "validate-encoding")
+        self.assertEqual(validate_encoding.area, "master")
+        self.assertEqual(validate_encoding.field, "level")
+        self.assertEqual(validate_encoding.value, "90")
+
+        validate_block_encoding = parser.parse_args(["patch", "validate-encoding", "block", "delay1.sw", "on", "--live"])
+        self.assertEqual(validate_block_encoding.patch_command, "validate-encoding")
+        self.assertEqual(validate_block_encoding.area, "block")
+        self.assertEqual(validate_block_encoding.field, "delay1.sw")
+        self.assertEqual(validate_block_encoding.value, "on")
+
+        validate_encoding_batch = parser.parse_args(["patch", "validate-encoding-batch", "master.level=90", "block.delay1.sw=on", "--live"])
+        self.assertEqual(validate_encoding_batch.patch_command, "validate-encoding-batch")
+        self.assertEqual(validate_encoding_batch.cases, ["master.level=90", "block.delay1.sw=on"])
+
+        validate_encoding_scope = parser.parse_args(["patch", "validate-encoding-scope", "master", "--live", "--limit", "2", "--parameter", "sw", "--kind", "bool", "--current-value"])
+        self.assertEqual(validate_encoding_scope.patch_command, "validate-encoding-scope")
+        self.assertEqual(validate_encoding_scope.scope, "master")
+        self.assertEqual(validate_encoding_scope.limit, 2)
+        self.assertEqual(validate_encoding_scope.parameter, ["sw"])
+        self.assertEqual(validate_encoding_scope.kind, ["bool"])
+        self.assertTrue(validate_encoding_scope.current_value)
+
+        slot_default = parser.parse_args(["patch", "slot", "U10-1", "--live"])
+        self.assertEqual(slot_default.view, "overview")
+
+        bank_default = parser.parse_args(["patch", "bank", "U10", "--live"])
+        self.assertEqual(bank_default.view, "overview")
 
         intent = parser.parse_args(["patch", "intent", "solo-boost", "--control", "ctl4", "--amount", "20", "--live", "--verify"])
         self.assertEqual(intent.patch_command, "intent")

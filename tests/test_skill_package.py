@@ -60,7 +60,7 @@ class SkillPackageTests(unittest.TestCase):
 
     def test_skill_package_has_no_repo_local_path_references(self):
         forbidden = [
-            ".agents/skills",
+            "/Users/",
             "docs/gt1000-wiki",
             "docs/midi-reference",
             "GT1000AppPackage",

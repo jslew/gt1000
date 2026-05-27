@@ -11,6 +11,19 @@ from tools.gt1000 import agent_cli, live
 
 
 class UserPatchReadTests(unittest.TestCase):
+    def setUp(self):
+        self._validation_log_dir = tempfile.TemporaryDirectory()
+        self._validation_log_env = mock.patch.dict(
+            agent_cli.os.environ,
+            {agent_cli.ENCODING_VALIDATION_LOG_ENV: str(Path(self._validation_log_dir.name) / "encoding-validations.jsonl")},
+            clear=False,
+        )
+        self._validation_log_env.start()
+
+    def tearDown(self):
+        self._validation_log_env.stop()
+        self._validation_log_dir.cleanup()
+
     def test_user_slot_addresses_use_roland_seven_bit_stride(self):
         self.assertEqual(live.user_patch_base("U01-1"), [0x20, 0x00, 0x00, 0x00])
         self.assertEqual(live.user_patch_base("u01-5"), [0x20, 0x04, 0x00, 0x00])
@@ -66,11 +79,28 @@ class UserPatchReadTests(unittest.TestCase):
         with mock.patch.object(agent_cli, "read_user_slot_snapshot", return_value=snapshot) as read_slot:
             result = agent_cli.cmd_patch_slot(args)
 
-        read_slot.assert_called_once_with("U01-1", 8.0, view="overview")
+        read_slot.assert_called_once_with("U01-1", 30.0, view="overview")
         self.assertEqual(result["patchName"], "TEST SLOT")
         self.assertEqual(result["masterPatchLevel"], 90)
         self.assertTrue(result["masterCarryoverEnabled"])
         self.assertEqual(result["controlAssignInputSensitivity"], 100)
+
+    def test_patch_slot_musician_summary_uses_bounded_mapped_performance_reader(self):
+        snapshot = self.performance_snapshot("SLOT MUSIC", level=83, delay_enabled=False, ctl1_function=33, assign_target=987)
+        args = agent_cli.build_parser().parse_args([
+            "patch", "slot", "U1-003", "--live", "--view", "musician-summary", "--timeout", "15",
+        ])
+
+        with mock.patch.object(agent_cli, "read_mapped_performance_snapshot_with_timeout", return_value=snapshot) as read_slot:
+            with mock.patch.object(agent_cli, "musician_summary_from_full", return_value={"id": "patchMusicianSummary"}):
+                result = agent_cli.cmd_patch_slot(args)
+
+        self.assertEqual(result, {"id": "patchMusicianSummary"})
+        self.assertEqual(read_slot.call_args.kwargs["label"], "patch U01-3 --live")
+        self.assertEqual(read_slot.call_args.kwargs["timeout"], 15.0)
+        self.assertEqual(read_slot.call_args.kwargs["patch_base"], live.user_patch_base("U01-3"))
+        self.assertEqual(read_slot.call_args.kwargs["source_slot"], "U01-3")
+        self.assertEqual(read_slot.call_args.kwargs["source_type"], "user")
 
     def test_patch_preset_command_reads_preset_snapshot(self):
         snapshot = {
@@ -94,7 +124,7 @@ class UserPatchReadTests(unittest.TestCase):
         with mock.patch.object(agent_cli, "read_preset_slot_snapshot", return_value=snapshot) as read_slot:
             result = agent_cli.cmd_patch_preset(args)
 
-        read_slot.assert_called_once_with("P01-1", 8.0, view="overview")
+        read_slot.assert_called_once_with("P01-1", 30.0, view="overview")
         self.assertEqual(result["patchName"], "PRESET")
         self.assertEqual(result["masterPatchLevel"], 90)
 
@@ -146,10 +176,12 @@ class UserPatchReadTests(unittest.TestCase):
         }
         args = agent_cli.build_parser().parse_args(["patch", "block", "delay1", "--user-slot", "U01-2"])
 
-        with mock.patch.object(agent_cli, "read_user_slot_snapshot", return_value=snapshot) as read_slot:
+        with mock.patch.object(agent_cli, "read_mapped_patch_snapshot", return_value=snapshot) as read_slot:
             result = agent_cli.cmd_patch_block(args)
 
-        read_slot.assert_called_once_with("U01-2", 8.0, view="full")
+        self.assertEqual(read_slot.call_args.kwargs["source_slot"], "U01-2")
+        self.assertEqual(read_slot.call_args.kwargs["source_type"], "user")
+        self.assertEqual([request.label for request in read_slot.call_args.kwargs["requests"]], ["Patch Effect", "DELAY 1"])
         self.assertEqual(result["block"]["id"], "delay1")
         self.assertEqual(result["chainPositions"], [1])
 
@@ -307,7 +339,7 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual([request.label for request in read_required_records.call_args_list[0].args[2]], ["Patch Common", "Patch Effect"])
         self.assertEqual(read_patch_records.call_count, 1)
         self.assertEqual(read_patch_records.call_args_list[0].args[0], "patch clone U03-2 --live core records")
-        self.assertEqual(read_patch_records.call_args_list[0].args[1], 20.0)
+        self.assertEqual(read_patch_records.call_args_list[0].args[1], 30.0)
         self.assertNotIn("Patch Common", [request.label for request in read_patch_records.call_args_list[0].args[2]])
         self.assertNotIn("Patch Effect", [request.label for request in read_patch_records.call_args_list[0].args[2]])
         plan = apply_plan.call_args.args[0]
@@ -344,27 +376,44 @@ class UserPatchReadTests(unittest.TestCase):
             self.assertEqual(read_required_records.call_count, 2)
             self.assertEqual([request.label for request in read_required_records.call_args_list[0].args[2]], ["Patch Common", "Patch Effect"])
             self.assertEqual(read_records.call_count, 2)
-            self.assertTrue(all(call.args[1] == 20.0 for call in read_records.call_args_list))
+            self.assertTrue(all(call.args[1] == 30.0 for call in read_records.call_args_list))
             self.assertNotIn("Patch Common", [request.label for request in read_records.call_args_list[0].args[2]])
             self.assertNotIn("Patch Effect", [request.label for request in read_records.call_args_list[1].args[2]])
             self.assertEqual(result["format"], "gt1000-agent-liveset-v1")
             self.assertEqual(result["patchCount"], 2)
             self.assertTrue(output.is_file())
 
-    def test_persistent_master_set_reads_and_writes_full_patch_effect_record(self):
+    def test_persistent_master_set_builds_targeted_patch_effect_write(self):
         args = agent_cli.build_parser().parse_args(["patch", "master-set", "level", "95", "--live", "--user-slot", "U03-2", "--verify"])
-        record = [0] * agent_cli.live.seven_bit_address_value([0x00, 0x00, 0x01, 0x1C])
 
-        with mock.patch.object(agent_cli, "read_patch_records_with_timeout", return_value={"20 0B 10 00": record}) as read_records:
+        with mock.patch.object(agent_cli, "read_patch_records_with_timeout") as read_records:
             with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"plan": "master-set:level:U03-2", "writeCount": 1, "verified": True}) as apply_plan:
                 result = agent_cli.cmd_patch_master_set(args)
 
-        self.assertEqual(read_records.call_args.args[2][0].address, [0x20, 0x0B, 0x10, 0x00])
+        read_records.assert_not_called()
         plan = apply_plan.call_args.args[0]
-        self.assertEqual(plan.writes[0].address, [0x20, 0x0B, 0x10, 0x00])
-        self.assertEqual(plan.writes[0].data[0x60], 95)
+        self.assertEqual(plan.writes[0].address, [0x20, 0x0B, 0x10, 0x5F])
+        self.assertEqual(plan.writes[0].data, [5, 15])
         self.assertTrue(apply_plan.call_args.kwargs["verify"])
+        self.assertFalse(apply_plan.call_args.kwargs["create_restore"])
+        self.assertTrue(apply_plan.call_args.kwargs["exact_verify"])
         self.assertEqual(result["plan"], "master-set:level:U03-2")
+        self.assertEqual(result["encodingConfidence"][0]["id"], "patch.master.level")
+        self.assertEqual(result["encodingConfidence"][0]["confidence"], "live-verified")
+        self.assertNotIn("encodingWarning", result)
+
+    def test_master_set_alias_reports_canonical_encoding_confidence(self):
+        args = agent_cli.build_parser().parse_args(["patch", "master-set", "patch-level", "95", "--live", "--user-slot", "U03-2", "--verify"])
+
+        with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"plan": "master-set:patch-level:U03-2", "writeCount": 1, "verified": True}) as apply_plan:
+            result = agent_cli.cmd_patch_master_set(args)
+
+        plan = apply_plan.call_args.args[0]
+        self.assertEqual(plan.id, "master-set:patch-level:U03-2")
+        self.assertEqual(plan.writes[0].address, [0x20, 0x0B, 0x10, 0x5F])
+        self.assertEqual(result["encodingConfidence"][0]["id"], "patch.master.level")
+        self.assertEqual(result["encodingConfidence"][0]["confidence"], "live-verified")
+        self.assertNotIn("encodingWarning", result)
 
     def test_control_change_message_is_typed_and_bounded(self):
         self.assertEqual(agent_cli.control_change_message(80, 127, 1), [0xB0, 80, 127])
@@ -397,8 +446,11 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(plan.id, "set:masterBpm")
         self.assertEqual(plan.writes[0].address, [0x10, 0x00, 0x10, 0x61])
         self.assertEqual(plan.writes[0].data, [0x00, 0x04, 0x0B, 0x00])
-        self.assertEqual(apply.call_args.kwargs, {"timeout": 12.0, "verify": True})
-        self.assertEqual(result, {"verified": True})
+        self.assertEqual(apply.call_args.kwargs, {"timeout": 20.0, "verify": True, "create_restore": False, "exact_verify": True})
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["encodingConfidence"][0]["id"], "patch.master.bpm")
+        self.assertEqual(result["encodingConfidence"][0]["confidence"], "official")
+        self.assertNotIn("encodingWarning", result)
 
     def test_patch_enable_command_applies_typed_switch_plan(self):
         args = agent_cli.build_parser().parse_args(["patch", "enable", "delay1", "--live", "--verify"])
@@ -410,8 +462,11 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(plan.id, "set:delay1.sw")
         self.assertEqual(plan.writes[0].address, [0x10, 0x00, 0x1D, 0x00])
         self.assertEqual(plan.writes[0].data, [0x01])
-        self.assertEqual(apply.call_args.kwargs, {"timeout": 12.0, "verify": True})
-        self.assertEqual(result, {"verified": True})
+        self.assertEqual(apply.call_args.kwargs, {"timeout": 20.0, "verify": True, "create_restore": False, "exact_verify": True})
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["encodingConfidence"][0]["id"], "patch.block.delay1.sw")
+        self.assertEqual(result["encodingConfidence"][0]["confidence"], "live-verified")
+        self.assertNotIn("encodingWarning", result)
 
     def test_patch_disable_command_resolves_alias_and_user_slot(self):
         args = agent_cli.build_parser().parse_args(["patch", "disable", "ds1", "--live", "--user-slot", "U03-2"])
@@ -423,8 +478,36 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(plan.id, "set:dist1.sw:U03-2")
         self.assertEqual(plan.writes[0].address, [0x20, 0x0B, 0x13, 0x00])
         self.assertEqual(plan.writes[0].data, [0x00])
-        self.assertEqual(apply.call_args.kwargs, {"timeout": 12.0, "verify": False})
-        self.assertEqual(result, {"verified": None})
+        self.assertEqual(apply.call_args.kwargs, {"timeout": 20.0, "verify": False, "create_restore": False, "exact_verify": True})
+        self.assertIsNone(result["verified"])
+        self.assertEqual(result["encodingConfidence"][0]["id"], "patch.block.dist1.sw")
+        self.assertIn("encodingWarning", result)
+
+    def test_patch_set_command_skips_restore_point_for_focused_parameter_write(self):
+        args = agent_cli.build_parser().parse_args(["patch", "set", "delay1", "sw", "on", "--live", "--verify"])
+
+        with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"verified": True}) as apply:
+            result = agent_cli.cmd_patch_set(args)
+
+        plan = apply.call_args.args[0]
+        self.assertEqual(plan.id, "set:delay1.sw")
+        self.assertEqual(plan.writes[0].address, [0x10, 0x00, 0x1D, 0x00])
+        self.assertEqual(plan.writes[0].data, [1])
+        self.assertEqual(apply.call_args.kwargs, {"timeout": 20.0, "verify": True, "create_restore": False, "exact_verify": True})
+        self.assertEqual(result["encodingConfidence"][0]["id"], "patch.block.delay1.sw")
+
+    def test_patch_raw_set_command_skips_restore_point_for_focused_offset_write(self):
+        args = agent_cli.build_parser().parse_args(["patch", "raw-set", "delay1", "0", "1", "--live", "--verify"])
+
+        with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"verified": True}) as apply:
+            result = agent_cli.cmd_patch_raw_set(args)
+
+        plan = apply.call_args.args[0]
+        self.assertEqual(plan.id, "raw-set:delay1:0:byte")
+        self.assertEqual(plan.writes[0].address, [0x10, 0x00, 0x1D, 0x00])
+        self.assertEqual(plan.writes[0].data, [1])
+        self.assertEqual(apply.call_args.kwargs, {"timeout": 20.0, "verify": True, "create_restore": False, "exact_verify": True})
+        self.assertEqual(result["encodingConfidence"][0]["id"], "patch.block.delay1.raw")
 
     def test_patch_type_command_applies_typed_type_plan(self):
         args = agent_cli.build_parser().parse_args(["patch", "type", "ds1", "T-SCREAM", "--live", "--verify"])
@@ -436,8 +519,45 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(plan.id, "set:dist1.type")
         self.assertEqual(plan.writes[0].address, [0x10, 0x00, 0x13, 0x01])
         self.assertEqual(plan.writes[0].data, [15])
-        self.assertEqual(apply.call_args.kwargs, {"timeout": 12.0, "verify": True})
-        self.assertEqual(result, {"verified": True})
+        self.assertEqual(apply.call_args.kwargs, {"timeout": 20.0, "verify": True, "create_restore": False, "exact_verify": True})
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["encodingConfidence"][0]["id"], "patch.block.dist1.type")
+        self.assertIn("encodingWarning", result)
+
+    def test_control_led_and_system_control_edits_report_legacy_confidence(self):
+        cases = [
+            (
+                ["patch", "control-set", "ctl1", "dist1", "--mode", "toggle", "--live", "--verify"],
+                agent_cli.cmd_patch_control_set,
+                "patch.controls",
+            ),
+            (
+                ["patch", "led-set", "ctl1", "on", "auto-cyan", "--live", "--verify"],
+                agent_cli.cmd_patch_led_set,
+                "patch.led",
+            ),
+            (
+                ["patch", "system-control-set", "ctl1", "dist1", "--mode", "toggle", "--live", "--verify"],
+                agent_cli.cmd_patch_system_control_set,
+                "system.controls",
+            ),
+            (
+                ["patch", "control-preference-set", "ctl1", "patch", "--live", "--verify"],
+                agent_cli.cmd_patch_control_preference_set,
+                "system.controls",
+            ),
+        ]
+        for argv, command, confidence_id in cases:
+            with self.subTest(argv=argv):
+                args = agent_cli.build_parser().parse_args(argv)
+                with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"verified": True}) as apply:
+                    result = command(args)
+
+                self.assertTrue(apply.called)
+                self.assertFalse(apply.call_args.kwargs["create_restore"])
+                self.assertTrue(result["verified"])
+                self.assertEqual(result["encodingConfidence"][0]["id"], confidence_id)
+                self.assertIn("encodingWarning", result)
 
     def test_patch_move_command_reads_chain_and_applies_typed_plan(self):
         chain_values = list(agent_cli.patch_edit.CANONICAL_FULL_CHAIN)
@@ -449,17 +569,24 @@ class UserPatchReadTests(unittest.TestCase):
         }
         args = agent_cli.build_parser().parse_args(["patch", "move", "delay1", "--before", "chorus", "--live", "--verify"])
 
-        with mock.patch.object(agent_cli, "read_live_snapshot", return_value=snapshot) as read_live:
+        with mock.patch.object(agent_cli, "read_live_snapshot_with_timeout", return_value=snapshot) as read_live:
             with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"verified": True}) as apply:
                 result = agent_cli.cmd_patch_move(args)
 
-        read_live.assert_called_once()
+        read_live.assert_called_once_with(
+            "patch move chain read --live",
+            20.0,
+            requests=agent_cli.requests_for_view("chain"),
+            lenient_optional=True,
+        )
         plan = apply.call_args.args[0]
         self.assertEqual(plan.id, "move:chain:15:before:14")
         self.assertEqual(plan.writes[0].address, [0x10, 0x00, 0x10, 0x68])
         self.assertLess(plan.writes[0].data.index(15), plan.writes[0].data.index(14))
-        self.assertEqual(apply.call_args.kwargs, {"timeout": 12.0, "verify": True})
-        self.assertEqual(result, {"verified": True})
+        self.assertEqual(apply.call_args.kwargs, {"timeout": 20.0, "verify": True})
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["encodingConfidence"][0]["id"], "patch.chain")
+        self.assertIn("encodingWarning", result)
 
     def test_patch_move_command_reads_user_slot_chain(self):
         chain_values = list(agent_cli.patch_edit.CANONICAL_FULL_CHAIN)
@@ -475,12 +602,14 @@ class UserPatchReadTests(unittest.TestCase):
             with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"verified": None}) as apply:
                 result = agent_cli.cmd_patch_move(args)
 
-        read_slot.assert_called_once_with("U03-2", 12.0, view="chain")
+        read_slot.assert_called_once_with("U03-2", 20.0, view="chain")
         plan = apply.call_args.args[0]
         self.assertEqual(plan.id, "move:chain:15:after:14:U03-2")
         self.assertEqual(plan.writes[0].address, [0x20, 0x0B, 0x10, 0x68])
         self.assertGreater(plan.writes[0].data.index(15), plan.writes[0].data.index(14))
-        self.assertEqual(result, {"verified": None})
+        self.assertIsNone(result["verified"])
+        self.assertEqual(result["encodingConfidence"][0]["id"], "patch.chain")
+        self.assertIn("encodingWarning", result)
 
     def test_patch_assign_cc_command_maps_decoded_on_off_target(self):
         args = agent_cli.build_parser().parse_args([
@@ -497,8 +626,10 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(plan.writes[0].data[5:9], live.nibbles_for(32768))
         self.assertEqual(plan.writes[0].data[9:13], live.nibbles_for(32769))
         self.assertEqual(plan.writes[0].data[13], 69)
-        self.assertEqual(apply.call_args.kwargs, {"timeout": 12.0, "verify": True})
-        self.assertEqual(result, {"verified": True})
+        self.assertEqual(apply.call_args.kwargs, {"timeout": 20.0, "verify": True, "create_restore": False, "exact_verify": True})
+        self.assertTrue(result["verified"])
+        self.assertEqual([entry["id"] for entry in result["encodingConfidence"]], ["patch.assign", "patch.block.delay1.sw"])
+        self.assertIn("encodingWarning", result)
 
     def test_patch_assign_cc_requires_ranges_for_non_on_off_target(self):
         args = agent_cli.build_parser().parse_args([
@@ -518,8 +649,10 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(plan.id, "set:tunerAssign")
         self.assertEqual(plan.writes[0].address, [0x10, 0x00, 0x0A, 0x40])
         self.assertEqual(plan.writes[0].data, agent_cli.patch_edit.tuner_assign_data())
-        self.assertEqual(apply.call_args.kwargs, {"timeout": 12.0, "verify": True})
-        self.assertEqual(result, {"verified": True})
+        self.assertEqual(apply.call_args.kwargs, {"timeout": 20.0, "verify": True, "create_restore": False, "exact_verify": True})
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["encodingConfidence"][0]["id"], "patch.assign")
+        self.assertIn("encodingWarning", result)
 
     def test_assign_decode_includes_ranges_and_midi_fields(self):
         data = bytes([
@@ -696,7 +829,7 @@ class UserPatchReadTests(unittest.TestCase):
             with mock.patch.object(agent_cli, "performance_from_full", return_value={"id": "patchPerformance"}):
                 agent_cli.patch_view(args, "performance")
 
-        self.assertEqual(read_live.call_args.args, ("patch performance --live", 8.0))
+        self.assertEqual(read_live.call_args.args, ("patch performance --live", 15.0))
 
     def test_musician_summary_describes_tone_and_playable_controls(self):
         snapshot = self.performance_snapshot("MUSIC", level=83, delay_enabled=False, ctl1_function=33, assign_target=987)
@@ -721,17 +854,17 @@ class UserPatchReadTests(unittest.TestCase):
             with mock.patch.object(agent_cli, "musician_summary_from_full", return_value={"id": "patchMusicianSummary"}):
                 agent_cli.patch_view(args, "musician-summary")
 
-        self.assertEqual(read_live.call_args.args, ("patch musician-summary --live", 8.0))
+        self.assertEqual(read_live.call_args.args, ("patch musician-summary --live", 15.0))
 
     def test_performance_live_reader_reads_core_strictly_and_assigns_leniently(self):
         required_calls = []
         lenient_calls = []
 
-        def fake_required(label, timeout, requests):
+        def fake_required(label, timeout, requests, **kwargs):
             required_calls.append((label, timeout, requests))
             return {agent_cli.live.address_key(request.address): [0] * agent_cli.live.seven_bit_address_value(request.size) for request in requests}
 
-        def fake_lenient(label, timeout, requests):
+        def fake_lenient(label, timeout, requests, **kwargs):
             lenient_calls.append((label, timeout, requests))
             return {}
 
@@ -748,6 +881,94 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual([request.label for request in required_calls[0][2]], ["Master BPM", "Patch Effect", "Patch Common", "System Control"])
         self.assertEqual([request.label for request in lenient_calls[0][2]][0], "Assign 1")
         self.assertEqual([request.label for request in lenient_calls[0][2]][-1], "Assign 16")
+
+    def test_performance_live_reader_has_whole_operation_deadline(self):
+        now = [100.0]
+        live_calls = []
+
+        def fake_live_call(label, process_timeout, func, **kwargs):
+            live_calls.append((label, process_timeout))
+            now[0] += process_timeout
+            raise agent_cli.CLIError("hung worker")
+
+        original_live_call = agent_cli.live_call_with_timeout
+        original_monotonic = agent_cli.time.monotonic
+        original_sleep = agent_cli.time.sleep
+        agent_cli.live_call_with_timeout = fake_live_call
+        agent_cli.time.monotonic = lambda: now[0]
+        agent_cli.time.sleep = lambda seconds: now.__setitem__(0, now[0] + seconds)
+        try:
+            with self.assertRaises(agent_cli.CLIError) as context:
+                agent_cli.read_performance_snapshot_with_timeout("patch musician-summary --live", 8)
+        finally:
+            agent_cli.time.sleep = original_sleep
+            agent_cli.time.monotonic = original_monotonic
+            agent_cli.live_call_with_timeout = original_live_call
+
+        self.assertIn("did not finish within 16s", str(context.exception))
+        self.assertEqual(len(live_calls), 1)
+        self.assertEqual(live_calls[0][0], "patch musician-summary --live required record")
+
+    def test_chain_live_reader_bounds_optional_detail_reads(self):
+        now = [100.0]
+        required_calls = []
+        lenient_calls = []
+
+        def fake_required(label, timeout, requests, **kwargs):
+            required_calls.append((label, timeout, requests, kwargs.get("deadline")))
+            return {
+                agent_cli.live.address_key(request.address): [0] * agent_cli.live.seven_bit_address_value(request.size)
+                for request in requests
+            }
+
+        def fake_lenient(label, timeout, requests, **kwargs):
+            lenient_calls.append((label, timeout, requests, kwargs.get("deadline")))
+            return {}
+
+        original_required = agent_cli.read_required_patch_records_with_timeout
+        original_lenient = agent_cli.read_patch_records_lenient_with_timeout
+        original_monotonic = agent_cli.time.monotonic
+        agent_cli.read_required_patch_records_with_timeout = fake_required
+        agent_cli.read_patch_records_lenient_with_timeout = fake_lenient
+        agent_cli.time.monotonic = lambda: now[0]
+        try:
+            agent_cli.read_live_snapshot_with_timeout(
+                "patch chain --live",
+                15,
+                requests=agent_cli.requests_for_view("chain"),
+                lenient_optional=True,
+            )
+        finally:
+            agent_cli.time.monotonic = original_monotonic
+            agent_cli.read_patch_records_lenient_with_timeout = original_lenient
+            agent_cli.read_required_patch_records_with_timeout = original_required
+
+        self.assertEqual([request.label for request in required_calls[0][2]], [
+            "Patch Name", "Master BPM", "Patch Effect", "Patch Common", "System Control",
+        ])
+        self.assertEqual(required_calls[0][3], 120.0)
+        self.assertLess(lenient_calls[0][1], 16.0)
+        self.assertEqual(lenient_calls[0][3], 120.0)
+
+    def test_overview_live_reader_has_whole_process_guard(self):
+        requests = agent_cli.requests_for_view("overview")
+        live_calls = []
+
+        def fake_live_call(label, process_timeout, func, **kwargs):
+            live_calls.append((label, process_timeout, kwargs["timeout"], len(kwargs["requests"])))
+            return {
+                agent_cli.live.address_key(request.address): [0] * agent_cli.live.seven_bit_address_value(request.size)
+                for request in requests
+            }
+
+        original_live_call = agent_cli.live_call_with_timeout
+        agent_cli.live_call_with_timeout = fake_live_call
+        try:
+            agent_cli.read_live_snapshot_with_timeout("patch overview --live", 8, requests=requests)
+        finally:
+            agent_cli.live_call_with_timeout = original_live_call
+
+        self.assertEqual(live_calls, [("patch overview --live", 16.0, 8, len(agent_cli.transport_read_requests(requests)))])
 
     def test_patch_diff_reports_musical_changes(self):
         source = self.performance_snapshot("SOURCE", level=80, delay_enabled=False, ctl1_function=33, assign_target=987)
@@ -773,8 +994,8 @@ class UserPatchReadTests(unittest.TestCase):
             result = agent_cli.cmd_patch_diff(args)
 
         self.assertEqual(result["id"], "patchDiff")
-        self.assertEqual(read_slot.call_args_list[0].args, ("patch diff U10-1 --live", 8.0, "U10-1"))
-        self.assertEqual(read_slot.call_args_list[1].args, ("patch diff U10-2 --live", 8.0, "U10-2"))
+        self.assertEqual(read_slot.call_args_list[0].args, ("patch diff U10-1 --live", 30.0, "U10-1"))
+        self.assertEqual(read_slot.call_args_list[1].args, ("patch diff U10-2 --live", 30.0, "U10-2"))
 
     def test_setlist_audit_flags_level_tuner_and_expression_risks(self):
         performances = [
@@ -829,7 +1050,7 @@ class UserPatchReadTests(unittest.TestCase):
 
         def patch_effect(label, timeout, requests, reader=agent_cli.patch_edit.read_data_sets_batched, attempts=3):
             data = [0] * agent_cli.live.seven_bit_address_value([0x00, 0x00, 0x01, 0x1C])
-            data[0x60] = 90
+            data[0x5F:0x61] = [5, 10]
             return {agent_cli.live.address_key(requests[0].address): data}
 
         with mock.patch.object(agent_cli, "read_user_slot_level_snapshot", return_value=snapshot):
@@ -839,34 +1060,213 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(performances[0]["performance"]["masterPatchLevel"], 90)
         self.assertIn("recovered", performances[0]["performance"]["notes"][-1])
 
-    def test_normalize_levels_builds_verified_patch_effect_writes(self):
+    def test_normalize_levels_builds_targeted_verified_level_writes(self):
         args = agent_cli.build_parser().parse_args(["patch", "normalize-levels", "U10-1", "U10-2", "--target", "90", "--live", "--verify"])
-        performances = [
-            {"slot": "U10-1", "performance": self.performance_view("A", level=80, bpm=120.0, tuner=True, exp1="Direct: FOOT VOLUME")},
-            {"slot": "U10-2", "performance": self.performance_view("B", level=90, bpm=120.0, tuner=True, exp1="Direct: FOOT VOLUME")},
-        ]
 
-        def source_record(label, timeout, requests, reader=agent_cli.patch_edit.read_data_sets_batched, attempts=3):
-            data = [0] * agent_cli.live.seven_bit_address_value([0x00, 0x00, 0x01, 0x1C])
-            data[0x60] = 80 if "U10-1" in label else 90
-            return {agent_cli.live.address_key(requests[0].address): data}
-
-        with mock.patch.object(agent_cli, "read_slot_performances", return_value=performances):
-            with mock.patch.object(agent_cli, "read_patch_records_with_timeout", side_effect=source_record):
-                with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"plan": "normalize-levels:90", "writeCount": 1, "verified": True}) as apply_plan:
+        with mock.patch.object(agent_cli, "read_slot_performances") as read_performances:
+            with mock.patch.object(agent_cli, "read_patch_records_with_timeout") as read_records:
+                with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"plan": "normalize-levels:90", "writeCount": 2, "verified": True}) as apply_plan:
                     result = agent_cli.cmd_patch_normalize_levels(args)
 
         plan = apply_plan.call_args.args[0]
         self.assertEqual(plan.id, "normalize-levels:90")
-        self.assertEqual(len(plan.writes), 1)
+        self.assertEqual(len(plan.writes), 2)
         self.assertEqual(
             plan.writes[0].address,
-            agent_cli.live.remap_temporary_patch_address(agent_cli.live.TEMPORARY_PATCH_EFFECT, agent_cli.live.user_patch_base("U10-1")),
+            agent_cli.patch_master_level_address("U10-1"),
         )
-        self.assertEqual(plan.writes[0].data[0x60], 90)
+        self.assertEqual(plan.writes[0].data, [5, 10])
+        self.assertEqual(plan.writes[0].read_request.size, [0, 0, 0, 2])
         self.assertTrue(apply_plan.call_args.kwargs["verify"])
+        self.assertFalse(apply_plan.call_args.kwargs["create_restore"])
+        read_performances.assert_not_called()
+        read_records.assert_not_called()
         self.assertTrue(result["applied"])
-        self.assertEqual(result["writeCount"], 1)
+        self.assertEqual(result["writeCount"], 2)
+
+    def test_validate_encoding_round_trips_targeted_level_write_and_restore(self):
+        args = agent_cli.build_parser().parse_args(["patch", "validate-encoding", "master", "level", "90", "--user-slot", "U10-1", "--live"])
+
+        def fake_read(label, timeout, requests, reader=agent_cli.patch_edit.read_data_sets_batched, attempts=3, process_timeout=None):
+            self.assertEqual(requests[0].address, [0x20, 0x2D, 0x10, 0x5F])
+            self.assertEqual(requests[0].size, [0, 0, 0, 2])
+            return {agent_cli.live.address_key(requests[0].address): [6, 4]}
+
+        with mock.patch.object(agent_cli, "read_patch_records_with_timeout", side_effect=fake_read):
+            with mock.patch.object(
+                agent_cli,
+                "apply_plan_cli",
+                side_effect=[
+                    {"plan": "master-set:level:U10-1", "writeCount": 1, "verified": True},
+                    {"plan": "restore-encoding-validation:U10-1:level", "writeCount": 1, "verified": True},
+                ],
+            ) as apply_plan:
+                result = agent_cli.cmd_patch_validate_encoding(args)
+
+        write_plan = apply_plan.call_args_list[0].args[0]
+        restore_plan = apply_plan.call_args_list[1].args[0]
+        self.assertEqual(write_plan.writes[0].address, [0x20, 0x2D, 0x10, 0x5F])
+        self.assertEqual(write_plan.writes[0].data, [5, 10])
+        self.assertEqual(restore_plan.writes[0].address, [0x20, 0x2D, 0x10, 0x5F])
+        self.assertEqual(restore_plan.writes[0].data, [6, 4])
+        self.assertTrue(apply_plan.call_args_list[0].kwargs["verify"])
+        self.assertFalse(apply_plan.call_args_list[0].kwargs["create_restore"])
+        self.assertTrue(apply_plan.call_args_list[0].kwargs["exact_verify"])
+        self.assertTrue(apply_plan.call_args_list[1].kwargs["exact_verify"])
+        self.assertEqual(result["before"][0]["readOffset"], 0)
+        self.assertEqual(result["before"][0]["dataHex"], "06 04")
+        self.assertTrue(result["restored"])
+        self.assertEqual(result["confidenceRecommendation"], "live-verified")
+
+    def test_validate_encoding_attempts_restore_after_write_failure(self):
+        args = agent_cli.build_parser().parse_args(["patch", "validate-encoding", "master", "level", "90", "--user-slot", "U10-1", "--live"])
+
+        def fake_read(label, timeout, requests, reader=agent_cli.patch_edit.read_data_sets_batched, attempts=3, process_timeout=None):
+            return {agent_cli.live.address_key(requests[0].address): [6, 4]}
+
+        with mock.patch.object(agent_cli, "read_patch_records_with_timeout", side_effect=fake_read):
+            with mock.patch.object(
+                agent_cli,
+                "apply_plan_cli",
+                side_effect=[
+                    live.LiveMIDIError("write failed"),
+                    {"plan": "restore-encoding-validation:U10-1:level", "writeCount": 1, "verified": True},
+                ],
+            ) as apply_plan:
+                with self.assertRaises(agent_cli.CLIError):
+                    agent_cli.cmd_patch_validate_encoding(args)
+
+        self.assertEqual([call.args[0].id for call in apply_plan.call_args_list], [
+            "master-set:level:U10-1",
+            "restore-encoding-validation:U10-1:level",
+        ])
+        self.assertTrue(all(call.kwargs["exact_verify"] for call in apply_plan.call_args_list))
+
+    def test_validate_encoding_round_trips_block_parameter_and_reports_legacy_start(self):
+        args = agent_cli.build_parser().parse_args(["patch", "validate-encoding", "block", "delay3.sw", "on", "--user-slot", "U10-1", "--live"])
+
+        def fake_read(label, timeout, requests, reader=agent_cli.patch_edit.read_data_sets_batched, attempts=3, process_timeout=None):
+            self.assertEqual(requests[0].address, [0x20, 0x2D, 0x1F, 0x00])
+            self.assertEqual(requests[0].size, [0, 0, 0, 1])
+            return {agent_cli.live.address_key(requests[0].address): [0]}
+
+        with mock.patch.object(agent_cli, "read_patch_records_with_timeout", side_effect=fake_read):
+            with mock.patch.object(
+                agent_cli,
+                "apply_plan_cli",
+                side_effect=[
+                    {"plan": "set:delay3.sw:U10-1", "writeCount": 1, "verified": True},
+                    {"plan": "restore-encoding-validation:U10-1:delay3.sw", "writeCount": 1, "verified": True},
+                ],
+            ) as apply_plan:
+                result = agent_cli.cmd_patch_validate_encoding(args)
+
+        write_plan = apply_plan.call_args_list[0].args[0]
+        restore_plan = apply_plan.call_args_list[1].args[0]
+        self.assertEqual(write_plan.writes[0].address, [0x20, 0x2D, 0x1F, 0x00])
+        self.assertEqual(write_plan.writes[0].data, [1])
+        self.assertEqual(restore_plan.writes[0].address, [0x20, 0x2D, 0x1F, 0x00])
+        self.assertEqual(restore_plan.writes[0].data, [0])
+        self.assertEqual(result["field"], "delay3.sw")
+        self.assertEqual(result["confidenceBefore"]["confidence"], "legacy")
+        self.assertEqual(result["before"][0]["dataHex"], "00")
+        self.assertTrue(result["restored"])
+        self.assertEqual(result["confidenceRecommendation"], "live-verified")
+        self.assertTrue(apply_plan.call_args_list[0].kwargs["exact_verify"])
+        self.assertTrue(apply_plan.call_args_list[1].kwargs["exact_verify"])
+
+    def test_validate_encoding_can_write_current_value_without_restore(self):
+        args = agent_cli.build_parser().parse_args([
+            "patch",
+            "validate-encoding",
+            "block",
+            "delay3.sw",
+            "on",
+            "--current-value",
+            "--user-slot",
+            "U10-1",
+            "--live",
+        ])
+
+        def fake_read(label, timeout, requests, reader=agent_cli.patch_edit.read_data_sets_batched, attempts=3, process_timeout=None):
+            self.assertEqual(requests[0].address, [0x20, 0x2D, 0x1F, 0x00])
+            return {agent_cli.live.address_key(requests[0].address): [0]}
+
+        with mock.patch.object(agent_cli, "read_patch_records_with_timeout", side_effect=fake_read):
+            with mock.patch.object(
+                agent_cli,
+                "apply_plan_cli",
+                return_value={"plan": "set:delay3.sw:U10-1", "writeCount": 1, "verified": True},
+            ) as apply_plan:
+                result = agent_cli.cmd_patch_validate_encoding(args)
+
+        write_plan = apply_plan.call_args.args[0]
+        self.assertEqual(write_plan.writes[0].data, [0])
+        self.assertEqual(result["targetValue"], "off")
+        self.assertEqual(result["requestedValue"], "on")
+        self.assertTrue(result["currentValue"])
+        self.assertFalse(result["restored"])
+        self.assertIsNone(result["restore"])
+        self.assertEqual(result["confidenceRecommendation"], "live-verified")
+        self.assertEqual(apply_plan.call_count, 1)
+
+    def test_validate_encoding_rejects_non_u10_slots(self):
+        args = agent_cli.build_parser().parse_args(["patch", "validate-encoding", "master", "level", "90", "--user-slot", "U09-1", "--live"])
+
+        with self.assertRaises(agent_cli.CLIError):
+            agent_cli.cmd_patch_validate_encoding(args)
+
+    def test_validate_encoding_batch_runs_cases_sequentially_on_u10(self):
+        args = agent_cli.build_parser().parse_args([
+            "patch",
+            "validate-encoding-batch",
+            "master.level=90",
+            "block.delay3.sw=on",
+            "--user-slot",
+            "U10-1",
+            "--live",
+        ])
+
+        def fake_read(label, timeout, requests, reader=agent_cli.patch_edit.read_data_sets_batched, attempts=3, process_timeout=None):
+            if "level" in label:
+                self.assertEqual(requests[0].address, [0x20, 0x2D, 0x10, 0x5F])
+                return {agent_cli.live.address_key(requests[0].address): [6, 4]}
+            if "delay3.sw" in label:
+                self.assertEqual(requests[0].address, [0x20, 0x2D, 0x1F, 0x00])
+                return {agent_cli.live.address_key(requests[0].address): [0]}
+            raise AssertionError(f"unexpected read label {label}")
+
+        with mock.patch.object(agent_cli, "read_patch_records_with_timeout", side_effect=fake_read):
+            with mock.patch.object(
+                agent_cli,
+                "apply_plan_cli",
+                side_effect=[
+                    {"plan": "master-set:level:U10-1", "writeCount": 1, "verified": True},
+                    {"plan": "restore-encoding-validation:U10-1:level", "writeCount": 1, "verified": True},
+                    {"plan": "set:delay3.sw:U10-1", "writeCount": 1, "verified": True},
+                    {"plan": "restore-encoding-validation:U10-1:delay3.sw", "writeCount": 1, "verified": True},
+                ],
+            ) as apply_plan:
+                result = agent_cli.cmd_patch_validate_encoding_batch(args)
+
+        self.assertEqual(result["id"], "encodingValidationBatch")
+        self.assertEqual(result["slot"], "U10-1")
+        self.assertEqual(result["caseCount"], 2)
+        self.assertEqual(result["confidenceRecommendations"], {"live-verified": 2})
+        self.assertEqual([case["field"] for case in result["results"]], ["level", "delay3.sw"])
+        self.assertEqual([call.args[0].id for call in apply_plan.call_args_list], [
+            "master-set:level:U10-1",
+            "restore-encoding-validation:U10-1:level",
+            "set:delay3.sw:U10-1",
+            "restore-encoding-validation:U10-1:delay3.sw",
+        ])
+        self.assertTrue(all(call.kwargs["exact_verify"] for call in apply_plan.call_args_list))
+
+    def test_validate_encoding_batch_rejects_non_u10_slots(self):
+        args = agent_cli.build_parser().parse_args(["patch", "validate-encoding-batch", "master.level=90", "--user-slot", "U09-1", "--live"])
+
+        with self.assertRaises(agent_cli.CLIError):
+            agent_cli.cmd_patch_validate_encoding_batch(args)
 
     def test_intent_solo_boost_uses_validated_control_plan(self):
         args = agent_cli.build_parser().parse_args(["patch", "intent", "solo-boost", "--control", "ctl4", "--amount", "20", "--live", "--verify"])
@@ -878,8 +1278,11 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(plan.id, "control:ctl4:level-plus-20")
         self.assertEqual(plan.writes[0].data, [6, 0])
         self.assertTrue(apply_plan.call_args.kwargs["verify"])
+        self.assertFalse(apply_plan.call_args.kwargs["create_restore"])
         self.assertEqual(result["id"], "patchIntent")
         self.assertEqual(result["intent"], "solo-boost")
+        self.assertEqual(result["encodingConfidence"][0]["id"], "patch.controls")
+        self.assertIn("encodingWarning", result)
 
     def test_intent_expression_volume_uses_exp_pedal_plan(self):
         args = agent_cli.build_parser().parse_args(["patch", "intent", "expression-volume", "--control", "exp2", "--include-pedal-fx", "--live"])
@@ -890,6 +1293,7 @@ class UserPatchReadTests(unittest.TestCase):
         plan = apply_plan.call_args.args[0]
         self.assertEqual(plan.id, "control:exp2:foot-volume-pedal-fx")
         self.assertEqual(plan.writes[0].data, [3])
+        self.assertFalse(apply_plan.call_args.kwargs["create_restore"])
         self.assertEqual(result["intentSummary"]["control"], "exp2")
 
     def test_intent_delay_toggle_rejects_unknown_delay_block(self):
@@ -909,9 +1313,9 @@ class UserPatchReadTests(unittest.TestCase):
             result = agent_cli.cmd_patch_setlist_audit(args)
 
         self.assertEqual(result["slots"], ["U10-1", "U10-2"])
-        self.assertEqual(read_slot.call_args_list[0].args, ("U10-1", 8.0))
+        self.assertEqual(read_slot.call_args_list[0].args, ("U10-1", 20.0))
         self.assertEqual(read_slot.call_args_list[0].kwargs, {"view": "performance"})
-        self.assertEqual(read_slot.call_args_list[1].args, ("U10-2", 8.0))
+        self.assertEqual(read_slot.call_args_list[1].args, ("U10-2", 20.0))
 
     def performance_view(self, name: str, *, level: int, bpm: float, tuner: bool, exp1: str) -> dict:
         return {

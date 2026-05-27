@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import ctypes
+import json
 import os
 import sys
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 
@@ -14,6 +16,48 @@ DEVICE_ID = 0x10
 MODEL_ID = [0x00, 0x00, 0x00, 0x4F]
 RQ1 = 0x11
 DT1 = 0x12
+DIAGNOSTIC_LOG_ENV = "GT1000_DIAGNOSTIC_LOG"
+
+
+def diagnostic_event(event: str, **fields: Any) -> None:
+    path = os.environ.get(DIAGNOSTIC_LOG_ENV)
+    if not path:
+        return
+    payload = {
+        "event": event,
+        "wallTime": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "monotonicSeconds": round(time.monotonic(), 6),
+        "pid": os.getpid(),
+    }
+    payload.update(fields)
+    try:
+        with Path(path).open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, sort_keys=True) + "\n")
+    except Exception:
+        pass
+
+
+def diagnostic_request_summary(requests: list["PatchReadRequest"]) -> list[dict[str, Any]]:
+    return [
+        {
+            "label": request.label,
+            "address": hex_bytes(request.address),
+            "size": hex_bytes(request.size),
+        }
+        for request in requests
+    ]
+
+
+def diagnostic_write_summary(writes: list["PatchWrite"]) -> list[dict[str, Any]]:
+    return [
+        {
+            "label": write.label,
+            "address": hex_bytes(write.address),
+            "dataBytes": len(write.data),
+            "dataHex": hex_string(write.data[:32]) + (" ..." if len(write.data) > 32 else ""),
+        }
+        for write in writes
+    ]
 
 TEMPORARY_PATCH_NAME = [0x10, 0x00, 0x00, 0x00]
 TEMPORARY_PATCH_MASTER_BPM = [0x10, 0x00, 0x10, 0x61]
@@ -783,9 +827,12 @@ class PatchWrite:
 
 
 def write_data_sets(writes: list[PatchWrite], delay: float = 0.05) -> None:
+    started = time.monotonic()
+    diagnostic_event("live.write_data_sets.start", writeCount=len(writes), delay=delay, writes=diagnostic_write_summary(writes))
     midi = CoreMIDI()
     destination = find_endpoint(midi, midi.cm.MIDIGetNumberOfDestinations, midi.cm.MIDIGetDestination)
     if destination is None:
+        diagnostic_event("live.write_data_sets.finish", status="error", durationSeconds=round(time.monotonic() - started, 6), error="No GT-1000 MIDI destination found")
         raise LiveMIDIError("No GT-1000 MIDI destination found")
 
     client = ctypes.c_uint32()
@@ -801,12 +848,16 @@ def write_data_sets(writes: list[PatchWrite], delay: float = 0.05) -> None:
     check_status("MIDIOutputPortCreate", status)
 
     try:
-        for write in writes:
+        for index, write in enumerate(writes):
+            write_started = time.monotonic()
+            diagnostic_event("live.write.send_start", index=index, label=write.label, address=hex_bytes(write.address), dataBytes=len(write.data))
             send_message(midi, output_port.value, destination, write.message)
+            diagnostic_event("live.write.send_finish", index=index, label=write.label, durationSeconds=round(time.monotonic() - write_started, 6))
             time.sleep(delay)
     finally:
         if client.value:
             midi.cm.MIDIClientDispose(client)
+    diagnostic_event("live.write_data_sets.finish", status="ok", durationSeconds=round(time.monotonic() - started, 6))
 
 
 def send_channel_voice(message: list[int], delay: float = 0.1) -> None:
@@ -838,15 +889,25 @@ def send_channel_voice(message: list[int], delay: float = 0.1) -> None:
 
 
 def transact_requests(timeout: float, requests: list[PatchReadRequest], *, require_all: bool = True) -> "PatchReadState":
+    started = time.monotonic()
+    diagnostic_event(
+        "live.transact.start",
+        timeout=timeout,
+        requireAll=require_all,
+        requests=diagnostic_request_summary(requests),
+    )
     midi = CoreMIDI()
     state = PatchReadState()
 
     destination = find_endpoint(midi, midi.cm.MIDIGetNumberOfDestinations, midi.cm.MIDIGetDestination)
     source = find_endpoint(midi, midi.cm.MIDIGetNumberOfSources, midi.cm.MIDIGetSource)
     if destination is None:
+        diagnostic_event("live.transact.finish", status="error", durationSeconds=round(time.monotonic() - started, 6), error="No GT-1000 MIDI destination found")
         raise LiveMIDIError("No GT-1000 MIDI destination found")
     if source is None:
+        diagnostic_event("live.transact.finish", status="error", durationSeconds=round(time.monotonic() - started, 6), error="No GT-1000 MIDI source found")
         raise LiveMIDIError("No GT-1000 MIDI source found")
+    diagnostic_event("live.transact.endpoints", destination=destination, source=source)
 
     client = ctypes.c_uint32()
     output_port = ctypes.c_uint32()
@@ -882,28 +943,49 @@ def transact_requests(timeout: float, requests: list[PatchReadRequest], *, requi
         # Send requests one at a time. Large RQ1 bursts can leave the tested unit
         # visible to CoreMIDI but no longer replying to SysEx.
         for request in requests:
+            request_started = time.monotonic()
+            diagnostic_event("live.request.start", label=request.label, address=hex_bytes(request.address), size=hex_bytes(request.size))
             for _attempt in range(request_retries + 1):
                 if state.has_response(request.address):
                     break
+                diagnostic_event("live.request.send", label=request.label, address=hex_bytes(request.address), attempt=_attempt + 1)
                 send_message(midi, output_port.value, destination, request.message)
                 time.sleep(request_delay)
                 request_deadline = time.monotonic() + timeout
                 while time.monotonic() < request_deadline and not state.has_response(request.address):
                     time.sleep(0.01)
             if not state.has_response(request.address):
+                diagnostic_event(
+                    "live.request.finish",
+                    label=request.label,
+                    address=hex_bytes(request.address),
+                    status="missing",
+                    durationSeconds=round(time.monotonic() - request_started, 6),
+                )
                 if not require_all:
                     consecutive_misses += 1
                     if lenient_miss_limit > 0 and consecutive_misses >= lenient_miss_limit:
                         break
                     continue
                 missing = address_key(request.address)
+                diagnostic_event("live.transact.finish", status="error", durationSeconds=round(time.monotonic() - started, 6), missing=[missing])
                 raise LiveMIDIError(f"Timed out waiting for GT-1000 patch replies. Missing: ['{missing}']\nPartial snapshot:\n{snapshot_text_summary(state.snapshot)}")
             consecutive_misses = 0
+            diagnostic_event(
+                "live.request.finish",
+                label=request.label,
+                address=hex_bytes(request.address),
+                status="ok",
+                durationSeconds=round(time.monotonic() - request_started, 6),
+            )
 
         if state.has_expected_responses():
+            diagnostic_event("live.transact.finish", status="ok", durationSeconds=round(time.monotonic() - started, 6), received=list(state.received))
             return state
         if not require_all:
+            diagnostic_event("live.transact.finish", status="partial", durationSeconds=round(time.monotonic() - started, 6), received=list(state.received))
             return state
+        diagnostic_event("live.transact.finish", status="error", durationSeconds=round(time.monotonic() - started, 6), missing=list(state.expected - state.received))
         raise LiveMIDIError(f"Timed out waiting for GT-1000 patch replies. Missing: {list(state.expected - state.received)}\nPartial snapshot:\n{snapshot_text_summary(state.snapshot)}")
     finally:
         # Keep callback alive until after the read loop exits.
@@ -1198,7 +1280,7 @@ def apply_patch_effect(snapshot: dict[str, Any], data: list[int]) -> None:
         "address": hex_bytes(TEMPORARY_PATCH_EFFECT),
         "dataHex": hex_string(data),
     })
-    snapshot["masterPatchLevel"] = data[0x60] if len(data) > 0x60 else None
+    snapshot["masterPatchLevel"] = patch_level_from_data(data)
     bpm = bpm_from_data(data[0x61:0x65])
     if bpm is not None:
         snapshot["masterBPM"] = bpm
@@ -1226,6 +1308,15 @@ def apply_patch_effect(snapshot: dict[str, Any], data: list[int]) -> None:
         raw_data = data[definition.offset:definition.offset + definition.size]
         upsert_block(snapshot, block_from_definition(snapshot, definition, raw_data, base_data=data))
     refresh_block_membership(snapshot)
+
+
+def patch_level_from_data(data: list[int]) -> int | None:
+    if len(data) <= 0x60:
+        return None
+    value = integer_from_nibbles(data[0x5F:0x61])
+    if value is None or value > 200:
+        return None
+    return value
 
 
 def apply_block_summary(snapshot: dict[str, Any], definition: BlockDefinition, data: list[int]) -> None:

@@ -3,10 +3,23 @@
 The agent-facing CLI is wrapped by:
 
 ```sh
-scripts/gt1000-agent
+$GT1000_AGENT
 ```
 
+Resolve `GT1000_AGENT` from the loaded skill directory before using this page, for example `<skill-dir>/scripts/gt1000-agent`. In an installed skill, prefer the current project's `.agents/skills/gt1000/scripts/gt1000-agent` when it exists, and do not substitute a development checkout or repo-root wrapper after loading the project-installed skill. Do not run `scripts/gt1000-agent` relative to the user's current project unless that project is the skill directory. Older examples on this page that show `scripts/gt1000-agent` mean `$GT1000_AGENT`.
+
 This is a Python command surface for agents and skills. Live MIDI reads use the Python CoreMIDI backend in `tools/gt1000/live.py`, and saved full patch JSON dumps can be inspected offline.
+
+## Diagnostic Logging
+
+Use `--diagnostic-log` before the command to write JSONL timing events. With no value, it writes to a generated file under `~/.gt1000-agent/diagnostics`; with an explicit value, use either `--diagnostic-log path.jsonl` or `--diagnostic-log=path.jsonl`.
+
+```sh
+$GT1000_AGENT --pretty --diagnostic-log patch master-set level 90 --user-slot U10-1 --live --verify --timeout 20
+$GT1000_AGENT --pretty --diagnostic-log=/tmp/gt1000-master-set.jsonl patch master-set level 90 --user-slot U10-1 --live --verify --timeout 20
+```
+
+Each log includes command start/finish events, live worker timings, write timings, read/verification attempts, requested addresses/sizes, and timeout values. Encoding validation commands create a diagnostic log automatically.
 
 ## Verification
 
@@ -25,6 +38,12 @@ GT1000_LIVE=1 GT1000_ALLOW_DESTRUCTIVE=1 GT1000_LIVE_BACKUP_DIR=/tmp/gt1000-live
 
 If `ports --live` itself hangs or times out, stop live testing and recover CoreMIDI/the USB connection before continuing. Quit BOSS Tone Studio if it is open, then power-cycle or reconnect the GT-1000.
 
+If a live CLI command is interrupted by an agent or terminal while a CoreMIDI worker is running, verify no stale workers remain before retrying:
+
+```sh
+ps -axo pid,ppid,etime,command | rg 'gt1000-agent|agent_cli|multiprocessing'
+```
+
 If macOS USB inventory still shows `GT-1000` from `BOSS` but `ports --live` times out, the hang can be inside CoreMIDI endpoint enumeration before the CLI reaches any GT-1000-specific code. Restarting `coreaudiod`, `com.apple.midiserver`, or the user `MIDIServer` process may help, but if `MIDIGetNumberOfDestinations()` still hangs, do a full Mac restart before any more live GT-1000 verification.
 
 If `ports --live` still lists the normal `GT-1000` endpoints but known-good SysEx reads such as `system controls --live` time out, stop live write testing and power-cycle or reconnect the GT-1000 before continuing. The tested unit can remain visible to CoreMIDI while no longer replying to SysEx after repeated large reads.
@@ -34,6 +53,21 @@ If small live reads pass but full persistent-slot operations such as `patch expo
 If a fresh backup export succeeds but verified write commands fail with endpoint or read-timeout errors, stop the destructive suite and exact-verify the protected slots against the backup before trying more writes. Endpoint lookup and write/read verification include retries, so repeated failures usually indicate a live CoreMIDI/device stability issue rather than a parser or schema problem. If the cleanup import runs but a post-cleanup exact export cannot complete, leave live write testing stopped until a reconnect or power-cycle restores known-good `patch summary --live` and protected-slot export behavior.
 
 Large read commands are paced between RQ1 messages to avoid overrunning the tested unit. Set `GT1000_REQUEST_DELAY` to tune the inter-request delay if a device needs more spacing than the default. Multi-slot librarian reads also pause between slots; set `GT1000_SLOT_READ_DELAY` to tune that delay.
+
+## Timeout Selection
+
+Use timeout values that match the command scope:
+
+- `--timeout 8`: port inventory, `doctor` without write checks, and small system views.
+- `--timeout 15`: focused current-patch reads such as `patch musician-summary`, `patch performance`, `patch chain`, `patch controls`, `patch block`, and `patch stompbox`.
+- `--timeout 20`: full current-patch summaries, setlist/level audits, normal verified temporary writes, and level normalization.
+- `--timeout 30`: persistent slot/preset/bank musician summaries, clone, copy, import/export, exchange, insert, batch-copy, preset restore, destructive recovery, and verified persistent reads or writes.
+
+For multi-slot commands, the timeout is the per-slot or per-read allowance; total wall-clock time scales with the slot count and configured inter-slot delay. The CLI wraps low-level live calls in worker guards and may use additional internal deadlines for multi-record reads, so an outer agent should keep waiting until the process exits or returns its own timeout error. If a live command times out, do not retry with a shorter timeout. First check `ports --live --timeout 8`, then recover the MIDI/CoreMIDI connection if port discovery fails.
+
+Live GT-1000 commands need macOS CoreMIDI access. In Codex CLI, the normal workspace/read-only sandbox can deny that access and present as a timeout; use yolo/`--dangerously-bypass-approvals-and-sandbox` or `-s danger-full-access` for live verification. The CLI fast-fails with a sandbox/CoreMIDI permission error when it can detect this condition.
+
+Run live commands one at a time. Do not combine live reads with shell `&&` pipelines such as `patch performance --live && patch chain --live`; wait for the first command to exit before deciding whether another read is needed.
 
 After recovering a wedged CoreMIDI/USB connection, resume live verification in this order:
 
@@ -53,7 +87,7 @@ GT1000_LIVE=1 GT1000_ALLOW_DESTRUCTIVE=1 GT1000_LIVE_BACKUP_DIR=/tmp/gt1000-live
 If a destructive run is interrupted, restore the slot backup with the normal verified liveset importer:
 
 ```sh
-scripts/gt1000-agent --pretty patch import /tmp/gt1000-live-backups/live-write-slot-backup-<timestamp>.json --destination-start U10-1 --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch import /tmp/gt1000-live-backups/live-write-slot-backup-<timestamp>.json --destination-start U10-1 --live --verify --timeout 30
 ```
 
 The System Control backup is written as JSON with a `dataHex` field. Until a first-class system restore CLI exists, restore it with the live helper:
@@ -194,19 +228,19 @@ All patch commands support `--live` for the connected device or `--file <path>` 
 ### `patch summary`
 The most efficient command for a complete overview. Aggregates metadata, signal chain, and foot-switch assignments in a single bulk read.
 ```sh
-scripts/gt1000-agent --pretty patch summary --live --timeout 15
+scripts/gt1000-agent --pretty patch summary --live --timeout 20
 ```
 
 ### `patch overview`
 Show compact patch metadata (name, BPM, level, key).
 ```sh
-scripts/gt1000-agent --pretty patch overview --live
+scripts/gt1000-agent --pretty patch overview --live --timeout 8
 ```
 
 ### `patch chain`
 Show the signal chain with block types (e.g., `T-SCREAM`) but without detailed parameters.
 ```sh
-scripts/gt1000-agent --pretty patch chain --live
+scripts/gt1000-agent --pretty patch chain --live --timeout 15
 ```
 - Reads Assign blocks and direct physical-control mappings so switched-off blocks can still be marked as description candidates when a decoded control can enable them.
 - Chain elements include `activeAssigns` and `directControls` when those mappings target the element's block.
@@ -240,35 +274,39 @@ scripts/gt1000-agent --pretty patch musician-summary --live --timeout 15
 ### `patch slot`
 Read a persistent user patch slot directly by SysEx without selecting it on the unit.
 ```sh
-scripts/gt1000-agent --pretty patch slot U01-1 --live --view summary --timeout 15
+$GT1000_AGENT --pretty patch slot U01-1 --live --timeout 30
+$GT1000_AGENT --pretty patch slot U01-1 --live --view musician-summary --timeout 30
 ```
 - `slot`: User slot `U01-1` through `U50-5`.
-- `--view`: `overview`, `chain`, `controls`, `performance`, `musician-summary`, `summary`, or `full`.
+- `--view`: `overview`, `chain`, `controls`, `performance`, `musician-summary`, `summary`, or `full`. Defaults to `overview` to keep ordinary slot reads fast.
+- For musician-facing descriptions, start with `--view musician-summary`. Use `--view summary` only when you need the fuller structured chain/control payload.
 
 ### `patch preset`
 Read a preset patch's documented primary records directly by SysEx without selecting it on the unit.
 ```sh
-scripts/gt1000-agent --pretty patch preset P01-1 --live --view summary --timeout 15
+$GT1000_AGENT --pretty patch preset P01-1 --live --timeout 30
+$GT1000_AGENT --pretty patch preset P01-1 --live --view musician-summary --timeout 30
 ```
 - `slot`: Preset slot `P01-1` through `P50-5`.
-- `--view`: `overview`, `chain`, `controls`, `performance`, `musician-summary`, `summary`, or `full`.
+- `--view`: `overview`, `chain`, `controls`, `performance`, `musician-summary`, `summary`, or `full`. Defaults to `overview`.
 - Preset extra STOMPBOX records are not read because their preset address bases are not documented in the local MIDI reference.
 - During destructive live validation on the tested GT-1000, direct preset-memory reads at `30 00 00 00` did not reply. Treat this command as requiring renewed live validation before relying on it for factory-preset recovery.
 
 ### `patch bank`
 Read all five persistent user patch slots in a bank sequentially.
 ```sh
-scripts/gt1000-agent --pretty patch bank U01 --live --view summary --timeout 15
+$GT1000_AGENT --pretty patch bank U01 --live --timeout 30
+$GT1000_AGENT --pretty patch bank U01 --live --view musician-summary --timeout 30
 ```
 - `bank`: User bank `U01` through `U50`.
-- `--view`: `overview`, `chain`, `controls`, `performance`, `musician-summary`, `summary`, or `full`.
+- `--view`: `overview`, `chain`, `controls`, `performance`, `musician-summary`, `summary`, or `full`. Defaults to `overview`.
 - Reads are sequential to avoid interleaving GT-1000 MIDI replies.
 - Use this for comparing patch names, master patch levels, chains, controls, and switchable-path level parameters across a bank.
 
 ### `patch diff`
 Compare two patches in musician-facing terms.
 ```sh
-scripts/gt1000-agent --pretty patch diff U10-1 U10-2 --live --timeout 15
+scripts/gt1000-agent --pretty patch diff U10-1 U10-2 --live --timeout 30
 scripts/gt1000-agent --pretty patch diff before.json after.json
 ```
 - With `--live`, `source` and `target` are user patch slots read directly without selecting them.
@@ -278,8 +316,8 @@ scripts/gt1000-agent --pretty patch diff before.json after.json
 ### `patch setlist-audit`
 Audit live-use risks across a bank or explicit slot list.
 ```sh
-scripts/gt1000-agent --pretty patch setlist-audit U10 --live --timeout 15
-scripts/gt1000-agent --pretty patch setlist-audit U10-1 U10-2 U10-3 --live --timeout 15
+scripts/gt1000-agent --pretty patch setlist-audit U10 --live --timeout 20
+scripts/gt1000-agent --pretty patch setlist-audit U10-1 U10-2 U10-3 --live --timeout 20
 ```
 - Flags patch-level jumps, missing tuner access, mixed BPM values, expression-pedal behavior changes, and SYSTEM-preference controls.
 - A single bank argument such as `U10` expands to all five slots in that bank.
@@ -287,31 +325,31 @@ scripts/gt1000-agent --pretty patch setlist-audit U10-1 U10-2 U10-3 --live --tim
 ### `patch level-audit`
 Compare patch master levels and loudness-related performance controls across a bank or slot list.
 ```sh
-scripts/gt1000-agent --pretty patch level-audit U10-1 U10-2 --target 90 --live --timeout 15
-scripts/gt1000-agent --pretty patch level-audit U10 --live --timeout 15
+scripts/gt1000-agent --pretty patch level-audit U10-1 U10-2 --target 90 --live --timeout 20
+scripts/gt1000-agent --pretty patch level-audit U10 --live --timeout 20
 ```
 - Reports each slot's decoded master patch level, delta from the explicit target, or delta from the median decoded level when `--target` is omitted.
 - Flags large level offsets and playable controls or Assigns that mention level, volume, gain, or boost.
 
 ### `patch normalize-levels`
-Set several user-slot patch master levels while preserving the rest of each Patch Effect record.
+Set several user-slot patch master levels with targeted two-nibble writes.
 ```sh
 scripts/gt1000-agent --pretty patch normalize-levels U10-1 U10-2 --target 90 --live --verify --timeout 20
 scripts/gt1000-agent --pretty patch normalize-levels U10 --target 90 --dry-run --live --timeout 20
 ```
 - `--target`: patch master level `0`...`200`.
-- `--dry-run`: read and report intended changes without writing.
-- `--verify`: re-read each written Patch Effect record and compare exact bytes.
-- This is a persistent write to the selected user slots; inspect and back up slots first when their contents matter.
+- `--dry-run`: report targeted writes without writing.
+- `--verify`: re-read the exact live-verified two-nibble level field and compare it to the target.
+- This is a persistent write to the selected user slots. It does not audit current levels or create a restore point; run `patch level-audit` first when previous levels, patch names, or gain-stage context matter.
 
 ### `patch intent`
 Apply a validated musician-intent edit through existing typed patch editors.
 ```sh
-scripts/gt1000-agent --pretty patch intent solo-boost --control ctl4 --amount 10 --live --verify
-scripts/gt1000-agent --pretty patch intent tap-tempo --control ctl3 --live --verify
-scripts/gt1000-agent --pretty patch intent delay-toggle --control ctl2 --block delay1 --live --verify
-scripts/gt1000-agent --pretty patch intent tuner --control ctl3 --live --verify
-scripts/gt1000-agent --pretty patch intent expression-volume --control exp1 --include-pedal-fx --live --verify
+scripts/gt1000-agent --pretty patch intent solo-boost --control ctl4 --amount 10 --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch intent tap-tempo --control ctl3 --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch intent delay-toggle --control ctl2 --block delay1 --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch intent tuner --control ctl3 --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch intent expression-volume --control exp1 --include-pedal-fx --live --verify --timeout 20
 ```
 - Supported intents are `solo-boost`, `tap-tempo`, `delay-toggle`, `tuner`, and `expression-volume`.
 - The command maps each intent to a bounded control/EXP editor plan; it does not accept arbitrary SysEx.
@@ -349,6 +387,67 @@ scripts/gt1000-agent --pretty patch schema delay1 --raw
 - Shows the bounded raw-editable allocation for `patch raw-set`; FX1-FX4 algorithm records are also exposed as named schema blocks.
 - `--raw` enumerates every bounded raw-editable offset for a selected block and marks offsets already covered by a named parameter.
 
+### `patch encoding-status`
+Show encoding confidence for editable fields and schemas.
+```sh
+scripts/gt1000-agent --pretty patch encoding-status
+scripts/gt1000-agent --pretty patch encoding-status master
+scripts/gt1000-agent --pretty patch encoding-status patch.master.level
+scripts/gt1000-agent --pretty patch encoding-status master --untrusted
+```
+- Encoding confidence levels are `official`, `live-verified`, `inferred`, and `legacy`.
+- `legacy` means the mapping existed in the repo but has not yet been round-trip validated during the current encoding audit.
+- `inferred` means the exact field was not individually round-trip validated, but the same block parameter family and codec have representative exact write-back validations across multiple blocks. This is layout/encoding evidence only.
+- `semanticConfidence` is separate from write/read evidence. It tracks whether the human-facing parameter meaning has been checked against the official Parameter Guide/MIDI target tables or an independent source; a live write/read alone does not prove semantics.
+- Output includes `trustedCount`, `untrustedCount`, `confidenceCounts`, `effectiveConfidenceCounts`, and `semanticConfidenceCounts` so an audit can distinguish source-code confidence, local validation-log promotions, and semantic evidence.
+- `--trusted` and `--untrusted` filter the entry list to the fields already safe for fast exact verification or the fields still needing validation.
+- Each entry includes `effectiveConfidence` and `trustedEncoding`; `trustedEncoding` is true only for `official` or `live-verified` evidence. Alias entries include `canonicalId` when confidence is inherited from the canonical field.
+- Entries promoted through representative family evidence include `familyId` and `familyValidation` with successful field/block counts and sample validating fields.
+- Untrusted master/block entries include `validationTemplate`, `validationCase`, and `validationCommand` values. For scoped results with 50 or fewer generated cases, output also includes `batchValidationCommand` for `patch validate-encoding-batch`.
+- When `~/.gt1000-agent/encoding-validations.jsonl` exists, entries include validation counts, latest validation metadata, and a suggested confidence from live validation evidence.
+- Focused verification can use local validation-log evidence for exact read-back when the log shows a verified write and either a verified restore or an intentional `--keep-value` validation.
+- Tiny exact read-backs use a short internal timeout so a transient single-byte/small-range read miss does not consume a full summary-scale timeout before retrying.
+- Use this before treating a fast targeted edit as validated; unverified fields should be promoted through `patch validate-encoding`, `patch validate-encoding-scope`, or another documented live test before broad use.
+
+### `patch validate-encoding`
+Round-trip validate one editable field encoding on a U10 test slot.
+```sh
+scripts/gt1000-agent --pretty patch validate-encoding master level 90 --user-slot U10-1 --live --timeout 20
+scripts/gt1000-agent --pretty patch validate-encoding block delay1.sw on --user-slot U10-1 --live --timeout 20
+scripts/gt1000-agent --pretty patch validate-encoding master level 95 --user-slot U10-2 --keep-value --live --timeout 20
+```
+- Validation is intentionally restricted to `U10-1` through `U10-5`.
+- `master` fields use names such as `level`; `block` fields use `block.parameter` names from `patch schema`, such as `delay1.sw`.
+- The command reads the original targeted bytes with an exact target read, writes the encoded test value, verifies the exact target read, and restores the original value unless `--keep-value` is provided.
+- If the write path errors after the original bytes have been read, the command still attempts an exact restore with those captured bytes before returning the failure.
+- The command automatically creates a diagnostic JSONL log even when `--diagnostic-log` is omitted, and appends a compact validation record to `~/.gt1000-agent/encoding-validations.jsonl` unless `GT1000_ENCODING_VALIDATION_LOG` points elsewhere.
+
+### `patch validate-encoding-batch`
+Round-trip validate multiple editable field encodings sequentially on one U10 test slot.
+```sh
+scripts/gt1000-agent --pretty patch validate-encoding-batch master.level=90 block.delay1.sw=on --user-slot U10-1 --live --timeout 20
+scripts/gt1000-agent --pretty patch validate-encoding-batch master:level=90 block:delay2.time=420 --user-slot U10-2 --live --timeout 20
+```
+- Validation is intentionally restricted to `U10-1` through `U10-5`.
+- Cases use `area.field=value` or `area:field=value`; supported areas are `master` and `block`.
+- Cases run sequentially. Each case reads only the targeted bytes with exact target reads, writes the test value, verifies it, restores the original value unless `--keep-value` is provided, and appends its own validation-log record.
+- Use this for layout audits where several byte/nibble assumptions need to be proven without full patch reads between every field.
+
+### `patch validate-encoding-scope`
+Generate validation cases from the encoding inventory for a scope, then run them sequentially on one U10 test slot.
+```sh
+scripts/gt1000-agent --pretty patch validate-encoding-scope master --dry-run
+scripts/gt1000-agent --pretty patch validate-encoding-scope master --user-slot U10-1 --live --timeout 20
+scripts/gt1000-agent --pretty patch validate-encoding-scope patch.block.delay1 --limit 3 --user-slot U10-1 --live --timeout 20
+scripts/gt1000-agent --pretty patch validate-encoding-scope patch.block --parameter sw --kind bool --current-value --limit 10 --user-slot U10-1 --live --timeout 20
+```
+- By default, generated cases skip entries already trusted through `official`, static `live-verified`, or local validation-log evidence. Use `--include-trusted` to re-run trusted cases.
+- Use `--parameter <id>` and `--kind <bool|byte|type|nibbles>` to work through a large scope by generated field families instead of hand-picking cases. Both options are repeatable.
+- `--current-value` reads each target's current bytes, writes the equivalent value back, verifies the exact range, and skips restore. This is the safest mode for broad layout validation because the intended persistent value is unchanged.
+- `--dry-run` lists the generated cases without writing to the GT-1000.
+- `--limit` caps the generated case list when working through a large scope in smaller chunks.
+- Each generated case uses the same exact read/write/verify/restore flow as `patch validate-encoding`.
+
 ### `patch select`
 Select a user slot using typed MIDI Bank Select and Program Change messages.
 ```sh
@@ -362,8 +461,8 @@ scripts/gt1000-agent --pretty patch select U50-5 --live --channel 1
 ### `patch clone`
 Clone one persistent user patch slot to another by reading the source records and writing them to the destination slot.
 ```sh
-scripts/gt1000-agent --pretty patch clone U10-1 U10-2 --live --verify --timeout 20
-scripts/gt1000-agent --pretty patch copy U10-1 U10-2 --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch clone U10-1 U10-2 --live --verify --timeout 30
+scripts/gt1000-agent --pretty patch copy U10-1 U10-2 --live --verify --timeout 30
 ```
 - `source_slot` / `destination_slot`: User slots `U01-1` through `U50-5`; they must be different.
 - `--verify`: Re-reads every written clone record and compares exact bytes.
@@ -373,7 +472,7 @@ scripts/gt1000-agent --pretty patch copy U10-1 U10-2 --live --verify --timeout 2
 ### `patch exchange`
 Exchange two persistent user patch slots by reading both slots and writing each slot's known records to the other.
 ```sh
-scripts/gt1000-agent --pretty patch exchange U10-1 U10-2 --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch exchange U10-1 U10-2 --live --verify --timeout 30
 ```
 - Uses the same known patch record set as `patch clone` / `patch copy`.
 - This overwrites both slots; inspect both slots first when slot contents matter.
@@ -381,7 +480,7 @@ scripts/gt1000-agent --pretty patch exchange U10-1 U10-2 --live --verify --timeo
 ### `patch insert`
 Insert one patch into a bounded destination range, shifting the existing destination range down by one slot.
 ```sh
-scripts/gt1000-agent --pretty patch insert U10-1 U11-1 --range-end U11-3 --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch insert U10-1 U11-1 --range-end U11-3 --live --verify --timeout 30
 ```
 - Reads the source slot and every destination slot from `destination_slot` through `--range-end`.
 - Writes the source into `destination_slot` and shifts the previous destination contents down one slot.
@@ -390,7 +489,7 @@ scripts/gt1000-agent --pretty patch insert U10-1 U11-1 --range-end U11-3 --live 
 ### `patch batch-copy`
 Copy multiple user patch slots to a consecutive destination range.
 ```sh
-scripts/gt1000-agent --pretty patch batch-copy U10-1 U10-2 --destination-start U11-1 --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch batch-copy U10-1 U10-2 --destination-start U11-1 --live --verify --timeout 30
 ```
 - Sources are copied in the order provided.
 - The destination range is computed from `--destination-start`.
@@ -399,8 +498,8 @@ scripts/gt1000-agent --pretty patch batch-copy U10-1 U10-2 --destination-start U
 ### `patch export` / `patch import`
 Export user patch slots to a CLI JSON liveset file and import that file into consecutive user slots.
 ```sh
-scripts/gt1000-agent --pretty patch export U10-1 U10-2 --output my-liveset.json --live --timeout 20
-scripts/gt1000-agent --pretty patch import my-liveset.json --destination-start U11-1 --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch export U10-1 U10-2 --output my-liveset.json --live --timeout 30
+scripts/gt1000-agent --pretty patch import my-liveset.json --destination-start U11-1 --live --verify --timeout 30
 ```
 - The file format is `gt1000-agent-liveset-v1`, a repo-native JSON format for the same compact current-state record set used by `patch clone`.
 - Import validates record labels, sizes, 7-bit data bytes, and the destination range before building the write plan.
@@ -412,7 +511,7 @@ Wrap CLI JSON livesets in a JSON `.tsl` envelope, inspect JSON `.tsl` patch meta
 ```sh
 scripts/gt1000-agent --pretty patch tsl-export my-liveset.json --output my-liveset.tsl --name "MY LIVESET"
 scripts/gt1000-agent --pretty patch tsl-list my-liveset.tsl
-scripts/gt1000-agent --pretty patch tsl-import my-liveset.tsl --destination-start U11-1 --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch tsl-import my-liveset.tsl --destination-start U11-1 --live --verify --timeout 30
 ```
 - `patch tsl-export` validates a `gt1000-agent-liveset-v1` file and writes a `gt1000-agent-tsl-json-v1` JSON `.tsl` envelope with the same known patch records embedded under each patch.
 - `patch tsl-list` accepts JSON files with `liveSetData.patchList`, top-level `patchList`, or Tone Studio-style nested `data` patch entries. For `data` entries, it can extract names from `paramSet.UserPatch%PatchName` or the first 16 bytes of `paramSet.User_patch%common`.
@@ -437,7 +536,7 @@ scripts/gt1000-agent --pretty patch liveset-remove my-liveset.json 3 --output tr
 ### `patch restore-preset`
 Restore a preset patch's documented primary records into a user patch slot.
 ```sh
-scripts/gt1000-agent --pretty patch restore-preset P01-1 U10-1 --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch restore-preset P01-1 U10-1 --live --verify --timeout 30
 ```
 - Reads from the documented preset patch base (`P01-1` starts at `30 00 00 00`) and writes to the destination user slot.
 - Copies PatchCommon, PatchStompBox, PatchLed, Assign 1...16, PatchEfct, and decoded effect block records.
@@ -448,29 +547,29 @@ scripts/gt1000-agent --pretty patch restore-preset P01-1 U10-1 --live --verify -
 ### `patch rename`
 Rename the current temporary patch or a persistent user patch slot.
 ```sh
-scripts/gt1000-agent --pretty patch rename "MY PATCH" --live --verify
-scripts/gt1000-agent --pretty patch rename "MY PATCH" --live --user-slot U10-1 --verify
+scripts/gt1000-agent --pretty patch rename "MY PATCH" --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch rename "MY PATCH" --live --user-slot U10-1 --verify --timeout 30
 ```
 - Names are encoded into the GT-1000 16-byte ASCII patch-name field and truncated/padded as needed.
 
 ### `patch initialize`
 Initialize the current temporary patch or a persistent user patch slot using the validated default plan.
 ```sh
-scripts/gt1000-agent --pretty patch initialize --name "INIT PATCH" --live --verify
-scripts/gt1000-agent --pretty patch initialize --name "INIT PATCH" --live --user-slot U10-1 --verify
+scripts/gt1000-agent --pretty patch initialize --name "INIT PATCH" --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch initialize --name "INIT PATCH" --live --user-slot U10-1 --verify --timeout 30
 ```
 - This uses the same safe default plan as `patch apply default`.
 
 ### `patch clear`
 Alias for the validated default initializer, intended for Tone Studio-style clear workflows.
 ```sh
-scripts/gt1000-agent --pretty patch clear --name "EMPTY" --live --user-slot U10-1 --verify
+scripts/gt1000-agent --pretty patch clear --name "EMPTY" --live --user-slot U10-1 --verify --timeout 30
 ```
 
 ### `patch batch-initialize`
 Initialize multiple user patch slots using the validated default plan.
 ```sh
-scripts/gt1000-agent --pretty patch batch-initialize U10-1 U10-2 --name-prefix "INIT" --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch batch-initialize U10-1 U10-2 --name-prefix "INIT" --live --verify --timeout 30
 ```
 - Slot-specific suffixes are appended to the name prefix when more than one slot is initialized.
 - This is a persistent write to every listed slot.
@@ -478,10 +577,10 @@ scripts/gt1000-agent --pretty patch batch-initialize U10-1 U10-2 --name-prefix "
 ### `patch block`
 Show detailed parameters for a single block.
 ```sh
-scripts/gt1000-agent --pretty patch block preamp1 --live
-scripts/gt1000-agent --pretty patch block ds1 --live
-scripts/gt1000-agent --pretty patch block --position 8 --live
-scripts/gt1000-agent --pretty patch block delay1 --user-slot U01-2
+scripts/gt1000-agent --pretty patch block preamp1 --live --timeout 15
+scripts/gt1000-agent --pretty patch block ds1 --live --timeout 15
+scripts/gt1000-agent --pretty patch block --position 8 --live --timeout 15
+scripts/gt1000-agent --pretty patch block delay1 --user-slot U01-2 --timeout 20
 ```
 - Supports normalized IDs (`preamp1`) and aliases (`ds1`, `sr1`).
 - Use `--position <n>` to target a block by its 1-indexed position in the raw chain.
@@ -490,8 +589,8 @@ scripts/gt1000-agent --pretty patch block delay1 --user-slot U01-2
 ### `patch stompbox`
 Read and decode the known PatchStompBox selection records.
 ```sh
-scripts/gt1000-agent --pretty patch stompbox --live --timeout 8
-scripts/gt1000-agent --pretty patch stompbox --live --user-slot U03-2 --timeout 8
+scripts/gt1000-agent --pretty patch stompbox --live --timeout 15
+scripts/gt1000-agent --pretty patch stompbox --live --user-slot U03-2 --timeout 20
 ```
 - Addresses: temporary `10 00 01 00`, `10 01 00 00`, and `10 02 00 00`; user-slot reads remap these into the selected user patch records.
 - Sizes: `00 00 00 68`, `00 00 00 11`, and `00 00 00 25`.
@@ -500,8 +599,8 @@ scripts/gt1000-agent --pretty patch stompbox --live --user-slot U03-2 --timeout 
 ### `patch dump`
 Read the entire current patch state into a JSON object.
 ```sh
-scripts/gt1000-agent --pretty patch dump --live --timeout 10
-scripts/gt1000-agent --pretty patch dump --live --output my_patch.json
+scripts/gt1000-agent --pretty patch dump --live --timeout 20
+scripts/gt1000-agent --pretty patch dump --live --output my_patch.json --timeout 20
 ```
 
 ### `patch inspect`
@@ -513,20 +612,24 @@ scripts/gt1000-agent --pretty patch inspect my_patch.json --view chain
 
 ## Patch Modification Commands
 
+Use `--timeout 20` for normal verified temporary-patch edits. Use `--timeout 30` when the command writes or verifies a persistent user slot, a global/system setting, or several records.
+Focused edit results include `encodingConfidence`. If a result includes `encodingWarning`, byte read-back succeeded but the field mapping is still a legacy mapping that has not yet been promoted with live round-trip validation.
+Focused single-field commands (`patch set`, `raw-set`, `enable`, `disable`, `type`, `control-set`, `system-control-set`, `control-preference-set`, `led-set`, `assign-cc`, `assign-set`, `set-bpm`, `master-set`, `tuner-assign`, `intent`, and `rename`) do not create a pre-write restore point. They write the typed target and, when `--verify` is provided, read back the exact written range only. Use an explicit inspect/export/backup command first when you need an undo artifact.
+
 ### `patch set`
 Change a single parameter on the connected device.
 ```sh
-scripts/gt1000-agent --pretty patch set delay1 time 380 --live --verify
-scripts/gt1000-agent --pretty patch set sendReturn1 sendLevel 100 --live --verify
+scripts/gt1000-agent --pretty patch set delay1 time 380 --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch set sendReturn1 sendLevel 100 --live --verify --timeout 20
 ```
 - `--verify`: Re-reads the parameter to confirm the write succeeded.
 - `--user-slot Uxx-y`: Persist the change to any valid user slot (`U01-1` through `U50-5`) instead of the temporary patch.
 
 ### `patch raw-set`
-Change one validated raw byte or nibble field within a decoded block record.
+Change one bounded raw byte or nibble field within a decoded block record.
 ```sh
-scripts/gt1000-agent --pretty patch raw-set fx1 12 64 --live --verify
-scripts/gt1000-agent --pretty patch raw-set sendReturn1 2 100 --width nibbles2 --live --verify
+scripts/gt1000-agent --pretty patch raw-set fx1 12 64 --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch raw-set sendReturn1 2 100 --width nibbles2 --live --verify --timeout 20
 ```
 - `block_id`: any decoded main or resident block.
 - `offset`: zero-based byte offset within that block's record.
@@ -534,10 +637,10 @@ scripts/gt1000-agent --pretty patch raw-set sendReturn1 2 100 --width nibbles2 -
 - Use this only when the exact parameter name has not yet been promoted into the typed schema. The command still validates official block allocation bounds, value range, memory target, and read-back verification.
 
 ### `patch enable` / `patch disable`
-Turn a switchable block on or off through the validated block `sw` parameter.
+Turn a switchable block on or off through the decoded block `sw` parameter.
 ```sh
-scripts/gt1000-agent --pretty patch enable delay1 --live --verify
-scripts/gt1000-agent --pretty patch disable dist1 --live --verify
+scripts/gt1000-agent --pretty patch enable delay1 --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch disable dist1 --live --verify --timeout 20
 ```
 - Supports normalized IDs (`delay1`, `dist1`) and aliases (`ds1`, `sr1`).
 - `--verify`: Re-reads the block switch address to confirm the write succeeded.
@@ -545,10 +648,10 @@ scripts/gt1000-agent --pretty patch disable dist1 --live --verify
 - If a block has no decoded `sw` parameter, use `patch block` to inspect it and add a typed validator before writing.
 
 ### `patch type`
-Change a decoded block's effect type through the validated `type` parameter.
+Change a decoded block's effect type through the decoded `type` parameter.
 ```sh
-scripts/gt1000-agent --pretty patch type dist1 T-SCREAM --live --verify
-scripts/gt1000-agent --pretty patch type preamp1 "TWIN COMBO" --live --verify
+scripts/gt1000-agent --pretty patch type dist1 T-SCREAM --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch type preamp1 "TWIN COMBO" --live --verify --timeout 20
 ```
 - Supports exact decoded type names where available; raw 0...127 type numbers are accepted for decoded byte-type blocks.
 - Supports normalized IDs (`preamp1`) and aliases (`ds1`, `sr1`).
@@ -558,8 +661,8 @@ scripts/gt1000-agent --pretty patch type preamp1 "TWIN COMBO" --live --verify
 ### `patch move`
 Move a decoded block in the current signal chain by reading the existing chain, reordering one element, and writing the validated full 49-element chain back.
 ```sh
-scripts/gt1000-agent --pretty patch move delay1 --before chorus --live --verify
-scripts/gt1000-agent --pretty patch move dist1 --after preamp1 --live --verify
+scripts/gt1000-agent --pretty patch move delay1 --before chorus --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch move dist1 --after preamp1 --live --verify --timeout 20
 ```
 - Exactly one of `--before <block>` or `--after <block>` is required.
 - Supports decoded block IDs and aliases (`ds1`, `sr1`).
@@ -570,8 +673,8 @@ scripts/gt1000-agent --pretty patch move dist1 --after preamp1 --live --verify
 ### `patch assign-cc`
 Map one Assign block to a decoded target from a MIDI CC source.
 ```sh
-scripts/gt1000-agent --pretty patch assign-cc 3 delay1 sw --cc 80 --mode moment --live --verify
-scripts/gt1000-agent --pretty patch assign-cc 4 delay1 effectLevel --cc 81 --mode moment --min 20 --max 70 --live --verify
+scripts/gt1000-agent --pretty patch assign-cc 3 delay1 sw --cc 80 --mode moment --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch assign-cc 4 delay1 effectLevel --cc 81 --mode moment --min 20 --max 70 --live --verify --timeout 20
 ```
 - Assign number must be `1`...`16`.
 - `--cc` supports GT-1000 Assign MIDI CC sources `1`...`31` and `64`...`95`.
@@ -584,8 +687,8 @@ scripts/gt1000-agent --pretty patch assign-cc 4 delay1 effectLevel --cc 81 --mod
 ### `patch control-set`
 Set one patch-local NUM/BANK/CTL/EXP control function.
 ```sh
-scripts/gt1000-agent --pretty patch control-set ctl1 dist1 --mode toggle --live --verify
-scripts/gt1000-agent --pretty patch control-set exp1 foot-volume-pedal-fx --live --verify
+scripts/gt1000-agent --pretty patch control-set ctl1 dist1 --mode toggle --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch control-set exp1 foot-volume-pedal-fx --live --verify --timeout 20
 ```
 - Supports direct controls from PatchCommon: `num1`...`num5`, `bank-down`, `bank-up`, `ctl1`...`ctl7`, `cur-num`, `exp1-sw`, `exp1`, `exp2`, and `exp3`.
 - Function names are normalized command ids such as `off`, `tuner`, `dist1`, `delay1-tap`, `divider1-channel-select`, `foot-volume`, and `foot-volume-pedal-fx`.
@@ -594,8 +697,8 @@ scripts/gt1000-agent --pretty patch control-set exp1 foot-volume-pedal-fx --live
 ### `patch system-control-set`
 Set one global/system NUM/BANK/CTL/EXP control function.
 ```sh
-scripts/gt1000-agent --pretty patch system-control-set ctl1 dist1 --mode toggle --live --verify
-scripts/gt1000-agent --pretty patch system-control-set exp1 foot-volume-pedal-fx --live --verify
+scripts/gt1000-agent --pretty patch system-control-set ctl1 dist1 --mode toggle --live --verify --timeout 30
+scripts/gt1000-agent --pretty patch system-control-set exp1 foot-volume-pedal-fx --live --verify --timeout 30
 ```
 - Uses the same control ids and function ids as `patch control-set`.
 - This writes the SystemControl function/mode field. It is a global/system write; inspect `system controls` first.
@@ -603,8 +706,8 @@ scripts/gt1000-agent --pretty patch system-control-set exp1 foot-volume-pedal-fx
 ### `patch control-preference-set`
 Set whether one control uses its patch-local mapping or the global/system mapping.
 ```sh
-scripts/gt1000-agent --pretty patch control-preference-set ctl1 patch --live --verify
-scripts/gt1000-agent --pretty patch control-preference-set ctl1 system --live --verify
+scripts/gt1000-agent --pretty patch control-preference-set ctl1 patch --live --verify --timeout 30
+scripts/gt1000-agent --pretty patch control-preference-set ctl1 system --live --verify --timeout 30
 ```
 - This writes the SystemControl preference byte for the selected control.
 - It is a global/system write; inspect `system controls` and `patch controls` before changing preferences.
@@ -612,8 +715,8 @@ scripts/gt1000-agent --pretty patch control-preference-set ctl1 system --live --
 ### `patch led-set`
 Set one patch-local control LED color.
 ```sh
-scripts/gt1000-agent --pretty patch led-set ctl1 on auto-cyan --live --verify
-scripts/gt1000-agent --pretty patch led-set ctl1 off blue --live --verify
+scripts/gt1000-agent --pretty patch led-set ctl1 on auto-cyan --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch led-set ctl1 off blue --live --verify --timeout 20
 ```
 - Supports `num1`...`num5`, `bank-down`, `bank-up`, `ctl1`...`ctl3`, and `exp1-sw`.
 - Off-state colors support `off`, `red`, `blue`, `light-blue`, `orange`, `green`, `yellow`, `white`, `purple`, `pink`, and `cyan`.
@@ -622,10 +725,10 @@ scripts/gt1000-agent --pretty patch led-set ctl1 off blue --live --verify
 ### `patch assign-set`
 Set one Assign block from raw validated fields, including Patch MIDI fields.
 ```sh
-scripts/gt1000-agent --pretty patch assign-set 2 --target 987 --min 0 --max 1 --source 19 --mode toggle --live --verify
-scripts/gt1000-agent --pretty patch assign-set 2 --target tuner --min 0 --max 1 --source internal-pedal --mode toggle --live --verify
-scripts/gt1000-agent --pretty patch assign-set 3 --target delay1.sw --min 0 --max 1 --source cc80 --mode moment --live --verify
-scripts/gt1000-agent --pretty patch assign-set 3 --target 987 --min 0 --max 1 --source 19 --mode toggle --midi-channel 1 --midi-cc 80 --midi-cc-min 0 --midi-cc-max 127 --live --verify
+scripts/gt1000-agent --pretty patch assign-set 2 --target 987 --min 0 --max 1 --source 19 --mode toggle --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch assign-set 2 --target tuner --min 0 --max 1 --source internal-pedal --mode toggle --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch assign-set 3 --target delay1.sw --min 0 --max 1 --source cc80 --mode moment --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch assign-set 3 --target 987 --min 0 --max 1 --source 19 --mode toggle --midi-channel 1 --midi-cc 80 --midi-cc-min 0 --midi-cc-max 127 --live --verify --timeout 20
 ```
 - This is the general Assign editor. Prefer `patch assign-cc` when mapping a decoded block parameter to a MIDI CC source.
 - `--target` accepts raw target numbers, `block.parameter` references for decoded Assign target ranges, and exact aliases such as `tuner`, `divider1-channel-select`, `divider2-channel-select`, and `divider3-channel-select`.
@@ -637,18 +740,18 @@ scripts/gt1000-agent --pretty patch assign-set 3 --target 987 --min 0 --max 1 --
 ### `patch set-bpm`
 Change the patch master BPM using the validated four-nibble `BPM * 10` encoding.
 ```sh
-scripts/gt1000-agent --pretty patch set-bpm 120.0 --live --verify
+scripts/gt1000-agent --pretty patch set-bpm 120.0 --live --verify --timeout 20
 ```
 - `bpm`: `40.0`...`250.0`, with at most one decimal place.
 - `--verify`: Re-reads the BPM address to confirm the write succeeded.
 - `--user-slot Uxx-y`: Persist the BPM change to any valid user slot (`U01-1` through `U50-5`) instead of the temporary patch.
 
 ### `patch master-set`
-Change one validated patch master field in the PatchEfct record.
+Change one bounded patch master field in the PatchEfct record.
 ```sh
-scripts/gt1000-agent --pretty patch master-set level 95 --live --verify
-scripts/gt1000-agent --pretty patch master-set key "Db(Bbm)" --live --verify
-scripts/gt1000-agent --pretty patch master-set carryover on --live --user-slot U10-1 --verify
+scripts/gt1000-agent --pretty patch master-set level 95 --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch master-set key "Db(Bbm)" --live --verify --timeout 20
+scripts/gt1000-agent --pretty patch master-set carryover on --live --user-slot U10-1 --verify --timeout 30
 ```
 - Supported fields: `level`, `key`, `amp-ctl1`, `amp-ctl2`, `carryover`, `tempo-hold`, and `input-sensitivity`.
 - Boolean fields accept `on`/`off`; key accepts raw `0`...`11` or names such as `C(Am)` and `Db(Bbm)`.
@@ -657,7 +760,7 @@ scripts/gt1000-agent --pretty patch master-set carryover on --live --user-slot U
 ### `patch tuner-assign`
 Install the tested Assign 16 mapping that toggles TUNER ON/OFF from MIDI CC#80.
 ```sh
-scripts/gt1000-agent --pretty patch tuner-assign --live --verify
+scripts/gt1000-agent --pretty patch tuner-assign --live --verify --timeout 20
 ```
 - Writes Assign 16 to target `987` (`TUNER ON/OFF` on the tested GT-1000 v4 unit with Bass Mode off), source CC#80, active range `0`...`127`.
 - After installing, send values with `midi cc 80 127 --channel N --live` and `midi cc 80 0 --channel N --live`.
@@ -672,13 +775,13 @@ scripts/gt1000-agent --pretty patch plan 4cm-template --name "My 4CM Patch"
 ### `patch apply`
 Apply a validated write plan to the device.
 ```sh
-scripts/gt1000-agent --pretty patch apply default --live --verify
+scripts/gt1000-agent --pretty patch apply default --live --verify --timeout 20
 ```
 - `--user-slot Uxx-y`: Persist the plan to any valid user slot (`U01-1` through `U50-5`).
 
 ## Timeout and Port Selection
 
-- `--timeout <seconds>`: Adjust the timeout for live reads (default is 8.0s).
+- `--timeout <seconds>`: Adjust the timeout for live reads. Defaults vary by command: quick port/system reads use 8s, focused current-patch reads use 15s, fuller reads and normal verified writes use 20s, and multi-record persistent-slot/write workflows use 30s.
 - The CLI automatically targets the `GT-1000` port. It avoids `GT-1000 DAW CTRL`.
 
 ## Wiki Search Boundary
