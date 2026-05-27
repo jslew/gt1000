@@ -226,3 +226,10 @@ skills/gt1000/scripts/gt1000-agent --pretty patch inspect tests/fixtures/full_pa
 The skill is meant to support the whole GT-1000: current patch buffer, user patches, global settings, MIDI behavior, Assigns, physical controls, and validated edits through natural language.
 
 The bundled live backend currently targets macOS/CoreMIDI, and the current write helpers are intentionally narrow. Broader patch and global-setting edits should be added as typed intents and validators so an agent can keep working conversationally without falling back to raw SysEx.
+
+## License and Disclaimer
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
+**Disclaimer:** This software is an independent open-source project and is **not** affiliated with, authorized, maintained, sponsored, or endorsed by Roland Corporation, BOSS, or any of their affiliates or subsidiaries. Using this software to read/write to your device via MIDI SysEx is done at your own risk. See the [DISCLAIMER.md](DISCLAIMER.md) file for more details.
+
