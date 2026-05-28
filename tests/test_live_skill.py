@@ -72,6 +72,7 @@ LIVE_VERIFIED_COMMAND_PATHS = {
     ("patch", "level-audit"),
     ("patch", "master-set"),
     ("patch", "move"),
+    ("patch", "cleanup"),
     ("patch", "musician-summary"),
     ("patch", "normalize-levels"),
     ("patch", "overview"),

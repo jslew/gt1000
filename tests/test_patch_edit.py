@@ -84,6 +84,21 @@ class PatchEditTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             patch_edit.plan_for_user_slot(plan, "U51-1")
 
+    def test_chain_reorder_plan_validates_and_writes_full_chain(self):
+        chain_values = list(patch_edit.CANONICAL_FULL_CHAIN)
+        reordered = list(chain_values)
+        reordered.remove(15)
+        reordered.insert(reordered.index(14), 15)
+
+        plan = patch_edit.build_chain_reorder_plan(chain_values, reordered, label="Reorder test")
+
+        self.assertEqual(plan.id, "reorder:chain")
+        self.assertEqual(plan.writes[0].address, [0x10, 0x00, 0x10, 0x68])
+        self.assertEqual(plan.writes[0].data, reordered)
+
+        with self.assertRaises(ValueError):
+            patch_edit.build_chain_reorder_plan(chain_values, chain_values, label="No-op reorder")
+
     def test_clone_read_requests_and_plan_copy_known_patch_records(self):
         requests = patch_edit.clone_core_read_requests("U03-2")
 

@@ -611,6 +611,60 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(result["encodingConfidence"][0]["id"], "patch.chain")
         self.assertIn("encodingWarning", result)
 
+    def test_patch_cleanup_moves_unreachable_elements_to_end(self):
+        chain_values = list(agent_cli.patch_edit.CANONICAL_FULL_CHAIN)
+        snapshot = {
+            "signalChainElements": [
+                {"position": index + 1, "rawValue": value, "displayName": live.chain_element_name(value)}
+                for index, value in enumerate(chain_values)
+            ],
+            "blocks": [
+                {
+                    "id": "delay1",
+                    "displayName": "DELAY 1",
+                    "chainElementValue": 15,
+                    "isEnabled": False,
+                    "typeName": None,
+                    "parameters": [{"id": "sw", "rawValue": 0}],
+                },
+                {
+                    "id": "divider1",
+                    "displayName": "DIVIDER 1",
+                    "chainElementValue": 35,
+                    "isEnabled": None,
+                    "typeName": None,
+                    "parameters": [
+                        {"id": "mode", "rawValue": 0},
+                        {"id": "channelSelect", "rawValue": 0},
+                    ],
+                },
+            ],
+            "rawSections": {},
+        }
+        args = agent_cli.build_parser().parse_args(["patch", "cleanup", "--live", "--verify"])
+
+        with mock.patch.object(agent_cli, "read_live_snapshot_with_timeout", return_value=snapshot) as read_live:
+            with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"verified": True}) as apply:
+                result = agent_cli.cmd_patch_cleanup(args)
+
+        read_live.assert_called_once_with(
+            "patch cleanup chain read --live",
+            20.0,
+            requests=agent_cli.requests_for_view("chain"),
+            lenient_optional=True,
+        )
+        plan = apply.call_args.args[0]
+        self.assertEqual(plan.id, "reorder:chain")
+        self.assertEqual(plan.writes[0].address, [0x10, 0x00, 0x10, 0x68])
+        self.assertIn(15, plan.writes[0].data)
+        self.assertGreater(plan.writes[0].data.index(15), chain_values.index(15))
+        self.assertTrue(result["verified"])
+        self.assertTrue(result["changed"])
+        self.assertEqual(result["encodingConfidence"][0]["id"], "patch.chain")
+        self.assertIn("analysis", result)
+        unreachable = result["analysis"]["unreachableElements"]
+        self.assertTrue(any(item.get("rawValue") == 15 and item.get("reason") == "off_unassigned" for item in unreachable))
+
     def test_patch_assign_cc_command_maps_decoded_on_off_target(self):
         args = agent_cli.build_parser().parse_args([
             "patch", "assign-cc", "3", "delay1", "sw", "--cc", "80", "--mode", "moment", "--live", "--verify",

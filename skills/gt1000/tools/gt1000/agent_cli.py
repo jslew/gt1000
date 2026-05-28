@@ -767,6 +767,18 @@ def build_parser() -> argparse.ArgumentParser:
     move.add_argument("--timeout", type=float, default=FULL_READ_TIMEOUT, help="Read/verification timeout in seconds.")
     move.set_defaults(func=cmd_patch_move)
 
+    cleanup = patch_subcommands.add_parser(
+        "cleanup",
+        help=(
+            "Move unreachable signal-chain elements to the end (inactive fixed branch segments or off blocks with no control mapping)."
+        ),
+    )
+    cleanup.add_argument("--live", action="store_true", help="Required because this reads and writes the connected GT-1000.")
+    cleanup.add_argument("--user-slot", help="Cleanup within a user patch slot instead of the temporary patch.")
+    cleanup.add_argument("--verify", action="store_true", help="Re-read the full chain and compare exact bytes.")
+    cleanup.add_argument("--timeout", type=float, default=FULL_READ_TIMEOUT, help="Read/verification timeout in seconds.")
+    cleanup.set_defaults(func=cmd_patch_cleanup)
+
     control_set = patch_subcommands.add_parser("control-set", help="Set one patch-local NUM/BANK/CTL/EXP control function.")
     control_set.add_argument("control", help="Control id such as ctl1, num1, bank-up, exp1-sw, or exp1.")
     control_set.add_argument("function", help="Function id such as dist1, tuner, delay1-tap, foot-volume, or off.")
@@ -3328,6 +3340,194 @@ def cmd_patch_move(args: argparse.Namespace) -> Any:
     except live.LiveMIDIError as error:
         raise CLIError(str(error)) from error
 
+
+def cmd_patch_cleanup(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch cleanup requires --live because it reads and writes the connected GT-1000", 64)
+    try:
+        if args.user_slot:
+            snapshot = read_user_slot_snapshot(args.user_slot, args.timeout, view="chain")
+        else:
+            snapshot = read_live_snapshot_with_timeout(
+                "patch cleanup chain read --live",
+                args.timeout,
+                requests=requests_for_view("chain"),
+                lenient_optional=True,
+            )
+        chain_values = [item["rawValue"] for item in snapshot.get("signalChainElements", [])]
+        analysis = cleanup_analysis_from_snapshot(snapshot)
+        unreachable = {item["rawValue"] for item in analysis["unreachableElements"]}
+        if not unreachable:
+            return attach_encoding_confidence(
+                {
+                    "ok": True,
+                    "changed": False,
+                    "reason": "No unreachable elements were detected.",
+                    "movedCount": 0,
+                    "beforeChain": [live.chain_element_name(v) for v in chain_values],
+                    "afterChain": [live.chain_element_name(v) for v in chain_values],
+                    "analysis": analysis,
+                },
+                ["patch.chain"],
+            )
+        reordered = [value for value in chain_values if value not in unreachable] + [value for value in chain_values if value in unreachable]
+        plan = patch_edit.build_chain_reorder_plan(
+            chain_values,
+            reordered,
+            label="Cleanup signal chain (move unreachable elements to end)",
+            slot=args.user_slot,
+        )
+        result = apply_plan_cli(plan, timeout=args.timeout, verify=args.verify)
+        result.update({
+            "changed": True,
+            "movedCount": len([value for value in chain_values if value in unreachable]),
+            "beforeChain": [live.chain_element_name(v) for v in chain_values],
+            "afterChain": [live.chain_element_name(v) for v in reordered],
+            "analysis": analysis,
+        })
+        return attach_encoding_confidence(result, ["patch.chain"])
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
+def cleanup_analysis_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    elements = snapshot.get("signalChainElements", []) or []
+    blocks_by_value = {
+        block.get("chainElementValue"): block
+        for block in snapshot.get("blocks", [])
+        if block.get("chainElementValue") is not None
+    }
+    assigns_by_block = active_assigns_by_block(snapshot)
+    direct_enable_controls_by_block = direct_controls_by_block(snapshot)
+    direct_parameter_controls_by_block = direct_controls_targeting_parameters(snapshot)
+
+    unreachable: list[dict[str, Any]] = []
+    unreachable_values: set[int] = set()
+
+    for element in elements:
+        raw = element.get("rawValue")
+        if not isinstance(raw, int):
+            continue
+        block = blocks_by_value.get(raw)
+        if not block:
+            continue
+        enabled = block.get("isEnabled")
+        if enabled is not False:
+            continue
+        block_id = block.get("id")
+        if not isinstance(block_id, str):
+            continue
+        has_control = bool(assigns_by_block.get(block_id)) or bool(direct_enable_controls_by_block.get(block_id))
+        if has_control:
+            continue
+        unreachable_values.add(raw)
+        unreachable.append({
+            "rawValue": raw,
+            "displayName": element.get("displayName"),
+            "blockId": block_id,
+            "reason": "off_unassigned",
+        })
+
+    for divider_index in (1, 2, 3):
+        divider_id = f"divider{divider_index}"
+        branch_value = 36 + (divider_index - 1) * 3
+        divider_value = 35 + (divider_index - 1) * 3
+        mixer_value = 37 + (divider_index - 1) * 3
+
+        divider = next((block for block in snapshot.get("blocks", []) if block.get("id") == divider_id), None)
+        if not isinstance(divider, dict):
+            continue
+        params = {param.get("id"): param for param in divider.get("parameters", []) if isinstance(param, dict)}
+        mode = (params.get("mode") or {}).get("rawValue")
+        channel_select = (params.get("channelSelect") or {}).get("rawValue")
+        if mode != 0:
+            continue
+        if channel_select not in {0, 1}:
+            continue
+
+        has_assign = any(
+            assign.get("targetParameterId") == "channelSelect"
+            for assign in assigns_by_block.get(divider_id, [])
+        )
+        has_direct = any(
+            control.get("targetParameterId") == "channelSelect"
+            for control in direct_parameter_controls_by_block.get(divider_id, [])
+        )
+        if has_assign or has_direct:
+            continue
+
+        positions = {el.get("rawValue"): el.get("position") for el in elements if isinstance(el.get("rawValue"), int)}
+        divider_pos = positions.get(divider_value)
+        branch_pos = positions.get(branch_value)
+        mixer_pos = positions.get(mixer_value)
+        if not all(isinstance(value, int) for value in (divider_pos, branch_pos, mixer_pos)):
+            continue
+        if not (divider_pos < branch_pos < mixer_pos):
+            continue
+
+        if channel_select == 0:
+            unreachable_start = branch_pos
+            unreachable_end = mixer_pos
+            fixed_path = "A"
+            unreachable_path = "B"
+        else:
+            unreachable_start = divider_pos + 1
+            unreachable_end = branch_pos
+            fixed_path = "B"
+            unreachable_path = "A"
+
+        for el in elements:
+            pos = el.get("position")
+            raw = el.get("rawValue")
+            if not isinstance(pos, int) or not isinstance(raw, int):
+                continue
+            if not (unreachable_start <= pos < unreachable_end):
+                continue
+            if raw in unreachable_values:
+                continue
+            unreachable_values.add(raw)
+            unreachable.append({
+                "rawValue": raw,
+                "displayName": el.get("displayName"),
+                "blockId": (blocks_by_value.get(raw) or {}).get("id"),
+                "reason": "fixed_branch_inactive",
+                "dividerId": divider_id,
+                "dividerFixedPath": fixed_path,
+                "unreachablePath": unreachable_path,
+            })
+
+    unreachable.sort(key=lambda item: (int(item.get("rawValue", 9999)), str(item.get("reason", ""))))
+    return {
+        "unreachableCount": len(unreachable),
+        "unreachableElements": unreachable,
+    }
+
+
+def direct_controls_targeting_parameters(snapshot: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    try:
+        controls = controls_from_full(snapshot)["controls"]
+    except CLIError:
+        return {}
+
+    by_block: dict[str, list[dict[str, Any]]] = {}
+    for control_name, control in controls.items():
+        block_id = control.get("functionTargetBlockId")
+        parameter_id = control.get("functionTargetParameterId")
+        if not isinstance(block_id, str) or not isinstance(parameter_id, str):
+            continue
+        if control.get("preference") != "PATCH":
+            continue
+        by_block.setdefault(block_id, []).append({
+            "control": control_name,
+            "preference": control.get("preference"),
+            "functionRaw": control.get("functionRaw"),
+            "function": control.get("function"),
+            "targetParameterId": parameter_id,
+            "mode": control.get("mode"),
+        })
+    return by_block
 
 def cmd_patch_control_set(args: argparse.Namespace) -> Any:
     if not args.live:
@@ -6500,6 +6700,22 @@ def chain_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
     blocks = snapshot.get("blocks", [])
     assigns_by_block = active_assigns_by_block(snapshot)
     controls_by_block = direct_controls_by_block(snapshot)
+    reachability = cleanup_analysis_from_snapshot(snapshot)
+    # cleanup_analysis_from_snapshot serves two purposes:
+    # - detect truly unreachable routing segments (inactive fixed divider branches)
+    # - detect "off + no control mapping" blocks (useful for cleanup, but not routing reachability)
+    # Only treat fixed divider-branch segments as "unreachable routing" for musician summaries.
+    unreachable_by_value: dict[int, dict[str, Any]] = {}
+    off_unassigned_by_value: dict[int, dict[str, Any]] = {}
+    for item in (reachability.get("unreachableElements") or []):
+        raw = item.get("rawValue")
+        reason = item.get("reason")
+        if not isinstance(raw, int):
+            continue
+        if reason == "fixed_branch_inactive":
+            unreachable_by_value[raw] = item
+        elif reason == "off_unassigned":
+            off_unassigned_by_value[raw] = item
     detail_by_value = {
         block.get("chainElementValue"): block
         for block in blocks
@@ -6508,13 +6724,20 @@ def chain_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
     elements = []
     description_elements = []
     for element in snapshot.get("signalChainElements", []):
+        raw_value = element.get("rawValue")
+        unreachable_detail = unreachable_by_value.get(raw_value) if isinstance(raw_value, int) else None
+        off_unassigned_detail = off_unassigned_by_value.get(raw_value) if isinstance(raw_value, int) else None
+        is_unreachable = unreachable_detail is not None
         block = detail_by_value.get(element.get("rawValue"))
         block_id = block.get("id") if block else None
         active_assigns = assigns_by_block.get(block_id, []) if block_id else []
         direct_controls = controls_by_block.get(block_id, []) if block_id else []
         is_enabled = block.get("isEnabled") if block else None
         has_control_assignment = block_has_control_assignment(block) or bool(active_assigns) or bool(direct_controls)
-        description_candidate = include_element_in_description(
+        # A chain element can be present but unreachable (e.g. on a non-selected divider branch).
+        # Treat unreachable elements as not part of the live sound for musician-facing summaries,
+        # while still surfacing them in the full chain for troubleshooting/cleanup.
+        description_candidate = False if is_unreachable else include_element_in_description(
             element,
             block,
             is_enabled=is_enabled,
@@ -6533,6 +6756,10 @@ def chain_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
             "directControlCount": len(direct_controls),
             "directControls": direct_controls,
             "includeInDescription": description_candidate,
+            "isUnreachable": is_unreachable,
+            "unreachablePath": unreachable_detail.get("unreachablePath") if unreachable_detail else None,
+            "unreachableReason": unreachable_detail.get("reason") if unreachable_detail else None,
+            "isOffUnassigned": off_unassigned_detail is not None,
             "isReserved": element.get("isReserved", False),
             "isOutput": element.get("isOutput", False),
         }
@@ -6557,8 +6784,10 @@ def chain_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
         ),
         "descriptionPolicy": (
             "Omits reserved elements and switched-off blocks unless a decoded hardware/control "
-            "assignment indicates the user can bring that block into the live sound."
+            "assignment indicates the user can bring that block into the live sound. Also omits "
+            "elements that are currently unreachable in the active routing path."
         ),
+        "reachability": reachability,
         "elements": elements,
         "descriptionElements": description_elements,
     }

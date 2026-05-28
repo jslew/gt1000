@@ -1093,6 +1093,32 @@ def build_chain_move_plan(
     return plan_for_user_slot(plan, slot) if slot else plan
 
 
+def build_chain_reorder_plan(
+    chain_values: list[int],
+    reordered: list[int],
+    *,
+    label: str = "Reorder signal chain",
+    slot: str | None = None,
+) -> PatchPlan:
+    if len(chain_values) != len(CANONICAL_FULL_CHAIN):
+        raise ValueError(f"chain data must contain {len(CANONICAL_FULL_CHAIN)} elements")
+    if len(reordered) != len(CANONICAL_FULL_CHAIN):
+        raise ValueError(f"reordered chain data must contain {len(CANONICAL_FULL_CHAIN)} elements")
+    if set(chain_values) != set(CANONICAL_FULL_CHAIN):
+        raise ValueError("chain data does not match the known GT-1000 chain element set")
+    if set(reordered) != set(CANONICAL_FULL_CHAIN):
+        raise ValueError("reordered chain data does not match the known GT-1000 chain element set")
+    if chain_values == reordered:
+        raise ValueError("reordered chain is identical to current chain")
+    write = chain_write(reordered, label)
+    plan = PatchPlan(
+        id="reorder:chain",
+        description=label,
+        writes=[write],
+    )
+    return plan_for_user_slot(plan, slot) if slot else plan
+
+
 def build_tuner_assign_plan(*, slot: str | None = None) -> PatchPlan:
     write = live.PatchWrite("Assign 16 tuner on CC80", assign_address(16), tuner_assign_data())
     plan = PatchPlan(
