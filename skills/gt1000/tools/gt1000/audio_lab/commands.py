@@ -132,7 +132,11 @@ def cmd_reamp(
         "dryMetrics": dry_metrics,
         "wetMetrics": wet_metrics,
         **result,
-        "note": "If wetMetrics stay near silence, check USB playback routing on the GT-1000 and re-amp levels in MENU > IN/OUT.",
+        "note": (
+            "If wetMetrics stay near silence: on the GT-1000 set MENU > IN/OUT SETTING > USB AUDIO > MAIN > "
+            "DIR MON = OFF (cannot be saved; defaults ON at power-on). Confirm TO EFX and EFX OUT levels. "
+            "See references/gt1000-wiki/usb-audio.md."
+        ),
     }
 
 
