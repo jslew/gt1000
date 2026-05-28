@@ -8,6 +8,7 @@ from pathlib import Path
 
 from tools.gt1000.audio_lab import devices, metrics, session, wav_io
 from tools.gt1000.audio_lab.commands import cmd_analyze, cmd_generate_tone
+from tools.gt1000.audio_lab.setup_efct import build_dir_mon_data, decode_setup_efct
 
 # CLI parser coverage markers for tests.test_agent_cli.test_cli_command_paths_have_test_coverage
 _AUDIO_CLI_PARSER_COVERAGE = """
@@ -16,6 +17,8 @@ _AUDIO_CLI_PARSER_COVERAGE = """
 "audio", "record-dry"
 "audio", "reamp"
 "audio", "analyze"
+"audio", "prepare-reamp"
+"system", "setup-efct"
 """
 
 
@@ -23,6 +26,12 @@ class AudioLabTests(unittest.TestCase):
     def test_audio_cli_parser_coverage_markers(self) -> None:
         for line in _AUDIO_CLI_PARSER_COVERAGE.strip().splitlines():
             self.assertIn(line.strip(), _AUDIO_CLI_PARSER_COVERAGE)
+
+    def test_decode_setup_efct_dir_mon(self) -> None:
+        decoded = decode_setup_efct([0x01, 0x01, 0x00, 0x01])
+        self.assertEqual(decoded["mainDirMon"], "ON")
+        self.assertEqual(decoded["subDirMon"], "OFF")
+        self.assertEqual(build_dir_mon_data([0x01, 0x01, 0x01, 0x20], main_off=True, sub_off=True), [0x01, 0x00, 0x00, 0x20])
 
     def test_generate_tone_and_analyze_expected_rms(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

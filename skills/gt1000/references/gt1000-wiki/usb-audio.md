@@ -42,6 +42,24 @@ For the audio lab:
 
 ## DIR MON (critical for computer use)
 
+**SysEx address:** `SetupEfct` at `00 20 01 00`, size 4 bytes (GT-1000 MIDI Implementation).
+
+| Offset | Field | Values |
+|--------|-------|--------|
+| `00` | (fixed) | `1` |
+| `01` | MAIN:DIR MON | `0` OFF, `1` ON |
+| `02` | SUB:DIR MON | `0` OFF, `1` ON |
+| `03` | (fixed) | `1` |
+
+CLI:
+
+```sh
+scripts/gt1000-agent --pretty system setup-efct --live --timeout 8
+scripts/gt1000-agent --pretty audio prepare-reamp --midi-timeout 8
+```
+
+`audio reamp` runs **prepare-reamp** automatically unless `--no-prepare-usb` is passed.
+
 Under **USB MAIN** (and similarly **USB SUB**), **DIR MON** (direct monitor):
 
 | DIR MON | Use when |
@@ -61,4 +79,4 @@ With DIR MON OFF and computer pass-through, you may **not hear** re-amp output o
 
 - Prefer the **BOSS driver** and the documented **MAIN / DRY / SUB** routing over ad-hoc Core Audio devices when possible.
 - `audio reamp` upmixes playback to USB channels 3–4; verify **DIR MON OFF** if wet capture stays silent.
-- Phase 2: decode/write **DIR MON** if a SysEx address is confirmed; until then, treat it as a **manual preflight** step.
+- **DIR MON** is writable at runtime via `audio prepare-reamp` even though the Parameter Guide says it cannot be **saved** across power cycles.

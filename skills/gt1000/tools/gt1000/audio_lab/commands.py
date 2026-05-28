@@ -108,6 +108,8 @@ def cmd_reamp(
     input_path: Path | None,
     output_path: Path | None,
     playback_role: str,
+    prepare_usb: bool = True,
+    midi_timeout: float = 8.0,
 ) -> dict[str, Any]:
     session_dir = resolve_session_dir(session, create=False)
     if not session_dir.is_dir():
@@ -119,7 +121,13 @@ def cmd_reamp(
         renders = session_dir / "renders"
         renders.mkdir(exist_ok=True)
         output_path = renders / "reamp-main.wav"
-    result = reamp_capture(dry_path, output_path, playback_role=playback_role)
+    result = reamp_capture(
+        dry_path,
+        output_path,
+        playback_role=playback_role,
+        prepare_usb=prepare_usb,
+        midi_timeout=midi_timeout,
+    )
     append_session_event(session_dir, {"type": "reamp", "wetPath": str(output_path), "playbackRole": playback_role})
     wet_metrics = analyze_file(output_path)
     dry_metrics = analyze_file(dry_path)

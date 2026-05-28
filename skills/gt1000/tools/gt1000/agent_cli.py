@@ -366,6 +366,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("pitch", "Read global pitch/tuner settings."),
         ("controls", "Read global control functions and preferences."),
         ("manual", "Read global manual-mode number switch settings."),
+        ("setup-efct", "Read SetupEfct USB DIR MON and related runtime flags."),
     ]:
         system_view = system_subcommands.add_parser(name, help=help_text)
         system_view.add_argument("--live", action="store_true", help="Required because system settings are live device state.")
@@ -1242,6 +1243,7 @@ def cmd_system_view(args: argparse.Namespace) -> Any:
         "pitch": ("systemPitch", "System Pitch", live.SYSTEM_PITCH, [0x00, 0x00, 0x00, 0x07], decode_system_pitch),
         "controls": ("systemControl", "System Control", live.SYSTEM_CONTROL, [0x00, 0x00, 0x00, 0x36], decode_system_controls),
         "manual": ("systemManualControl", "System Manual Control", live.SYSTEM_CONTROL2, [0x00, 0x00, 0x00, 0x0F], decode_system_manual_controls),
+        "setup-efct": ("systemSetupEfct", "Setup Effect", live.SETUP_EFCT, live.SETUP_EFCT_SIZE, decode_system_setup_efct),
     }
     section_id, label, address, size, decoder = sections[args.system_command]
     try:
@@ -6522,6 +6524,14 @@ def decode_aird_output_select(raw: int) -> str | None:
         "KATANA-100 MkII POWER AMP IN", "KATANA-50 MkII POWER AMP IN",
     ]
     return decode_enum(raw, values)
+
+
+def decode_system_setup_efct(data: list[int]) -> dict[str, Any]:
+    try:
+        from tools.gt1000.audio_lab.setup_efct import decode_setup_efct
+    except ModuleNotFoundError:
+        from audio_lab.setup_efct import decode_setup_efct
+    return decode_setup_efct(data)
 
 
 def decode_system_effects(data: list[int]) -> dict[str, Any]:

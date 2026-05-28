@@ -83,7 +83,20 @@ def register_audio_commands(subcommands: argparse._SubParsersAction) -> None:
         default="dry",
         help="Playback routing hint; Phase 1 still captures processed main 1-2.",
     )
+    reamp.add_argument(
+        "--no-prepare-usb",
+        action="store_true",
+        help="Skip SetupEfct SysEx that sets USB MAIN/SUB DIR MON OFF before playback.",
+    )
+    reamp.add_argument("--midi-timeout", type=float, default=8.0, help="SysEx timeout for USB prepare.")
     reamp.set_defaults(func=wrap_audio_command(cmd_audio_reamp, requires_device=True))
+
+    prepare = audio_sub.add_parser(
+        "prepare-reamp",
+        help="Set SetupEfct USB DIR MON OFF via SysEx (required for computer re-amp).",
+    )
+    prepare.add_argument("--midi-timeout", type=float, default=8.0)
+    prepare.set_defaults(func=wrap_audio_command(cmd_audio_prepare_reamp, requires_device=True))
 
     analyze = audio_sub.add_parser("analyze", help="Analyze one or more WAV files.")
     analyze.add_argument("files", nargs="+", type=Path, help="WAV files to analyze.")
@@ -119,7 +132,18 @@ def cmd_audio_reamp(args: argparse.Namespace) -> Any:
         input_path=args.input,
         output_path=args.output,
         playback_role=args.playback_role,
+        prepare_usb=not args.no_prepare_usb,
+        midi_timeout=args.midi_timeout,
     )
+
+
+def cmd_audio_prepare_reamp(args: argparse.Namespace) -> Any:
+    try:
+        from tools.gt1000.audio_lab.setup_efct import prepare_usb_reamp
+    except ModuleNotFoundError:
+        from audio_lab.setup_efct import prepare_usb_reamp
+
+    return prepare_usb_reamp(args.midi_timeout, verify=True)
 
 
 def cmd_audio_analyze(args: argparse.Namespace) -> Any:

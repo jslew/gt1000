@@ -114,6 +114,8 @@ LIVE_VERIFIED_COMMAND_PATHS = {
     ("audio", "record-dry"),
     ("audio", "reamp"),
     ("audio", "analyze"),
+    ("audio", "prepare-reamp"),
+    ("system", "setup-efct"),
 }
 
 

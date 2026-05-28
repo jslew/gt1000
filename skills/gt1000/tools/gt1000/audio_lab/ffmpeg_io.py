@@ -19,6 +19,7 @@ from .devices import (
     parse_avfoundation_inputs,
 )
 from .errors import AudioLabError
+from .setup_efct import prepare_usb_reamp
 from .wav_io import extract_channels, upmix_stereo_for_usb_role
 
 
@@ -206,7 +207,13 @@ def reamp_capture(
     playback_role: str = "dry",
     record_seconds: float | None = None,
     sample_rate: int = 44100,
+    prepare_usb: bool = True,
+    midi_timeout: float = 8.0,
 ) -> dict[str, Any]:
+    setup_prepare = None
+    if prepare_usb:
+        setup_prepare = prepare_usb_reamp(midi_timeout, verify=True)
+
     devices = list_devices()
     gt_outputs = [
         AudioDevice(item["backend"], item["index"], item["name"], item["direction"])
@@ -296,5 +303,6 @@ def reamp_capture(
         "captureDevice": input_device.to_dict(),
         "playbackRole": playback_role,
         "playbackMapping": playback_mapping,
+        "setupPrepare": setup_prepare,
         "extracted": extract_info,
     }
