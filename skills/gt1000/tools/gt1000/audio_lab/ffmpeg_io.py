@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,7 @@ from .devices import (
     parse_avfoundation_inputs,
 )
 from .errors import AudioLabError
-from .wav_io import extract_channels
+from .wav_io import extract_channels, upmix_stereo_for_usb_role
 
 
 def find_ffmpeg() -> str:
@@ -184,10 +185,18 @@ def play_to_device(
         raise AudioLabError(f"ffmpeg playback failed: {result.stderr.strip() or result.stdout.strip()}")
 
 
-def playback_filter_for_role(role: str) -> list[str]:
-    if role == "dry":
-        return ["-af", "volume=1.0"]
-    return []
+def prepare_playback_file(input_path: Path, playback_role: str) -> tuple[Path, dict[str, Any] | None, tempfile.TemporaryDirectory[str] | None]:
+    if playback_role not in {"dry", "main"}:
+        raise AudioLabError(f"unsupported playback role {playback_role}", 64)
+    import wave
+
+    with wave.open(str(input_path), "rb") as handle:
+        if handle.getnchannels() == 6:
+            return input_path, None, None
+    temp_dir = tempfile.TemporaryDirectory(prefix="gt1000-reamp-")
+    playback_path = Path(temp_dir.name) / "playback6.wav"
+    mapping = upmix_stereo_for_usb_role(input_path, playback_path, role=playback_role)
+    return playback_path, mapping, temp_dir
 
 
 def reamp_capture(
@@ -250,20 +259,23 @@ def reamp_capture(
         stderr=subprocess.PIPE,
         text=True,
     )
+    playback_path, playback_mapping, temp_dir = prepare_playback_file(input_path, playback_role)
     try:
-        play_args = ["-loglevel", "error", "-i", str(input_path), "-ac", "6"]
-        play_args.extend(playback_filter_for_role(playback_role))
-        play_args.extend(
-            [
-                "-f",
-                "audiotoolbox",
-                "-audio_device_index",
-                str(output_device.index),
-                "-t",
-                f"{duration:.3f}",
-                "-",
-            ]
-        )
+        play_args = [
+            "-loglevel",
+            "error",
+            "-i",
+            str(playback_path),
+            "-ac",
+            "6",
+            "-f",
+            "audiotoolbox",
+            "-audio_device_index",
+            str(output_device.index),
+            "-t",
+            f"{duration:.3f}",
+            "-",
+        ]
         play_result = run_ffmpeg(play_args, timeout=duration + 30.0)
         if play_result.returncode != 0:
             raise AudioLabError(f"ffmpeg playback failed: {play_result.stderr.strip()}")
@@ -273,6 +285,8 @@ def reamp_capture(
     finally:
         if record_proc.poll() is None:
             record_proc.kill()
+        if temp_dir is not None:
+            temp_dir.cleanup()
     # After dry USB playback, processed tone should appear on main USB channels 1-2.
     extract_info = extract_channels(capture_path, USB_MAIN_STEREO, output_path)
     return {
@@ -281,5 +295,6 @@ def reamp_capture(
         "playbackDevice": output_device.to_dict(),
         "captureDevice": input_device.to_dict(),
         "playbackRole": playback_role,
+        "playbackMapping": playback_mapping,
         "extracted": extract_info,
     }

@@ -46,6 +46,18 @@ class AudioLabTests(unittest.TestCase):
             assert delta is not None
             self.assertGreater(delta, 6.0)
 
+    def test_upmix_stereo_to_usb_dry_channels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            stereo = Path(tmp) / "stereo.wav"
+            six = Path(tmp) / "six.wav"
+            wav_io.generate_sine_tone(stereo, duration=0.1, amplitude=0.5)
+            info = wav_io.upmix_stereo_for_usb_role(stereo, six, role="dry")
+            self.assertEqual(info["usbChannels"], [3, 4])
+            _, channels, per = wav_io.read_wav(six)
+            self.assertEqual(channels, 6)
+            self.assertGreater(max(abs(sample) for sample in per[2]), 0.01)
+            self.assertLess(max(abs(sample) for sample in per[0]), 0.001)
+
     def test_extract_usb_dry_channels(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             capture = Path(tmp) / "cap6.wav"

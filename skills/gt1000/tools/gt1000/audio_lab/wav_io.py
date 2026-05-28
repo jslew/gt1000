@@ -6,6 +6,7 @@ import math
 import struct
 import wave
 from pathlib import Path
+from typing import Any
 
 
 def read_wav(path: Path) -> tuple[int, int, list[list[float]]]:
@@ -27,6 +28,25 @@ def read_wav(path: Path) -> tuple[int, int, list[list[float]]]:
     return sample_rate, channels, per_channel
 
 
+def write_wav_multichannel(path: Path, sample_rate: int, channels: list[list[float]]) -> None:
+    if not channels:
+        raise ValueError("at least one channel is required")
+    frame_count = len(channels[0])
+    if any(len(channel) != frame_count for channel in channels):
+        raise ValueError("all channels must have the same length")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(len(channels))
+        handle.setsampwidth(2)
+        handle.setframerate(sample_rate)
+        frames = bytearray()
+        for frame_index in range(frame_count):
+            for channel in channels:
+                value = max(-1.0, min(1.0, channel[frame_index]))
+                frames += struct.pack("<h", int(value * 32767))
+        handle.writeframes(frames)
+
+
 def write_wav_stereo(path: Path, sample_rate: int, left: list[float], right: list[float]) -> None:
     if len(left) != len(right):
         raise ValueError("left and right channel lengths must match")
@@ -41,6 +61,37 @@ def write_wav_stereo(path: Path, sample_rate: int, left: list[float], right: lis
             r_value = max(-1.0, min(1.0, r_sample))
             frames += struct.pack("<hh", int(l_value * 32767), int(r_value * 32767))
         handle.writeframes(frames)
+
+
+def upmix_stereo_for_usb_role(
+    stereo_path: Path,
+    output_path: Path,
+    *,
+    role: str,
+) -> dict[str, Any]:
+    """Place stereo audio on GT-1000 USB playback channels for dry or main paths."""
+    from .devices import USB_DRY_STEREO, USB_MAIN_STEREO
+
+    sample_rate, channel_count, per_channel = read_wav(stereo_path)
+    if channel_count != 2:
+        raise ValueError(f"expected stereo input for USB upmix, got {channel_count} channels")
+    if role == "dry":
+        target = USB_DRY_STEREO
+    elif role == "main":
+        target = USB_MAIN_STEREO
+    else:
+        raise ValueError(f"unsupported USB playback role {role}")
+    frame_count = len(per_channel[0])
+    silent = [0.0] * frame_count
+    channels = [list(silent) for _ in range(6)]
+    channels[target[0]] = list(per_channel[0])
+    channels[target[1]] = list(per_channel[1])
+    write_wav_multichannel(output_path, sample_rate, channels)
+    return {
+        "sampleRate": sample_rate,
+        "playbackRole": role,
+        "usbChannels": [index + 1 for index in target],
+    }
 
 
 def extract_channels(path: Path, channel_indexes: tuple[int, int], output: Path) -> dict[str, int]:
