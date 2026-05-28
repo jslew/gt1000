@@ -1,0 +1,42 @@
+{
+  "overview": { "patchName": "SPLIT DEMO" },
+  "signalChainElements": [
+    { "id": "chain-1", "position": 1, "rawValue": 23, "displayName": "PEDAL FX", "isReserved": false },
+    { "id": "chain-2", "position": 2, "rawValue": 0, "displayName": "COMPRESSOR", "isReserved": false },
+    { "id": "chain-3", "position": 3, "rawValue": 12, "displayName": "EQUALIZER 3", "isReserved": false },
+    { "id": "chain-4", "position": 4, "rawValue": 35, "displayName": "DIVIDER 1", "isReserved": false },
+    { "id": "chain-5", "position": 5, "rawValue": 3, "displayName": "AIRD PREAMP 1", "isReserved": false },
+    { "id": "chain-6", "position": 6, "rawValue": 5, "displayName": "NOISE SUPPRESSOR 1", "isReserved": false },
+    { "id": "chain-7", "position": 7, "rawValue": 10, "displayName": "EQUALIZER 1", "isReserved": false },
+    { "id": "chain-8", "position": 8, "rawValue": 21, "displayName": "REVERB", "isReserved": false },
+    { "id": "chain-9", "position": 9, "rawValue": 36, "displayName": "BRANCH SPLIT1", "isReserved": false },
+    { "id": "chain-10", "position": 10, "rawValue": 1, "displayName": "DISTORTION 1", "isReserved": false },
+    { "id": "chain-11", "position": 11, "rawValue": 4, "displayName": "AIRD PREAMP 2", "isReserved": false },
+    { "id": "chain-12", "position": 12, "rawValue": 37, "displayName": "MIXER 1", "isReserved": false },
+    { "id": "chain-13", "position": 13, "rawValue": 24, "displayName": "SEND/RETURN 1", "isReserved": false },
+    { "id": "chain-14", "position": 14, "rawValue": 47, "displayName": "MAIN OUT L", "isReserved": false, "isOutput": true }
+  ],
+  "blocks": [
+    {
+      "id": "preamp1",
+      "displayName": "AIRD PREAMP 1",
+      "chainElementValue": 3,
+      "typeName": "DIAMOND AMP",
+      "isEnabled": true
+    },
+    {
+      "id": "dist1",
+      "displayName": "DISTORTION 1",
+      "chainElementValue": 1,
+      "typeName": "X-DIST",
+      "isEnabled": true
+    },
+    {
+      "id": "preamp2",
+      "displayName": "AIRD PREAMP 2",
+      "chainElementValue": 4,
+      "typeName": "CLEAN TWIN",
+      "isEnabled": false
+    }
+  ]
+}

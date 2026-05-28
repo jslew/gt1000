@@ -71,6 +71,15 @@ fastlane/test_output
 # Python
 __pycache__/
 *.py[cod]
+app/backend/.venv/
+
+# GT-1000 localhost app frontend
+app/frontend/node_modules/
+app/frontend/dist/
+app/frontend/tsconfig.tsbuildinfo
+app/scripts/e2e/node_modules/
+app/scripts/e2e/test-results/
+app/scripts/eval_skill_loader_report.json
 
 # Local GT-1000 scratch dumps
 temp_patch.json

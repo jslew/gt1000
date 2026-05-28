@@ -1692,6 +1692,42 @@ def chain_write(elements: list[int], label: str) -> live.PatchWrite:
     return live.PatchWrite(label, CHAIN_START, values)
 
 
+def active_chain_prefix(chain_values: list[int]) -> list[int]:
+    """Return the audible signal-order prefix stored before canonical padding."""
+    if not chain_values:
+        return []
+    if len(chain_values) != len(CANONICAL_FULL_CHAIN):
+        return list(chain_values)
+    if MAIN_OUT_L in chain_values:
+        main_left = chain_values.index(MAIN_OUT_L)
+        main_right = chain_values.index(MAIN_OUT_R) if MAIN_OUT_R in chain_values else None
+        if main_right is not None and main_right == main_left + 1:
+            end_index = main_right
+        else:
+            end_index = main_left
+        prefix = chain_values[: end_index + 1]
+        try:
+            if valid_chain(prefix) == chain_values:
+                return prefix
+        except ValueError:
+            pass
+    for index in range(1, len(chain_values) + 1):
+        prefix = chain_values[:index]
+        try:
+            if valid_chain(prefix) == chain_values:
+                return prefix
+        except ValueError:
+            continue
+    canonical = CANONICAL_FULL_CHAIN
+    for index in range(1, len(chain_values)):
+        prefix = chain_values[:index]
+        suffix = chain_values[index:]
+        expected_suffix = [value for value in canonical if value not in set(prefix)]
+        if suffix == expected_suffix and expected_suffix:
+            return prefix
+    return list(chain_values)
+
+
 def valid_chain(audible_prefix: list[int]) -> list[int]:
     if len(set(audible_prefix)) != len(audible_prefix):
         raise ValueError("chain prefix contains duplicate elements")

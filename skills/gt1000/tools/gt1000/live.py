@@ -1386,6 +1386,10 @@ def display_parameter_value(parameter: Parameter, raw_value: int) -> str | None:
         return "ON" if raw_value else "OFF"
     if parameter.kind == "type" and 0 <= raw_value < len(parameter.values):
         return parameter.values[raw_value]
+    if parameter.kind == "byte":
+        return str(raw_value)
+    if parameter.kind == "nibbles":
+        return str(raw_value)
     return None
 
 

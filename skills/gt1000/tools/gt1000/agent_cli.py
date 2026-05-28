@@ -12,6 +12,7 @@ import pickle
 import signal
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -1077,9 +1078,10 @@ def live_call_with_timeout(label: str, process_timeout: float, func: Callable[..
         raise KeyboardInterrupt(signum)
 
     try:
-        for signum in (signal.SIGINT, signal.SIGTERM):
-            previous_handlers[signum] = signal.getsignal(signum)
-            signal.signal(signum, handle_interrupt)
+        if threading.current_thread() is threading.main_thread():
+            for signum in (signal.SIGINT, signal.SIGTERM):
+                previous_handlers[signum] = signal.getsignal(signum)
+                signal.signal(signum, handle_interrupt)
         process = context.Process(target=live_call_worker, args=(output_path, func, args, kwargs))
         process.start()
         diagnostic_event("live_call.worker_start", label=label, workerPid=process.pid)
@@ -1100,8 +1102,9 @@ def live_call_with_timeout(label: str, process_timeout: float, func: Callable[..
         raise CLIError(f"{label} interrupted; live MIDI worker was stopped", 130) from error
     finally:
         stop_live_process(process)
-        for signum, handler in previous_handlers.items():
-            signal.signal(signum, handler)
+        if threading.current_thread() is threading.main_thread():
+            for signum, handler in previous_handlers.items():
+                signal.signal(signum, handler)
         try:
             output_path.unlink()
         except FileNotFoundError:
@@ -6505,9 +6508,12 @@ def chain_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
         for block in blocks
         if block.get("chainElementValue") is not None
     }
+    slot_elements = list(snapshot.get("signalChainElements", []))
+    raw_chain = [item.get("rawValue") for item in slot_elements if item.get("rawValue") is not None]
+    active_prefix = patch_edit.active_chain_prefix(raw_chain)
     elements = []
     description_elements = []
-    for element in snapshot.get("signalChainElements", []):
+    for element in slot_elements:
         block = detail_by_value.get(element.get("rawValue"))
         block_id = block.get("id") if block else None
         active_assigns = assigns_by_block.get(block_id, []) if block_id else []
@@ -6523,6 +6529,7 @@ def chain_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
         chain_element = {
             "id": element.get("id"),
             "position": element.get("position"),
+            "rawValue": element.get("rawValue"),
             "displayName": element.get("displayName"),
             "detailBlockID": block_id,
             "typeName": block.get("typeName") if block else None,
@@ -6540,6 +6547,18 @@ def chain_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
         if description_candidate:
             description_elements.append(chain_element)
 
+    element_by_raw = {
+        element["rawValue"]: element
+        for element in elements
+        if element.get("rawValue") is not None
+    }
+    signal_order_elements = []
+    for order, raw_value in enumerate(active_prefix, start=1):
+        ordered = element_by_raw.get(raw_value)
+        if ordered is None:
+            continue
+        signal_order_elements.append({**ordered, "signalOrder": order})
+
     def element_summary(el: dict[str, Any]) -> str:
         name = el["displayName"]
         type_name = el.get("typeName")
@@ -6547,9 +6566,14 @@ def chain_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
             return f"{name} ({type_name})"
         return name
 
+    def signal_order_summary(items: list[dict[str, Any]]) -> str:
+        return " -> ".join(
+            element_summary(element) for element in items if element.get("displayName")
+        )
+
     return {
         "overview": overview_from_full(snapshot),
-        "signalChainSummary": " -> ".join(
+        "signalChainSummary": signal_order_summary(signal_order_elements) or " -> ".join(
             element_summary(element) for element in elements if element.get("displayName")
         ),
         "descriptionSignalChainSummary": " -> ".join(
@@ -6560,6 +6584,7 @@ def chain_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
             "assignment indicates the user can bring that block into the live sound."
         ),
         "elements": elements,
+        "signalOrderElements": signal_order_elements,
         "descriptionElements": description_elements,
     }
 

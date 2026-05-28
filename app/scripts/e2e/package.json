@@ -1,0 +1,13 @@
+{
+  "name": "gt1000-app-e2e",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "test:case1": "playwright test tests/test-case-1.spec.ts",
+    "test:case1:headed": "playwright test tests/test-case-1.spec.ts --headed"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.52.0"
+  }
+}
