@@ -1,5 +1,11 @@
 # GT-1000 Agent Notes
 
+## Git and Remotes
+
+- Never run `git push` (or equivalent remote-update commands) unless the user explicitly asks you to push in this conversation.
+- Treat push permission as time-bounded: an earlier "go ahead and push" does not carry forward after a later push or after a new session. Only honor a push request made since the more recent of (a) the last successful push in this repo during the current session, or (b) the start of the current agent session.
+- Commits are fine when requested; pushing is a separate, explicit step.
+
 ## Project Shape
 
 - This is a Python-based GT-1000 inspection/editing repo.
