@@ -2,7 +2,7 @@
 
 Implementation plan for USB dry capture, GT-1000 re-amping, DSP comparison, and (later) reference-tone matching. This extends the existing SysEx/patch CLI; it does not replace it.
 
-**Status:** planning branch `roadmap/audio-lab`  
+**Status:** Sprint A in progress on branch `roadmap/audio-lab` (Phase 1 commands landed; live re-amp may need USB routing on the unit).  
 **Related:** [musician-cli-backlog.md](musician-cli-backlog.md), [AGENTS.md](../AGENTS.md), [midi-reference/address-map.md](../skills/gt1000/references/midi-reference/address-map.md)
 
 ## Vision
@@ -119,9 +119,11 @@ scripts/gt1000-agent --pretty audio analyze --files renders/a.wav renders/b.wav
 
 ### Exit criteria
 
-- [ ] Dry capture and re-amp work on a connected Mac with GT-1000 6×6 @ 44.1/48 kHz.
-- [ ] `analyze` produces stable metrics for two files in &lt;1s.
-- [ ] Documented in AGENTS.md; not duplicated in SKILL.md.
+- [x] CLI commands: `audio ports`, `generate-tone`, `record-dry`, `reamp`, `analyze`.
+- [x] Unit tests in `tests/test_audio_lab.py`.
+- [x] Documented in AGENTS.md; not duplicated in SKILL.md.
+- [ ] Dry capture and re-amp return non-silent wet signal on connected hardware (depends on GT-1000 USB IN/OUT menu; pipeline verified, wet may be silent until routing is set).
+- [x] `analyze` produces stable metrics for two files in &lt;1s.
 
 ---
 

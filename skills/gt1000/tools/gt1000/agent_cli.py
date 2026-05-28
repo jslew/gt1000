@@ -17,10 +17,13 @@ from pathlib import Path
 from typing import Any, Callable
 
 try:
-    from tools.gt1000 import live, patch_edit
+    from tools.gt1000 import audio_cli, live, patch_edit
+    from tools.gt1000.audio_lab.errors import AudioLabError
 except ModuleNotFoundError:
+    import audio_cli
     import live
     import patch_edit
+    from audio_lab.errors import AudioLabError
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -137,7 +140,7 @@ DEFAULT_ENCODING_CONFIDENCE = {
     "semanticEvidence": "Parameter meaning has not yet been cross-checked against official or independent references in this audit.",
 }
 TRUSTED_ENCODING_CONFIDENCES = {"official", "live-verified"}
-TOP_LEVEL_COMMANDS = {"ports", "doctor", "midi", "system", "patch"}
+TOP_LEVEL_COMMANDS = {"ports", "doctor", "midi", "system", "patch", "audio"}
 MASTER_FIELD_CANONICAL_IDS = {
     "patch-level": "level",
     "master-key": "key",
@@ -298,7 +301,7 @@ def main(argv: list[str] | None = None) -> int:
                 result.setdefault("diagnosticLog", diagnostic_path)
             emit(result, pretty=args.pretty)
         return 0
-    except CLIError as error:
+    except (CLIError, AudioLabError) as error:
         diagnostic_event("command.finish", status="error", error=str(error), exitCode=error.exit_code)
         print(f"error: {error}", file=sys.stderr)
         return error.exit_code
@@ -350,6 +353,8 @@ def build_parser() -> argparse.ArgumentParser:
     bank_select.add_argument("--channel", type=int, default=1, help="1-based MIDI channel, default 1.")
     bank_select.add_argument("--live", action="store_true", help="Required because this sends MIDI to the connected GT-1000.")
     bank_select.set_defaults(func=cmd_midi_bank_select)
+
+    audio_cli.register_audio_commands(subcommands)
 
     system = subcommands.add_parser("system", help="Inspect GT-1000 system/global MIDI sections.")
     system_subcommands = system.add_subparsers(dest="system_command", required=True)

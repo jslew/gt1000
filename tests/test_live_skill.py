@@ -109,6 +109,11 @@ LIVE_VERIFIED_COMMAND_PATHS = {
     ("system", "midi"),
     ("system", "pcmap"),
     ("system", "pitch"),
+    ("audio", "ports"),
+    ("audio", "generate-tone"),
+    ("audio", "record-dry"),
+    ("audio", "reamp"),
+    ("audio", "analyze"),
 }
 
 

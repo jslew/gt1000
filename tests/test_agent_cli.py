@@ -1340,7 +1340,7 @@ class AgentCLITests(unittest.TestCase):
 
         self.assertIn(("ports",), live_paths)
         self.assertIn(("doctor",), live_paths)
-        for group in ["patch", "midi", "system"]:
+        for group in ["patch", "midi", "system", "audio"]:
             subparser = command_parsers[group]
             subcommands = next(
                 sorted(key for key in action.choices if isinstance(key, str))

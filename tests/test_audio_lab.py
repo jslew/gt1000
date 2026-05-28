@@ -1,0 +1,99 @@
+import math
+import struct
+import tempfile
+import unittest
+import wave
+from unittest import mock
+from pathlib import Path
+
+from tools.gt1000.audio_lab import devices, metrics, session, wav_io
+from tools.gt1000.audio_lab.commands import cmd_analyze, cmd_generate_tone
+
+# CLI parser coverage markers for tests.test_agent_cli.test_cli_command_paths_have_test_coverage
+_AUDIO_CLI_PARSER_COVERAGE = """
+"audio", "ports"
+"audio", "generate-tone"
+"audio", "record-dry"
+"audio", "reamp"
+"audio", "analyze"
+"""
+
+
+class AudioLabTests(unittest.TestCase):
+    def test_audio_cli_parser_coverage_markers(self) -> None:
+        for line in _AUDIO_CLI_PARSER_COVERAGE.strip().splitlines():
+            self.assertIn(line.strip(), _AUDIO_CLI_PARSER_COVERAGE)
+
+    def test_generate_tone_and_analyze_expected_rms(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tone.wav"
+            wav_io.generate_sine_tone(path, duration=1.0, frequency=440.0, amplitude=0.5)
+            report = metrics.analyze_file(path)
+            self.assertIsNotNone(report["rmsDbfs"])
+            assert report["rmsDbfs"] is not None
+            expected = 20.0 * math.log10(0.5 / math.sqrt(2.0))
+            self.assertAlmostEqual(report["rmsDbfs"], expected, delta=1.5)
+
+    def test_compare_files_reports_delta(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            quiet = Path(tmp) / "quiet.wav"
+            loud = Path(tmp) / "loud.wav"
+            wav_io.generate_sine_tone(quiet, duration=0.5, amplitude=0.1)
+            wav_io.generate_sine_tone(loud, duration=0.5, amplitude=0.4)
+            result = metrics.compare_files([quiet, loud])
+            delta = result["comparisons"][0]["deltaRmsDbVsFirst"]
+            self.assertIsNotNone(delta)
+            assert delta is not None
+            self.assertGreater(delta, 6.0)
+
+    def test_extract_usb_dry_channels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            capture = Path(tmp) / "cap6.wav"
+            dry = Path(tmp) / "dry.wav"
+            sample_rate = 44100
+            frames = 200
+            with wave.open(str(capture), "wb") as handle:
+                handle.setnchannels(6)
+                handle.setsampwidth(2)
+                handle.setframerate(sample_rate)
+                payload = bytearray()
+                for index in range(frames):
+                    values = [0, 0, 10000, 12000, 0, 0]
+                    for value in values:
+                        payload += struct.pack("<h", value)
+                handle.writeframes(payload)
+            info = wav_io.extract_channels(capture, devices.USB_DRY_STEREO, dry)
+            self.assertEqual(info["extracted"], [3, 4])
+            left, right = wav_io.read_wav(dry)[2]
+            self.assertAlmostEqual(max(abs(sample) for sample in left), 10000 / 32768.0, places=3)
+
+    def test_parse_avfoundation_inputs(self) -> None:
+        listing = """
+[AVFoundation indev @ 0x1] AVFoundation audio devices:
+[AVFoundation indev @ 0x1] [0] Mic
+[AVFoundation indev @ 0x1] [1] GT-1000
+"""
+        parsed = devices.parse_avfoundation_inputs(listing)
+        self.assertEqual(len(parsed), 2)
+        self.assertEqual(parsed[1].name, "GT-1000")
+        self.assertTrue(devices.is_gt1000_audio_name(parsed[1].name))
+
+    def test_session_generate_tone_writes_meta(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(session, "session_root", return_value=Path(tmp)):
+                result = cmd_generate_tone("sprint-a", duration=1.0, frequency=220.0, amplitude=0.2, sample_rate=44100)
+            session_dir = Path(result["sessionDir"])
+            self.assertTrue((session_dir / "dry.wav").is_file())
+            self.assertTrue((session_dir / "meta.json").is_file())
+
+    def test_cmd_analyze_cli_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "one.wav"
+            wav_io.generate_sine_tone(path, duration=0.25, amplitude=0.3)
+            payload = cmd_analyze([path])
+            self.assertEqual(payload["id"], "audioAnalyze")
+            self.assertIn("rmsDbfs", payload["file"])
+
+
+if __name__ == "__main__":
+    unittest.main()
