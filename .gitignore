@@ -79,3 +79,4 @@ temp_patch.json
 .antigravitycli/
 
 test.wav
+.venv-audio/

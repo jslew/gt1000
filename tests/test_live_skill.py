@@ -118,7 +118,11 @@ LIVE_VERIFIED_COMMAND_PATHS = {
     ("audio", "prepare-reamp"),
     ("audio", "session"),
     ("audio", "compare-branches"),
-    ("audio", "match-levels"),
+    ("audio", "branch-context"),
+    ("audio", "probe-branch"),
+    ("audio", "probe-param"),
+    ("audio", "render-branch"),
+    ("audio", "analyze-trimmed"),
     ("system", "setup-efct"),
     ("system", "inout-set"),
 }

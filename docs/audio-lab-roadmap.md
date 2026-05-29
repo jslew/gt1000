@@ -2,7 +2,7 @@
 
 Implementation plan for USB dry capture, GT-1000 re-amping, DSP comparison, and (later) reference-tone matching. This extends the existing SysEx/patch CLI; it does not replace it.
 
-**Status:** Phases 1–2 complete; Phase 3 (`compare-branches`, `match-levels`) landed on branch `roadmap/audio-lab`. Phase 4 tone chase not started.  
+**Status:** Phases 1–2 complete; Phase 3 (measurement + investigation primitives for agent-led experiments) on branch `roadmap/audio-lab`. Phase 4 tone chase not started.  
 **Related:** [musician-cli-backlog.md](musician-cli-backlog.md), [AGENTS.md](../AGENTS.md), [audio-lab-reamp-protocol.md](audio-lab-reamp-protocol.md), [midi-reference/address-map.md](../skills/gt1000/references/midi-reference/address-map.md)
 
 ## Vision
@@ -163,37 +163,39 @@ scripts/gt1000-agent --pretty audio session render --label baseline
 
 ---
 
-## Phase 3 — Branch comparison & closed-loop level matching
+## Phase 3 — Branch comparison & agent-guided experiments
 
-**Outcome:** DIV1-style workflows: measure clean vs drive (or any divider channel A/B) on the same dry take; suggest and apply typed level edits until ΔLUFS is below threshold.
+**Outcome:** DIV1-style workflows: measure channel A vs B on the same dry take; agent uses CLI primitives to inspect, hypothesize, and test edits toward a quantitative goal (e.g. balance branches within 1 dB). See [audio-lab-investigation.md](audio-lab-investigation.md).
 
 ### Deliverables
 
 | Item | Description | Status |
 |------|-------------|--------|
-| `audio compare-branches` | For `divider1` (then 2/3): render channel A, render channel B via `channelSelect` temp write; report Δ metrics. | Done |
-| `patch set dividerN.*` | Validated `levelA`, `levelB`, `channelSelect`, `mode` via existing `patch set`. | Done (pre-existing) |
-| `audio match-levels` | Closed loop: match branch loudness via `--param auto` (branch block `level`) or explicit `block.level`. | Done |
-| Reachability guard | Chain + divider mode checks before measure. | Done |
-| Report format | `summary`, `hypothesis`, `comparison`, `appliedEdits`. | Done |
+| `audio compare-branches` | Render channel A/B via `channelSelect`; report Δ metrics; restore divider. | Done |
+| `audio branch-context` | Inspect divider branches and adjustable params (no re-amp). | Done |
+| `audio probe-branch` / `probe-param` | Screen/test whether parameters move USB re-amp level. | Done |
+| `audio render-branch` | Single-branch re-amp + metrics (optional trim, experiment note). | Done |
+| `audio analyze-trimmed` | Steady-state RMS on trimmed WAV regions. | Done |
+| `patch set` | Validated edits on temp patch (blocks, divider, etc.). | Done (pre-existing) |
+| Agent protocol | Inspect → hypothesize → test → present findings → offer patch update on consent; doc in audio-lab-investigation.md. | Done |
 
 ### DIV1 example flow
 
 1. User: “Dist side of DIV1 is softer than clean.”
-2. Agent: `audio session init` → confirm DIV1 in chain → `compare-branches --divider divider1`.
-3. If ΔLUFS &lt; -3 dB on B: `audio match-levels --param auto --target-match branch-A` (e.g. `dist1.level` on IMPRESSION; divider LEVEL B usually does not move USB re-amp).
-4. Verify with second `compare-branches`; offer `--user-slot` save only on request.
+2. Agent: `branch-context` + `compare-branches` → hypothesis (e.g. `dist1.level` on branch B).
+3. `probe-branch` or `probe-param` to confirm control affects USB level.
+4. Agent loop: `patch set` + `render-branch` / `compare-branches` until goal or timeout; offer slot save on request.
 
 ### Tests
 
 - Unit: mock patch snapshots → compare-branches builds correct write plan for channel A/B.
-- Unit: level matcher convergence on synthetic metric function.
-- Live: branch block level change (e.g. `dist1.level`) → measurable loudness change on re-amp output.
+- Unit: branch-context block lists, probe ranking (mocked).
+- Live: `probe-param` / `compare-branches` on divider patch (opt-in `GT1000_COMPARE_LIVE=1`).
 
 ### Exit criteria
 
 - [x] Automated A/B on real dry take via `audio compare-branches` (temp patch; restores divider bytes after).
-- [x] Final Δ RMS between branches ≤ 1 dB achievable via `audio match-levels --threshold-db 1` (broadband RMS, not LUFS).
+- [x] Agent can reach ≤1 dB branch balance using primitives + `patch set` (e.g. `dist1.level` on IMPRESSION; not divider LEVEL B).
 - [x] Divider state restored after compare/match (`restore_divider_data`); use `patch undo-last` for wider rollback if needed.
 
 ---
@@ -267,14 +269,14 @@ Optional: user weights “more mids” via band weight overrides.
 |--------|-------|--------|
 | A | 1 | `audio_lab` package, `record-dry`, `reamp`, `analyze`, unit tests — **done** |
 | B | 2 | Session dirs, `session render`, `system inout` writes, orchestrator — **done** |
-| C | 3 | `compare-branches`, `match-levels`, divider writes, live DIV1 proof — **done** |
+| C | 3 | Investigation primitives + compare-branches; agent-led DIV1 proof — **done** |
 | D | 4 | Reference profile, search planner, ranked candidates |
 
 ## Agent / skill integration (after Phase 2)
 
 Add to **skill-developer** / AGENTS.md (not musician SKILL.md):
 
-- When user reports branch level imbalance → run session + compare-branches before guessing block names.
+- Quantitative patch goals → follow [audio-lab-investigation.md](audio-lab-investigation.md); use compare-branches / probe-branch before guessing block names.
 - Cap automated writes; always offer undo.
 - Never adjust USB routing without reading `system inout` first.
 
@@ -284,7 +286,7 @@ Add to **skill-developer** / AGENTS.md (not musician SKILL.md):
 |-------|--------|
 | 1 | Dry + wet files recorded; analyze distinguishes ±3 dB level change |
 | 2 | Same patch, two renders: ≤0.5 dB LUFS drift |
-| 3 | DIV1 A/B within 1 dB after automated match |
+| 3 | DIV1 A/B within 1 dB after agent-led experiment loop |
 | 4 | Reference chase: best candidate lowers band score ≥30% vs baseline patch |
 
 ---

@@ -8,8 +8,15 @@ from typing import Any
 from .devices import USB_DRY_STEREO, USB_MAIN_STEREO, channel_map_doc
 from .errors import AudioLabError
 from .audio_io import list_devices, probe_capture, record_multichannel, reamp_capture
-from .metrics import analyze_file, analyze_multichannel_peaks, capture_silence_troubleshooting, compare_files
-from .branch_lab import compare_branches, match_levels
+from .metrics import (
+    analyze_file,
+    analyze_file_trimmed,
+    analyze_multichannel_peaks,
+    capture_silence_troubleshooting,
+    compare_files,
+    rms_delta_db,
+)
+from .branch_lab import branch_context, compare_branches, probe_branch, probe_param, render_branch
 from .device_snapshot import capture_live_snapshots, write_device_snapshots
 from .orchestrator import render_labeled_wet
 from .session import append_session_event, default_dry_path, resolve_session_dir, write_session_meta
@@ -200,6 +207,43 @@ def cmd_analyze(paths: list[Path]) -> dict[str, Any]:
     return {"id": "audioAnalyze", **compare_files(paths)}
 
 
+def cmd_analyze_trimmed(
+    paths: list[Path],
+    *,
+    trim_start_seconds: float = 0.0,
+    trim_end_seconds: float = 0.0,
+) -> dict[str, Any]:
+    if len(paths) < 1:
+        raise AudioLabError("analyze-trimmed requires at least one WAV file", 64)
+    files = [
+        analyze_file_trimmed(
+            path,
+            trim_start_seconds=trim_start_seconds,
+            trim_end_seconds=trim_end_seconds,
+        )
+        for path in paths
+    ]
+    if len(files) == 1:
+        return {"id": "audioAnalyzeTrimmed", "file": files[0]}
+    deltas: list[dict[str, Any]] = []
+    reference = files[0]
+    for report in files[1:]:
+        delta = rms_delta_db(reference, report)
+        deltas.append(
+            {
+                "path": report.get("path"),
+                "deltaRmsDbVsFirst": delta,
+                "rmsDbfs": report.get("rmsDbfs"),
+            }
+        )
+    return {
+        "id": "audioAnalyzeTrimmed",
+        "files": files,
+        "comparisons": deltas,
+        "note": "Metrics on trimmed regions only (steady-state); positive delta means louder than first file.",
+    }
+
+
 def cmd_session_init(
     session: str,
     *,
@@ -267,31 +311,111 @@ def cmd_compare_branches(
         raise
 
 
-def cmd_match_levels(
+def cmd_branch_context(
+    divider: str,
+    *,
+    midi_timeout: float = 20.0,
+) -> dict[str, Any]:
+    try:
+        return branch_context(divider, midi_timeout=midi_timeout)
+    except ValueError as error:
+        raise AudioLabError(str(error), 64) from error
+
+
+def cmd_probe_param(
     session: str,
     divider: str,
-    param: str,
+    channel: str,
+    block_id: str,
+    parameter_id: str,
     *,
-    target_match: str,
-    threshold_db: float = 1.0,
-    max_iterations: int = 8,
+    low_value: int = 0,
+    high_value: int = 100,
     midi_timeout: float = 20.0,
     settle_seconds: float = 0.25,
-    verify_writes: bool = True,
-    user_slot: str | None = None,
+    prepare_usb: bool = True,
 ) -> dict[str, Any]:
-    return match_levels(
-        session,
-        divider,
-        param,
-        target_match=target_match,
-        threshold_db=threshold_db,
-        max_iterations=max_iterations,
-        midi_timeout=midi_timeout,
-        settle_seconds=settle_seconds,
-        verify_writes=verify_writes,
-        user_slot=user_slot,
-    )
+    try:
+        return probe_param(
+            session,
+            divider,
+            channel,
+            block_id,
+            parameter_id,
+            low_value=low_value,
+            high_value=high_value,
+            midi_timeout=midi_timeout,
+            settle_seconds=settle_seconds,
+            prepare_usb=prepare_usb,
+        )
+    except ValueError as error:
+        raise AudioLabError(str(error), 64) from error
+
+
+def cmd_probe_branch(
+    session: str,
+    divider: str,
+    channel: str,
+    *,
+    max_probes: int = 6,
+    include_divider_levels: bool = False,
+    low_value: int = 0,
+    high_value: int = 100,
+    midi_timeout: float = 20.0,
+    settle_seconds: float = 0.25,
+    prepare_usb: bool = True,
+) -> dict[str, Any]:
+    try:
+        return probe_branch(
+            session,
+            divider,
+            channel,
+            max_probes=max_probes,
+            include_divider_levels=include_divider_levels,
+            low_value=low_value,
+            high_value=high_value,
+            midi_timeout=midi_timeout,
+            settle_seconds=settle_seconds,
+            prepare_usb=prepare_usb,
+        )
+    except ValueError as error:
+        raise AudioLabError(str(error), 64) from error
+
+
+def cmd_render_branch(
+    session: str,
+    divider: str,
+    channel: str,
+    *,
+    label: str | None = None,
+    midi_timeout: float = 20.0,
+    settle_seconds: float = 0.25,
+    verify_writes: bool = False,
+    prepare_usb: bool = True,
+    restore_divider: bool = True,
+    trim_start_seconds: float = 0.0,
+    trim_end_seconds: float = 0.0,
+    user_slot: str | None = None,
+    experiment_note: str | None = None,
+) -> dict[str, Any]:
+    try:
+        return render_branch(
+            session,
+            divider,
+            channel,
+            label=label,
+            midi_timeout=midi_timeout,
+            settle_seconds=settle_seconds,
+            verify_writes=verify_writes,
+            prepare_usb=prepare_usb,
+            restore_divider=restore_divider,
+            trim_start_seconds=trim_start_seconds,
+            trim_end_seconds=trim_end_seconds,
+            user_slot=user_slot,
+            experiment_note=experiment_note,
+        )
+    except ValueError as error:
+        raise AudioLabError(str(error), 64) from error
 
 
 def cmd_session_render(

@@ -156,6 +156,15 @@ def analyze_file_trimmed(
     }
 
 
+def rms_delta_db(metrics_a: dict[str, Any], metrics_b: dict[str, Any]) -> float | None:
+    """Return B minus A in dB RMS (broadband), or None if either side is missing."""
+    rms_a = metrics_a.get("rmsDbfs")
+    rms_b = metrics_b.get("rmsDbfs")
+    if rms_a is None or rms_b is None:
+        return None
+    return rms_b - rms_a
+
+
 def compare_files(paths: list[Path]) -> dict[str, Any]:
     reports = [analyze_file(path) for path in paths]
     reference_rms = reports[0].get("rmsDbfs") if reports else None

@@ -47,7 +47,7 @@
   - `scripts/gt1000-agent --pretty audio generate-tone --session div1-test --duration 3`
   - `scripts/gt1000-agent --pretty audio session render --session div1-test --label baseline`
   - Chained renders from separate CLI processes: add `--no-prepare-usb` after the first `prepare-reamp`, and `--no-patch-snapshot` on follow-up renders to avoid CoreMIDI churn.
-- Phase 3: `audio compare-branches --session <name> --divider divider1`, `audio match-levels --session <name> --param auto --target-match branch-A` (probes branch block `level` params; divider LEVEL A/B often do not affect single-mode USB re-amp). Divider/gain bytes restored after run.
+- Phase 3 (agent-guided quantitative experiments): primitives `audio branch-context`, `compare-branches`, `probe-branch`, `probe-param`, `render-branch`, `analyze-trimmed`. **Agent** runs inspect → hypothesize → test loops (see [docs/audio-lab-investigation.md](docs/audio-lab-investigation.md)); default ~5 min budget unless user specifies. Divider LEVEL A/B often do not affect single-mode USB re-amp—use probe/render to verify. **Close-out:** present findings (baseline, what worked, final metric); if successful, **offer** temp-patch apply or `--user-slot` save only when the user agrees—probes restore bytes, so re-apply winning `patch set` before they hear or save. **Verification:** [docs/audio-lab-investigation-verification.md](docs/audio-lab-investigation-verification.md) (IMPRESSION oracle + fresh-agent test prompt).
   - `scripts/gt1000-agent --pretty system inout-set usb-main-mix-level 100 --live --verify --timeout 20`
 
 ## Skill Maintenance

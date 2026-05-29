@@ -17,7 +17,11 @@ try:
         cmd_record_dry,
         cmd_reamp,
         cmd_compare_branches,
-        cmd_match_levels,
+        cmd_branch_context,
+        cmd_probe_param,
+        cmd_probe_branch,
+        cmd_render_branch,
+        cmd_analyze_trimmed,
         cmd_session_init,
         cmd_session_render,
     )
@@ -31,7 +35,11 @@ except ModuleNotFoundError:
         cmd_record_dry,
         cmd_reamp,
         cmd_compare_branches,
-        cmd_match_levels,
+        cmd_branch_context,
+        cmd_probe_param,
+        cmd_probe_branch,
+        cmd_render_branch,
+        cmd_analyze_trimmed,
         cmd_session_init,
         cmd_session_render,
     )
@@ -136,6 +144,15 @@ def register_audio_commands(subcommands: argparse._SubParsersAction) -> None:
     analyze.add_argument("files", nargs="+", type=Path, help="WAV files to analyze.")
     analyze.set_defaults(func=wrap_audio_command(cmd_audio_analyze))
 
+    analyze_trim = audio_sub.add_parser(
+        "analyze-trimmed",
+        help="Analyze WAV RMS/peak on a trimmed middle region (skip re-amp settle/tail).",
+    )
+    analyze_trim.add_argument("files", nargs="+", type=Path, help="WAV files to analyze.")
+    analyze_trim.add_argument("--trim-start", type=float, default=2.0, dest="trim_start_seconds")
+    analyze_trim.add_argument("--trim-end", type=float, default=1.5, dest="trim_end_seconds")
+    analyze_trim.set_defaults(func=wrap_audio_command(cmd_audio_analyze_trimmed))
+
     session = audio_sub.add_parser("session", help="Initialize and render repeatable audio lab sessions.")
     session_sub = session.add_subparsers(dest="session_command", required=True)
 
@@ -200,30 +217,72 @@ def register_audio_commands(subcommands: argparse._SubParsersAction) -> None:
     compare.add_argument("--user-slot", help="Optional user slot for persistent divider writes (default: temporary patch).")
     compare.set_defaults(func=wrap_audio_command(cmd_audio_compare_branches, requires_device=True))
 
-    match = audio_sub.add_parser(
-        "match-levels",
-        help="Iteratively adjust a branch gain control to match loudness on the dry take.",
+    branch_ctx = audio_sub.add_parser(
+        "branch-context",
+        help="Inspect divider branches and gain candidates for agent-led experiments (no re-amp).",
     )
-    match.add_argument("--session", required=True, help="Session name with dry.wav.")
-    match.add_argument("--divider", default="divider1", choices=["divider1", "divider2", "divider3"])
-    match.add_argument(
-        "--param",
-        default="auto",
-        help="auto (default), levelA/levelB, dividerN.levelA/B, or blockId.level (e.g. dist1.level).",
+    branch_ctx.add_argument("--divider", default="divider1", choices=["divider1", "divider2", "divider3"])
+    branch_ctx.add_argument("--midi-timeout", type=float, default=20.0)
+    branch_ctx.set_defaults(func=wrap_audio_command(cmd_audio_branch_context, requires_device=True))
+
+    probe_param_cmd = audio_sub.add_parser(
+        "probe-param",
+        help="Test whether a patch parameter moves USB re-amp level on one divider branch.",
     )
-    match.add_argument(
-        "--target-match",
+    probe_param_cmd.add_argument("--session", required=True, help="Session name with dry.wav.")
+    probe_param_cmd.add_argument("--divider", default="divider1", choices=["divider1", "divider2", "divider3"])
+    probe_param_cmd.add_argument(
+        "--channel",
         required=True,
-        choices=["branch-A", "branch-B"],
-        help="Reference branch to match (adjusts the other branch's level param).",
+        help="branch-A, branch-B, 0, or 1 (active divider path to render).",
     )
-    match.add_argument("--threshold-db", type=float, default=1.0, help="Stop when |Δ RMS| vs reference is below this.")
-    match.add_argument("--max-iterations", type=int, default=8)
-    match.add_argument("--midi-timeout", type=float, default=20.0)
-    match.add_argument("--settle-seconds", type=float, default=0.25)
-    match.add_argument("--no-verify", action="store_true")
-    match.add_argument("--user-slot", help="Optional user slot for persistent level writes.")
-    match.set_defaults(func=wrap_audio_command(cmd_audio_match_levels, requires_device=True))
+    probe_param_cmd.add_argument("--block", required=True, dest="block_id", help="Block id (e.g. dist1, divider1).")
+    probe_param_cmd.add_argument("--param", required=True, dest="parameter_id", help="Parameter id (e.g. level, levelB).")
+    probe_param_cmd.add_argument("--low", type=int, default=0, dest="low_value")
+    probe_param_cmd.add_argument("--high", type=int, default=100, dest="high_value")
+    probe_param_cmd.add_argument("--midi-timeout", type=float, default=20.0)
+    probe_param_cmd.add_argument("--settle-seconds", type=float, default=0.25)
+    probe_param_cmd.add_argument(
+        "--no-prepare-usb",
+        action="store_true",
+        help="Skip SetupEfct DIR MON prepare (use after audio prepare-reamp).",
+    )
+    probe_param_cmd.set_defaults(func=wrap_audio_command(cmd_audio_probe_param, requires_device=True))
+
+    probe_branch_cmd = audio_sub.add_parser(
+        "probe-branch",
+        help="Screen branch blocks: probe each candidate param and rank USB level sensitivity.",
+    )
+    probe_branch_cmd.add_argument("--session", required=True)
+    probe_branch_cmd.add_argument("--divider", default="divider1", choices=["divider1", "divider2", "divider3"])
+    probe_branch_cmd.add_argument("--channel", required=True)
+    probe_branch_cmd.add_argument("--max-probes", type=int, default=6)
+    probe_branch_cmd.add_argument("--include-divider-levels", action="store_true")
+    probe_branch_cmd.add_argument("--low", type=int, default=0, dest="low_value")
+    probe_branch_cmd.add_argument("--high", type=int, default=100, dest="high_value")
+    probe_branch_cmd.add_argument("--midi-timeout", type=float, default=20.0)
+    probe_branch_cmd.add_argument("--settle-seconds", type=float, default=0.25)
+    probe_branch_cmd.add_argument("--no-prepare-usb", action="store_true")
+    probe_branch_cmd.set_defaults(func=wrap_audio_command(cmd_audio_probe_branch, requires_device=True))
+
+    render_branch_cmd = audio_sub.add_parser(
+        "render-branch",
+        help="Select divider channel, re-amp dry.wav once, return wet metrics (restores divider by default).",
+    )
+    render_branch_cmd.add_argument("--session", required=True)
+    render_branch_cmd.add_argument("--divider", default="divider1", choices=["divider1", "divider2", "divider3"])
+    render_branch_cmd.add_argument("--channel", required=True)
+    render_branch_cmd.add_argument("--label", help="Render label (default: dividerN-branch-A|B).")
+    render_branch_cmd.add_argument("--trim-start", type=float, default=0.0, dest="trim_start_seconds")
+    render_branch_cmd.add_argument("--trim-end", type=float, default=0.0, dest="trim_end_seconds")
+    render_branch_cmd.add_argument("--midi-timeout", type=float, default=20.0)
+    render_branch_cmd.add_argument("--settle-seconds", type=float, default=0.25)
+    render_branch_cmd.add_argument("--no-verify", action="store_true")
+    render_branch_cmd.add_argument("--no-prepare-usb", action="store_true")
+    render_branch_cmd.add_argument("--no-restore-divider", action="store_true")
+    render_branch_cmd.add_argument("--user-slot")
+    render_branch_cmd.add_argument("--experiment-note", help="Append this note to session meta events.")
+    render_branch_cmd.set_defaults(func=wrap_audio_command(cmd_audio_render_branch, requires_device=True))
 
 
 def cmd_audio_ports(_args: argparse.Namespace) -> Any:
@@ -310,16 +369,61 @@ def cmd_audio_compare_branches(args: argparse.Namespace) -> Any:
     )
 
 
-def cmd_audio_match_levels(args: argparse.Namespace) -> Any:
-    return cmd_match_levels(
+def cmd_audio_branch_context(args: argparse.Namespace) -> Any:
+    return cmd_branch_context(args.divider, midi_timeout=args.midi_timeout)
+
+
+def cmd_audio_probe_param(args: argparse.Namespace) -> Any:
+    return cmd_probe_param(
         args.session,
         args.divider,
-        args.param,
-        target_match=args.target_match,
-        threshold_db=args.threshold_db,
-        max_iterations=args.max_iterations,
+        args.channel,
+        args.block_id,
+        args.parameter_id,
+        low_value=args.low_value,
+        high_value=args.high_value,
+        midi_timeout=args.midi_timeout,
+        settle_seconds=args.settle_seconds,
+        prepare_usb=not args.no_prepare_usb,
+    )
+
+
+def cmd_audio_probe_branch(args: argparse.Namespace) -> Any:
+    return cmd_probe_branch(
+        args.session,
+        args.divider,
+        args.channel,
+        max_probes=args.max_probes,
+        include_divider_levels=args.include_divider_levels,
+        low_value=args.low_value,
+        high_value=args.high_value,
+        midi_timeout=args.midi_timeout,
+        settle_seconds=args.settle_seconds,
+        prepare_usb=not args.no_prepare_usb,
+    )
+
+
+def cmd_audio_render_branch(args: argparse.Namespace) -> Any:
+    return cmd_render_branch(
+        args.session,
+        args.divider,
+        args.channel,
+        label=args.label,
         midi_timeout=args.midi_timeout,
         settle_seconds=args.settle_seconds,
         verify_writes=not args.no_verify,
+        prepare_usb=not args.no_prepare_usb,
+        restore_divider=not args.no_restore_divider,
+        trim_start_seconds=args.trim_start_seconds,
+        trim_end_seconds=args.trim_end_seconds,
         user_slot=args.user_slot,
+        experiment_note=args.experiment_note,
+    )
+
+
+def cmd_audio_analyze_trimmed(args: argparse.Namespace) -> Any:
+    return cmd_analyze_trimmed(
+        list(args.files),
+        trim_start_seconds=args.trim_start_seconds,
+        trim_end_seconds=args.trim_end_seconds,
     )

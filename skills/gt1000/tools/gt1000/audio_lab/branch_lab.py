@@ -1,4 +1,4 @@
-"""Divider A/B branch measurement and level matching for audio lab sessions."""
+"""Divider A/B branch inspection and measurement primitives for agent-guided audio lab investigations."""
 
 from __future__ import annotations
 
@@ -15,9 +15,9 @@ except ModuleNotFoundError:
 from .audio_io import prepare_usb_reamp
 from .device_snapshot import read_patch_effect_snapshot
 from .errors import AudioLabError
-from .metrics import analyze_file
+from .metrics import analyze_file, analyze_file_trimmed
 from .orchestrator import render_labeled_wet
-from .session import resolve_session_dir, sanitize_label
+from .session import append_session_event, resolve_session_dir, sanitize_label
 
 SUPPORTED_DIVIDERS = ("divider1", "divider2", "divider3")
 DIVIDER_CHAIN_VALUE = {"divider1": 35, "divider2": 38, "divider3": 41}
@@ -26,10 +26,23 @@ DIVIDER_MIXER = {"divider1": "mixer1", "divider2": "mixer2", "divider3": "mixer3
 BRANCH_LABELS = {0: "branch-A", 1: "branch-B"}
 CHANNEL_BY_LABEL = {"branch-A": 0, "branch-B": 1}
 MODE_SINGLE = 0
-DIVIDER_LEVEL_FIELDS = frozenset({"levelA", "levelB"})
 GAIN_PROBE_LOW = 0
 GAIN_PROBE_HIGH = 100
 MIN_GAIN_SENSITIVITY_DB = 0.5
+# Parameters an agent may try when pursuing loudness/gain goals (verify with probe-param).
+GAIN_LIKE_PARAMETER_IDS = frozenset({
+    "level",
+    "effectLevel",
+    "directLevel",
+    "directMix",
+    "soloLevel",
+    "gain",
+    "returnLevel",
+    "sendLevel",
+    "balanceA",
+    "balanceB",
+})
+DEFAULT_INVESTIGATION_TIMEOUT_MINUTES = 5
 
 
 def normalize_divider_id(divider: str) -> str:
@@ -177,20 +190,19 @@ def build_level_plan(divider_id: str, field: str, value: int, *, slot: str | Non
     return patch_edit.build_parameter_set_plan(divider_id, field, str(value), slot=slot)
 
 
-def parse_match_param(param: str, divider_id: str) -> tuple[str, str | None, str | None]:
-    """Return (kind, block_id, field_id) where kind is auto, divider, or block."""
-    text = param.strip()
-    if not text or text.lower() in {"auto", "discover"}:
-        return ("auto", None, None)
-    if "." in text:
-        block_id, field_id = text.split(".", 1)
-        return ("block", block_id.strip(), field_id.strip())
-    field_id = text
-    if field_id in DIVIDER_LEVEL_FIELDS:
-        return ("divider", divider_id, field_id)
-    raise ValueError(
-        "param must be auto, levelA, levelB, dividerN.levelA/B, or blockId.parameter (e.g. dist1.level)"
-    )
+def normalize_branch_channel(channel: str | int) -> int:
+    if isinstance(channel, int):
+        if channel in {0, 1}:
+            return channel
+        raise ValueError("channel must be 0 (A) or 1 (B)")
+    key = channel.strip().lower().replace("_", "").replace(" ", "")
+    if key in {"a", "brancha", "branch-a"}:
+        return 0
+    if key in {"b", "branchb", "branch-b"}:
+        return 1
+    if key in {"0", "1"}:
+        return int(key)
+    raise ValueError("channel must be branch-A, branch-B, 0, or 1")
 
 
 def block_has_parameter(block_id: str, parameter_id: str) -> bool:
@@ -312,11 +324,93 @@ def blocks_on_divider_branch(snapshot: dict[str, Any], divider_id: str, channel:
     return block_ids
 
 
+def adjustable_parameters_for_block(block_id: str) -> list[dict[str, str]]:
+    block = patch_edit.find_patch_block(block_id)
+    return [
+        {"id": parameter.id, "displayName": parameter.display_name}
+        for parameter in block.parameters
+        if parameter.id in GAIN_LIKE_PARAMETER_IDS
+    ]
+
+
+def describe_branch_blocks(snapshot: dict[str, Any], divider_id: str, channel: int) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    for block_id in blocks_on_divider_branch(snapshot, divider_id, channel):
+        params = adjustable_parameters_for_block(block_id)
+        if not params:
+            continue
+        block = patch_edit.find_patch_block(block_id)
+        blocks.append(
+            {
+                "blockId": block_id,
+                "displayName": block.display_name,
+                "adjustableParams": params,
+            }
+        )
+    return blocks
+
+
+def investigation_protocol(*, timeout_minutes: int = DEFAULT_INVESTIGATION_TIMEOUT_MINUTES) -> dict[str, Any]:
+    return {
+        "owner": "agent",
+        "defaultTimeoutMinutes": timeout_minutes,
+        "steps": [
+            "Inspect: patch chain --live and audio branch-context --divider <n> --live",
+            "Measure baseline: audio compare-branches (or session render) on a fixed dry.wav",
+            "Hypothesis: name block.parameter and expected direction on USB re-amp level",
+            "Test: audio probe-param for cheap confirmation, then patch set + re-measure",
+            "Loop until goal met or timeout; restore temp patch state between experiments",
+            "Present findings to the user (goal, baseline, tries, result, musical meaning)",
+            "If successful: offer to re-apply winning patch set on temp patch or save to a user slot only with explicit consent",
+        ],
+        "doc": "docs/audio-lab-investigation.md",
+    }
+
+
+def branch_context(
+    divider: str,
+    *,
+    midi_timeout: float = 20.0,
+) -> dict[str, Any]:
+    """Inspection-only context for agent divider investigations (no re-amp)."""
+    divider_id = normalize_divider_id(divider)
+    snapshot, divider_bytes = read_branch_lab_context(divider_id, midi_timeout)
+    try:
+        from tools.gt1000 import agent_cli
+    except ModuleNotFoundError:
+        import agent_cli
+    chain = agent_cli.chain_from_full(snapshot)
+    divider_state = decode_divider_data(divider_id, divider_bytes)
+    reachability = branch_reachability_report(snapshot, chain, divider_id, divider_state)
+    return {
+        "id": "audioBranchContext",
+        "dividerId": divider_id,
+        "dividerState": divider_state,
+        "reachability": reachability,
+        "branches": {
+            "branch-A": {
+                "channel": 0,
+                "blocks": describe_branch_blocks(snapshot, divider_id, 0),
+            },
+            "branch-B": {
+                "channel": 1,
+                "blocks": describe_branch_blocks(snapshot, divider_id, 1),
+            },
+        },
+        "investigationProtocol": investigation_protocol(),
+        "notes": [
+            "Divider LEVEL A/B often do not change USB main re-amp level in single mode; use audio probe-param before assuming they work.",
+            "Inactive-branch blocks (see reachability) do not affect the branch you are not hearing.",
+            "compare-branches restores divider bytes after measurement; probe-param restores the probed block.",
+        ],
+    }
+
+
 def gain_candidates_on_branch(snapshot: dict[str, Any], divider_id: str, channel: int) -> list[str]:
     return [
         block_id
         for block_id in blocks_on_divider_branch(snapshot, divider_id, channel)
-        if block_has_parameter(block_id, "level")
+        if adjustable_parameters_for_block(block_id)
     ]
 
 
@@ -341,161 +435,273 @@ def _render_branch_rms(
     return render["wetMetrics"].get("rmsDbfs")
 
 
-def probe_parameter_gain_db(
+def probe_param(
     session: str,
-    divider_id: str,
-    channel: int,
+    divider: str,
+    channel: str | int,
     block_id: str,
     parameter_id: str,
     *,
-    midi_timeout: float,
-    settle_seconds: float,
-) -> float | None:
-    """Return |ΔRMS| between low and high parameter values on the active branch, or None if unreadable."""
-    original = read_block_data(block_id, midi_timeout)
-    current = read_block_parameter_value(block_id, parameter_id, original)
-    if current is None:
-        return None
-    try:
-        apply_plan(
-            build_block_param_plan(block_id, parameter_id, GAIN_PROBE_LOW),
-            timeout=midi_timeout,
-            verify=False,
-        )
-        low_rms = _render_branch_rms(
-            session,
-            divider_id,
-            channel,
-            midi_timeout=midi_timeout,
-            settle_seconds=settle_seconds,
-        )
-        apply_plan(
-            build_block_param_plan(block_id, parameter_id, GAIN_PROBE_HIGH),
-            timeout=midi_timeout,
-            verify=False,
-        )
-        high_rms = _render_branch_rms(
-            session,
-            divider_id,
-            channel,
-            midi_timeout=midi_timeout,
-            settle_seconds=settle_seconds,
-        )
-    finally:
-        restore_block_data(block_id, original, timeout=midi_timeout, verify=False)
-    if low_rms is None or high_rms is None:
-        return None
-    return abs(high_rms - low_rms)
-
-
-def probe_divider_level_gain_db(
-    session: str,
-    divider_id: str,
-    channel: int,
-    field: str,
-    *,
-    midi_timeout: float,
-    settle_seconds: float,
-) -> float | None:
-    original = read_divider_data(divider_id, midi_timeout)
-    try:
-        apply_plan(build_level_plan(divider_id, field, GAIN_PROBE_LOW), timeout=midi_timeout, verify=False)
-        low_rms = _render_branch_rms(
-            session,
-            divider_id,
-            channel,
-            midi_timeout=midi_timeout,
-            settle_seconds=settle_seconds,
-        )
-        apply_plan(build_level_plan(divider_id, field, GAIN_PROBE_HIGH), timeout=midi_timeout, verify=False)
-        high_rms = _render_branch_rms(
-            session,
-            divider_id,
-            channel,
-            midi_timeout=midi_timeout,
-            settle_seconds=settle_seconds,
-        )
-    finally:
-        restore_divider_data(divider_id, original, timeout=midi_timeout, verify=False)
-    if low_rms is None or high_rms is None:
-        return None
-    return abs(high_rms - low_rms)
-
-
-def resolve_gain_control(
-    session: str,
-    divider_id: str,
-    channel: int,
-    param: str,
-    snapshot: dict[str, Any],
-    *,
-    midi_timeout: float,
-    settle_seconds: float,
+    low_value: int = GAIN_PROBE_LOW,
+    high_value: int = GAIN_PROBE_HIGH,
+    midi_timeout: float = 20.0,
+    settle_seconds: float = 0.25,
+    prepare_usb: bool = True,
 ) -> dict[str, Any]:
-    """Pick a parameter that actually moves USB re-amp level on this branch."""
-    kind, block_id, field_id = parse_match_param(param, divider_id)
-    if kind == "block":
-        assert block_id and field_id
-        if not block_has_parameter(block_id, field_id):
-            raise ValueError(f"{block_id} has no parameter {field_id!r}")
-        return {
-            "controlKind": "block",
-            "blockId": block_id,
-            "parameterId": field_id,
-            "paramLabel": f"{block_id}.{field_id}",
-        }
+    """One before/after re-amp experiment to test whether a parameter moves USB level on a branch."""
+    divider_id = normalize_divider_id(divider)
+    channel_index = normalize_branch_channel(channel)
+    session_dir = resolve_session_dir(session, create=False)
+    if not (session_dir / "dry.wav").is_file():
+        raise AudioLabError(f"session dry.wav not found under {session_dir}", 64)
+    if not block_has_parameter(block_id, parameter_id):
+        raise ValueError(f"{block_id} has no parameter {parameter_id!r}")
+    if not 0 <= low_value <= 127 or not 0 <= high_value <= 127:
+        raise ValueError("probe values must be 0...127")
 
-    divider_field = field_id or ("levelB" if channel == 1 else "levelA")
-    if kind == "divider":
-        sensitivity = probe_divider_level_gain_db(
+    if prepare_usb:
+        prepare_usb_reamp(midi_timeout, verify=True)
+
+    if block_id == divider_id:
+        original = read_divider_data(divider_id, midi_timeout)
+        restore_fn = lambda: restore_divider_data(divider_id, original, timeout=midi_timeout, verify=False)
+        low_plan = build_level_plan(divider_id, parameter_id, low_value)
+        high_plan = build_level_plan(divider_id, parameter_id, high_value)
+    else:
+        original = read_block_data(block_id, midi_timeout)
+        restore_fn = lambda: restore_block_data(block_id, original, timeout=midi_timeout, verify=False)
+        low_plan = build_block_param_plan(block_id, parameter_id, low_value)
+        high_plan = build_block_param_plan(block_id, parameter_id, high_value)
+
+    try:
+        apply_plan(build_channel_select_plan(divider_id, channel_index), timeout=midi_timeout, verify=False)
+        time.sleep(settle_seconds)
+        apply_plan(low_plan, timeout=midi_timeout, verify=False)
+        low_rms = _render_branch_rms(
             session,
             divider_id,
-            channel,
-            divider_field,
+            channel_index,
             midi_timeout=midi_timeout,
             settle_seconds=settle_seconds,
         )
-        if sensitivity is not None and sensitivity >= MIN_GAIN_SENSITIVITY_DB:
-            return {
-                "controlKind": "divider",
-                "blockId": divider_id,
-                "parameterId": divider_field,
-                "paramLabel": f"{divider_id}.{divider_field}",
-                "probeSensitivityDb": sensitivity,
-            }
-
-    candidates = gain_candidates_on_branch(snapshot, divider_id, channel)
-    best: tuple[float, str] | None = None
-    for candidate in candidates:
-        sensitivity = probe_parameter_gain_db(
+        apply_plan(high_plan, timeout=midi_timeout, verify=False)
+        high_rms = _render_branch_rms(
             session,
             divider_id,
-            channel,
-            candidate,
-            "level",
+            channel_index,
             midi_timeout=midi_timeout,
             settle_seconds=settle_seconds,
         )
-        if sensitivity is None or sensitivity < MIN_GAIN_SENSITIVITY_DB:
-            continue
-        if best is None or sensitivity > best[0]:
-            best = (sensitivity, candidate)
-    if best is None:
-        raise AudioLabError(
-            f"No level parameter on {BRANCH_LABELS[channel]} moved USB re-amp loudness by "
-            f"≥{MIN_GAIN_SENSITIVITY_DB} dB. Divider LEVEL A/B often do not affect single-mode USB capture; "
-            f"try --param blockId.level (e.g. dist1.level) or adjust blocks on the quieter branch path.",
-            64,
-        )
+    finally:
+        restore = restore_fn()
+
+    sensitivity = None
+    if low_rms is not None and high_rms is not None:
+        sensitivity = abs(high_rms - low_rms)
     return {
-        "controlKind": "block",
-        "blockId": best[1],
-        "parameterId": "level",
-        "paramLabel": f"{best[1]}.level",
-        "probeSensitivityDb": best[0],
-        "autoSelected": kind in {"auto", "divider"},
-        "dividerLevelIneffective": kind == "divider",
+        "id": "audioProbeParam",
+        "session": session,
+        "dividerId": divider_id,
+        "branch": BRANCH_LABELS[channel_index],
+        "blockId": block_id,
+        "parameterId": parameter_id,
+        "lowValue": low_value,
+        "highValue": high_value,
+        "lowRmsDbfs": low_rms,
+        "highRmsDbfs": high_rms,
+        "sensitivityDb": sensitivity,
+        "affectsReamp": sensitivity is not None and sensitivity >= MIN_GAIN_SENSITIVITY_DB,
+        "restore": restore,
+        "summary": (
+            f"{block_id}.{parameter_id} on {BRANCH_LABELS[channel_index]}: "
+            f"Δ RMS {sensitivity:.2f} dB across {low_value}→{high_value}"
+            if sensitivity is not None
+            else f"{block_id}.{parameter_id}: could not measure RMS"
+        ),
+        "note": "Agent should reject parameters with affectsReamp=false and pick another candidate from branch-context.",
     }
+
+
+def _preferred_probe_parameter(block_id: str) -> str | None:
+    params = adjustable_parameters_for_block(block_id)
+    if not params:
+        return None
+    for preferred in ("level", "effectLevel", "gain", "returnLevel", "sendLevel"):
+        if any(item["id"] == preferred for item in params):
+            return preferred
+    return params[0]["id"]
+
+
+def probe_branch(
+    session: str,
+    divider: str,
+    channel: str | int,
+    *,
+    max_probes: int = 6,
+    include_divider_levels: bool = False,
+    low_value: int = GAIN_PROBE_LOW,
+    high_value: int = GAIN_PROBE_HIGH,
+    midi_timeout: float = 20.0,
+    settle_seconds: float = 0.25,
+    prepare_usb: bool = True,
+) -> dict[str, Any]:
+    """Probe adjustable parameters on one branch; rank by USB re-amp sensitivity (mechanical screening)."""
+    divider_id = normalize_divider_id(divider)
+    channel_index = normalize_branch_channel(channel)
+    snapshot, _ = read_branch_lab_context(divider_id, midi_timeout)
+    probes: list[dict[str, Any]] = []
+
+    if include_divider_levels:
+        for field in ("levelA", "levelB"):
+            if field == "levelA" and channel_index != 0:
+                continue
+            if field == "levelB" and channel_index != 1:
+                continue
+            if len(probes) >= max_probes:
+                break
+            probes.append(
+                probe_param(
+                    session,
+                    divider_id,
+                    channel_index,
+                    divider_id,
+                    field,
+                    low_value=low_value,
+                    high_value=high_value,
+                    midi_timeout=midi_timeout,
+                    settle_seconds=settle_seconds,
+                    prepare_usb=prepare_usb and not probes,
+                )
+            )
+            prepare_usb = False
+
+    for block_id in blocks_on_divider_branch(snapshot, divider_id, channel_index):
+        if len(probes) >= max_probes:
+            break
+        parameter_id = _preferred_probe_parameter(block_id)
+        if not parameter_id:
+            continue
+        probes.append(
+            probe_param(
+                session,
+                divider_id,
+                channel_index,
+                block_id,
+                parameter_id,
+                low_value=low_value,
+                high_value=high_value,
+                midi_timeout=midi_timeout,
+                settle_seconds=settle_seconds,
+                prepare_usb=prepare_usb and not probes,
+            )
+        )
+        prepare_usb = False
+
+    ranked = sorted(
+        probes,
+        key=lambda item: item.get("sensitivityDb") if item.get("sensitivityDb") is not None else -1.0,
+        reverse=True,
+    )
+    effective = [item for item in ranked if item.get("affectsReamp")]
+    return {
+        "id": "audioProbeBranch",
+        "session": session,
+        "dividerId": divider_id,
+        "branch": BRANCH_LABELS[channel_index],
+        "maxProbes": max_probes,
+        "probes": probes,
+        "rankedBySensitivity": ranked,
+        "effectiveControls": [
+            {"blockId": item["blockId"], "parameterId": item["parameterId"], "sensitivityDb": item["sensitivityDb"]}
+            for item in effective
+        ],
+        "summary": (
+            f"Best control on {BRANCH_LABELS[channel_index]}: "
+            f"{effective[0]['blockId']}.{effective[0]['parameterId']} ({effective[0]['sensitivityDb']:.1f} dB)"
+            if effective
+            else f"No parameter on {BRANCH_LABELS[channel_index]} moved USB level by ≥{MIN_GAIN_SENSITIVITY_DB} dB."
+        ),
+        "investigationProtocol": investigation_protocol(),
+    }
+
+
+def render_branch(
+    session: str,
+    divider: str,
+    channel: str | int,
+    *,
+    label: str | None = None,
+    midi_timeout: float = 20.0,
+    settle_seconds: float = 0.25,
+    verify_writes: bool = False,
+    prepare_usb: bool = True,
+    restore_divider: bool = True,
+    trim_start_seconds: float = 0.0,
+    trim_end_seconds: float = 0.0,
+    user_slot: str | None = None,
+    experiment_note: str | None = None,
+) -> dict[str, Any]:
+    """Select divider channel, re-amp once, return metrics (optional trimmed steady-state RMS)."""
+    divider_id = normalize_divider_id(divider)
+    channel_index = normalize_branch_channel(channel)
+    session_dir = resolve_session_dir(session, create=False)
+    if not (session_dir / "dry.wav").is_file():
+        raise AudioLabError(f"session dry.wav not found under {session_dir}", 64)
+
+    if prepare_usb:
+        prepare_usb_reamp(midi_timeout, verify=True)
+
+    original = read_divider_data(divider_id, midi_timeout)
+    render_label = sanitize_label(label) if label else sanitize_label(f"{divider_id}-{BRANCH_LABELS[channel_index]}")
+    restore: dict[str, Any] | None = None
+    try:
+        apply_plan(
+            build_channel_select_plan(divider_id, channel_index, slot=user_slot),
+            timeout=midi_timeout,
+            verify=verify_writes,
+        )
+        time.sleep(settle_seconds)
+        render = render_labeled_wet(
+            session,
+            render_label,
+            prepare_usb=False,
+            midi_timeout=midi_timeout,
+            settle_seconds=settle_seconds,
+            snapshot_patch=False,
+        )
+    finally:
+        if restore_divider:
+            try:
+                restore = restore_divider_data(divider_id, original, timeout=midi_timeout, verify=verify_writes)
+            except live.LiveMIDIError:
+                restore = {"ok": False, "warning": "Could not restore divider bytes after render-branch."}
+
+    wet_path = Path(render["wetPath"])
+    if trim_start_seconds > 0 or trim_end_seconds > 0:
+        wet_metrics = analyze_file_trimmed(
+            wet_path,
+            trim_start_seconds=trim_start_seconds,
+            trim_end_seconds=trim_end_seconds,
+        )
+    else:
+        wet_metrics = render["wetMetrics"]
+
+    payload = {
+        "id": "audioRenderBranch",
+        "session": session,
+        "dividerId": divider_id,
+        "branch": BRANCH_LABELS[channel_index],
+        "label": render_label,
+        "wetPath": str(wet_path),
+        "wetMetrics": wet_metrics,
+        "restore": restore,
+    }
+    if experiment_note:
+        append_session_event(
+            session_dir,
+            {"type": "experiment", "action": "render-branch", "note": experiment_note, **payload},
+        )
+    return payload
 
 
 def apply_plan(plan: patch_edit.PatchPlan, *, timeout: float, verify: bool) -> dict[str, Any]:
@@ -527,11 +733,12 @@ def _render_branch(
     prepare_usb: bool,
     midi_timeout: float,
     settle_seconds: float,
+    label: str | None = None,
 ) -> dict[str, Any]:
-    label = sanitize_label(f"{divider_id}-{BRANCH_LABELS[channel]}")
+    render_label = sanitize_label(label) if label else sanitize_label(f"{divider_id}-{BRANCH_LABELS[channel]}")
     return render_labeled_wet(
         session,
-        label,
+        render_label,
         prepare_usb=prepare_usb,
         midi_timeout=midi_timeout,
         settle_seconds=settle_seconds,
@@ -649,6 +856,7 @@ def compare_branches(
         },
         "comparison": comparison,
         "hypothesis": hypothesis,
+        "investigationProtocol": investigation_protocol(),
         "summary": _compare_summary(divider_id, comparison, hypothesis),
     }
 
@@ -658,24 +866,27 @@ def _branch_balance_hypothesis(delta_rms: float | None) -> dict[str, Any]:
         return {"status": "unknown", "detail": "Could not compute RMS delta between branches."}
     if abs(delta_rms) <= 1.0:
         return {"status": "balanced", "detail": f"Branches are within 1.0 dB RMS (Δ={delta_rms:+.2f} dB)."}
+    protocol = investigation_protocol()
     if delta_rms < 0:
         return {
             "status": "branchB_quieter",
             "detail": f"Branch B is about {abs(delta_rms):.1f} dB quieter than branch A.",
-            "suggestedParam": "auto",
-            "suggestedAction": (
-                "Run audio match-levels --param auto --target-match branch-A "
-                "(divider LEVEL B often does not affect USB re-amp; a branch block level may)."
-            ),
+            "suggestedNextSteps": [
+                "audio branch-context --divider <id> --live",
+                "audio probe-param on branch-B candidates (e.g. dist1.level); divider levelB often ineffective",
+                "patch set <block> <param> <value> --live; audio compare-branches to verify",
+            ],
+            "investigationProtocol": protocol,
         }
     return {
         "status": "branchB_louder",
         "detail": f"Branch B is about {delta_rms:.1f} dB louder than branch A.",
-        "suggestedParam": "auto",
-        "suggestedAction": (
-            "Run audio match-levels --param auto --target-match branch-B "
-            "(divider LEVEL A often does not affect USB re-amp; a branch block level may)."
-        ),
+        "suggestedNextSteps": [
+            "audio branch-context --divider <id> --live",
+            "audio probe-param on branch-B or shared-path candidates; divider levelA often ineffective",
+            "patch set <block> <param> <value> --live; audio compare-branches to verify",
+        ],
+        "investigationProtocol": protocol,
     }
 
 
@@ -686,199 +897,3 @@ def _compare_summary(divider_id: str, comparison: dict[str, Any], hypothesis: di
     return f"{divider_id}: Δ(B−A) = {delta:+.2f} dB RMS. {hypothesis.get('detail', '')}"
 
 
-def level_step_for_delta(delta_db: float) -> int:
-    magnitude = abs(delta_db)
-    if magnitude < 0.5:
-        return 0
-    if magnitude < 2.0:
-        return 2
-    if magnitude < 5.0:
-        return 5
-    return 8
-
-
-def _apply_gain_value(
-    control: dict[str, Any],
-    value: int,
-    *,
-    user_slot: str | None,
-    midi_timeout: float,
-    verify_writes: bool,
-) -> None:
-    if control["controlKind"] == "divider":
-        apply_plan(
-            build_level_plan(control["blockId"], control["parameterId"], value, slot=user_slot),
-            timeout=midi_timeout,
-            verify=verify_writes,
-        )
-    else:
-        apply_plan(
-            build_block_param_plan(control["blockId"], control["parameterId"], value, slot=user_slot),
-            timeout=midi_timeout,
-            verify=verify_writes,
-        )
-
-
-def match_levels(
-    session: str,
-    divider: str,
-    param: str,
-    *,
-    target_match: str,
-    threshold_db: float = 1.0,
-    max_iterations: int = 8,
-    midi_timeout: float = 20.0,
-    settle_seconds: float = 0.25,
-    verify_writes: bool = True,
-    user_slot: str | None = None,
-) -> dict[str, Any]:
-    divider_id = normalize_divider_id(divider)
-    reference_key = target_match.strip().lower().replace("_", "")
-    if reference_key in {"branch-a", "brancha", "a"}:
-        reference_channel = 0
-        reference_label = "branch-A"
-    elif reference_key in {"branch-b", "branchb", "b"}:
-        reference_channel = 1
-        reference_label = "branch-B"
-    else:
-        raise ValueError("target-match must be branch-A or branch-B")
-    adjust_channel = 1 - reference_channel
-
-    baseline = compare_branches(
-        session,
-        divider_id,
-        midi_timeout=midi_timeout,
-        settle_seconds=settle_seconds,
-        verify_writes=verify_writes,
-        user_slot=None,
-    )
-    ref_metrics = baseline["branchA"]["wetMetrics"] if reference_channel == 0 else baseline["branchB"]["wetMetrics"]
-    ref_path = Path(baseline["branchA"]["wetPath"] if reference_channel == 0 else baseline["branchB"]["wetPath"])
-
-    snapshot, _divider_bytes = read_branch_lab_context(divider_id, midi_timeout)
-
-    prepare_usb_reamp(midi_timeout, verify=True)
-    control = resolve_gain_control(
-        session,
-        divider_id,
-        adjust_channel,
-        param,
-        snapshot,
-        midi_timeout=midi_timeout,
-        settle_seconds=settle_seconds,
-    )
-
-    divider_original = read_divider_data(divider_id, midi_timeout)
-    gain_block_id = control["blockId"] if control["controlKind"] == "block" else None
-    gain_original = read_block_data(gain_block_id, midi_timeout) if gain_block_id else None
-    if control["controlKind"] == "divider":
-        current_level = decode_divider_data(divider_id, divider_original).get(control["parameterId"])
-        gain_original = None
-    else:
-        assert gain_block_id and gain_original is not None
-        current_level = read_block_parameter_value(gain_block_id, control["parameterId"], gain_original)
-    if current_level is None:
-        raise AudioLabError(f"could not read {control['paramLabel']}", 64)
-
-    iterations: list[dict[str, Any]] = []
-    converged = False
-    limit_reason: str | None = None
-    try:
-        for index in range(max_iterations):
-            apply_plan(
-                build_channel_select_plan(divider_id, adjust_channel, slot=user_slot),
-                timeout=midi_timeout,
-                verify=verify_writes,
-            )
-            time.sleep(settle_seconds)
-            render = _render_branch(
-                session,
-                divider_id,
-                adjust_channel,
-                prepare_usb=False,
-                midi_timeout=midi_timeout,
-                settle_seconds=settle_seconds,
-            )
-            wet_metrics = render["wetMetrics"]
-            ref_rms = ref_metrics.get("rmsDbfs")
-            adj_rms = wet_metrics.get("rmsDbfs")
-            delta = None
-            if ref_rms is not None and adj_rms is not None:
-                delta = adj_rms - ref_rms
-            iteration = {
-                "iteration": index + 1,
-                "level": current_level,
-                "deltaRmsVsReference": delta,
-                "wetPath": render["wetPath"],
-                "wetMetrics": wet_metrics,
-            }
-            iterations.append(iteration)
-            if delta is None:
-                limit_reason = "missing_rms"
-                break
-            if abs(delta) <= threshold_db:
-                converged = True
-                break
-            step = level_step_for_delta(delta)
-            if step == 0:
-                limit_reason = "step_too_small"
-                break
-            next_level = current_level + step if delta < 0 else current_level - step
-            if next_level > 127:
-                next_level = 127
-                if current_level >= 127:
-                    limit_reason = "param_at_max"
-                    break
-            if next_level < 0:
-                next_level = 0
-                if current_level <= 0:
-                    limit_reason = "param_at_min"
-                    break
-            current_level = next_level
-            _apply_gain_value(
-                control,
-                current_level,
-                user_slot=user_slot,
-                midi_timeout=midi_timeout,
-                verify_writes=verify_writes,
-            )
-            time.sleep(settle_seconds)
-        else:
-            limit_reason = "max_iterations"
-    finally:
-        restore_divider = restore_divider_data(divider_id, divider_original, timeout=midi_timeout, verify=verify_writes)
-        restore_gain = None
-        if gain_block_id and gain_original is not None:
-            restore_gain = restore_block_data(gain_block_id, gain_original, timeout=midi_timeout, verify=verify_writes)
-
-    final_delta = iterations[-1]["deltaRmsVsReference"] if iterations else None
-    summary = baseline.get("summary", "")
-    if converged:
-        match_summary = (
-            f"Matched {BRANCH_LABELS[adjust_channel]} to {reference_label} via {control['paramLabel']} "
-            f"(|Δ|={abs(final_delta):.2f} dB)."
-        )
-    else:
-        match_summary = (
-            f"Could not reach {threshold_db} dB threshold via {control['paramLabel']} "
-            f"(last Δ={final_delta:+.2f} dB; {limit_reason or 'stopped'})."
-        )
-
-    return {
-        "id": "audioMatchLevels",
-        "session": session,
-        "dividerId": divider_id,
-        "param": control["paramLabel"],
-        "gainControl": control,
-        "targetMatch": reference_label,
-        "thresholdDb": threshold_db,
-        "converged": converged,
-        "limitReason": limit_reason,
-        "iterations": iterations,
-        "restore": {"divider": restore_divider, "gainBlock": restore_gain},
-        "baselineCompare": baseline,
-        "summary": match_summary,
-        "baselineSummary": summary,
-        "referenceWetPath": str(ref_path),
-        "note": "Run audio compare-branches again to confirm balance after matching.",
-    }
