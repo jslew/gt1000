@@ -21,11 +21,36 @@ class BranchLabTests(unittest.TestCase):
     def test_branch_balance_hypothesis(self) -> None:
         quiet_b = branch_lab._branch_balance_hypothesis(-4.0)
         self.assertEqual(quiet_b["status"], "branchB_quieter")
-        self.assertEqual(quiet_b["suggestedParam"], "levelB")
+        self.assertEqual(quiet_b["suggestedParam"], "auto")
 
     def test_divider_present_in_snapshot(self) -> None:
         snapshot = {"signalChainElements": [{"rawValue": 35, "displayName": "DIVIDER 1"}]}
         self.assertTrue(branch_lab.divider_present_in_snapshot(snapshot, "divider1"))
+
+    def test_parse_match_param(self) -> None:
+        self.assertEqual(branch_lab.parse_match_param("auto", "divider1"), ("auto", None, None))
+        self.assertEqual(branch_lab.parse_match_param("levelB", "divider1"), ("divider", "divider1", "levelB"))
+        self.assertEqual(branch_lab.parse_match_param("dist1.level", "divider1"), ("block", "dist1", "level"))
+
+    def test_blocks_on_divider_branch(self) -> None:
+        snapshot = {
+            "blocks": [
+                {"id": "divider1", "chainElementValue": 35},
+                {"id": "preamp1", "chainElementValue": 3},
+                {"id": "branchSplit1", "chainElementValue": 36},
+                {"id": "dist1", "chainElementValue": 1},
+                {"id": "mixer1", "chainElementValue": 37},
+            ],
+            "signalChainElements": [
+                {"position": 4, "rawValue": 35, "displayName": "DIVIDER 1"},
+                {"position": 5, "rawValue": 3, "displayName": "AIRD PREAMP 1"},
+                {"position": 9, "rawValue": 36, "displayName": "BRANCH SPLIT1"},
+                {"position": 10, "rawValue": 1, "displayName": "DISTORTION 1"},
+                {"position": 16, "rawValue": 37, "displayName": "MIXER 1"},
+            ],
+        }
+        self.assertEqual(branch_lab.blocks_on_divider_branch(snapshot, "divider1", 0), ["preamp1"])
+        self.assertEqual(branch_lab.blocks_on_divider_branch(snapshot, "divider1", 1), ["dist1"])
 
     def test_compare_branches_mocked(self) -> None:
         snapshot = {

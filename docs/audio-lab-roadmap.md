@@ -173,7 +173,7 @@ scripts/gt1000-agent --pretty audio session render --label baseline
 |------|-------------|--------|
 | `audio compare-branches` | For `divider1` (then 2/3): render channel A, render channel B via `channelSelect` temp write; report Δ metrics. | Done |
 | `patch set dividerN.*` | Validated `levelA`, `levelB`, `channelSelect`, `mode` via existing `patch set`. | Done (pre-existing) |
-| `audio match-levels` | Closed loop: match branch loudness by adjusting `levelA`/`levelB`. | Done |
+| `audio match-levels` | Closed loop: match branch loudness via `--param auto` (branch block `level`) or explicit `block.level`. | Done |
 | Reachability guard | Chain + divider mode checks before measure. | Done |
 | Report format | `summary`, `hypothesis`, `comparison`, `appliedEdits`. | Done |
 
@@ -181,14 +181,14 @@ scripts/gt1000-agent --pretty audio session render --label baseline
 
 1. User: “Dist side of DIV1 is softer than clean.”
 2. Agent: `audio session init` → confirm DIV1 in chain → `compare-branches --divider divider1`.
-3. If ΔLUFS &lt; -3 dB on B: `audio match-levels --param divider1.levelB --target-match branch-A`.
+3. If ΔLUFS &lt; -3 dB on B: `audio match-levels --param auto --target-match branch-A` (e.g. `dist1.level` on IMPRESSION; divider LEVEL B usually does not move USB re-amp).
 4. Verify with second `compare-branches`; offer `--user-slot` save only on request.
 
 ### Tests
 
 - Unit: mock patch snapshots → compare-branches builds correct write plan for channel A/B.
 - Unit: level matcher convergence on synthetic metric function.
-- Live: scripted divider level change → measurable loudness change on re-amp output.
+- Live: branch block level change (e.g. `dist1.level`) → measurable loudness change on re-amp output.
 
 ### Exit criteria
 

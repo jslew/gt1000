@@ -202,11 +202,15 @@ def register_audio_commands(subcommands: argparse._SubParsersAction) -> None:
 
     match = audio_sub.add_parser(
         "match-levels",
-        help="Iteratively adjust divider LEVEL A/B to match branch loudness on the dry take.",
+        help="Iteratively adjust a branch gain control to match loudness on the dry take.",
     )
     match.add_argument("--session", required=True, help="Session name with dry.wav.")
     match.add_argument("--divider", default="divider1", choices=["divider1", "divider2", "divider3"])
-    match.add_argument("--param", required=True, help="levelA, levelB, or dividerN.levelA / levelB to adjust.")
+    match.add_argument(
+        "--param",
+        default="auto",
+        help="auto (default), levelA/levelB, dividerN.levelA/B, or blockId.level (e.g. dist1.level).",
+    )
     match.add_argument(
         "--target-match",
         required=True,

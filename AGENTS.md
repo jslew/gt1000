@@ -47,7 +47,7 @@
   - `scripts/gt1000-agent --pretty audio generate-tone --session div1-test --duration 3`
   - `scripts/gt1000-agent --pretty audio session render --session div1-test --label baseline`
   - Chained renders from separate CLI processes: add `--no-prepare-usb` after the first `prepare-reamp`, and `--no-patch-snapshot` on follow-up renders to avoid CoreMIDI churn.
-- Phase 3: `audio compare-branches --session <name> --divider divider1`, `audio match-levels --session <name> --param levelB --target-match branch-A` (uses `patch set` on temporary patch; divider bytes restored after run).
+- Phase 3: `audio compare-branches --session <name> --divider divider1`, `audio match-levels --session <name> --param auto --target-match branch-A` (probes branch block `level` params; divider LEVEL A/B often do not affect single-mode USB re-amp). Divider/gain bytes restored after run.
   - `scripts/gt1000-agent --pretty system inout-set usb-main-mix-level 100 --live --verify --timeout 20`
 
 ## Skill Maintenance

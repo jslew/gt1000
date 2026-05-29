@@ -21,9 +21,15 @@ from .session import resolve_session_dir, sanitize_label
 
 SUPPORTED_DIVIDERS = ("divider1", "divider2", "divider3")
 DIVIDER_CHAIN_VALUE = {"divider1": 35, "divider2": 38, "divider3": 41}
+DIVIDER_BRANCH_SPLIT = {"divider1": "branchSplit1", "divider2": "branchSplit2", "divider3": "branchSplit3"}
+DIVIDER_MIXER = {"divider1": "mixer1", "divider2": "mixer2", "divider3": "mixer3"}
 BRANCH_LABELS = {0: "branch-A", 1: "branch-B"}
 CHANNEL_BY_LABEL = {"branch-A": 0, "branch-B": 1}
 MODE_SINGLE = 0
+DIVIDER_LEVEL_FIELDS = frozenset({"levelA", "levelB"})
+GAIN_PROBE_LOW = 0
+GAIN_PROBE_HIGH = 100
+MIN_GAIN_SENSITIVITY_DB = 0.5
 
 
 def normalize_divider_id(divider: str) -> str:
@@ -169,6 +175,327 @@ def build_level_plan(divider_id: str, field: str, value: int, *, slot: str | Non
     if not 0 <= value <= 127:
         raise ValueError(f"{field} must be 0...127")
     return patch_edit.build_parameter_set_plan(divider_id, field, str(value), slot=slot)
+
+
+def parse_match_param(param: str, divider_id: str) -> tuple[str, str | None, str | None]:
+    """Return (kind, block_id, field_id) where kind is auto, divider, or block."""
+    text = param.strip()
+    if not text or text.lower() in {"auto", "discover"}:
+        return ("auto", None, None)
+    if "." in text:
+        block_id, field_id = text.split(".", 1)
+        return ("block", block_id.strip(), field_id.strip())
+    field_id = text
+    if field_id in DIVIDER_LEVEL_FIELDS:
+        return ("divider", divider_id, field_id)
+    raise ValueError(
+        "param must be auto, levelA, levelB, dividerN.levelA/B, or blockId.parameter (e.g. dist1.level)"
+    )
+
+
+def block_has_parameter(block_id: str, parameter_id: str) -> bool:
+    block = patch_edit.find_patch_block(block_id)
+    return any(parameter.id == parameter_id for parameter in block.parameters)
+
+
+def read_block_data(block_id: str, timeout: float) -> list[int]:
+    block = patch_edit.find_patch_block(block_id)
+    if isinstance(block, live.ResidentBlockDefinition):
+        address = patch_edit.block_address(block_id)
+        size = live.seven_bit_address(block.size)
+    else:
+        address = block.address
+        size = live.seven_bit_address(patch_edit.editable_block_size(block))
+    raw = live.read_data_sets(timeout=timeout, requests=[live.PatchReadRequest(block_id, address, size)])
+    data = raw.get(live.address_key(address))
+    if not data:
+        raise AudioLabError(f"failed to read {block_id} from device", 64)
+    return data
+
+
+def restore_block_data(block_id: str, original: list[int], *, timeout: float, verify: bool) -> dict[str, Any]:
+    block = patch_edit.find_patch_block(block_id)
+    if isinstance(block, live.ResidentBlockDefinition):
+        address = patch_edit.block_address(block_id)
+    else:
+        address = block.address
+    plan = patch_edit.PatchPlan(
+        id=f"restore:{block_id}",
+        description=f"Restore {block_id} bytes captured before branch lab.",
+        writes=[live.PatchWrite(f"Restore {block_id}", address, list(original))],
+    )
+    return apply_plan(plan, timeout=timeout, verify=verify)
+
+
+def build_block_param_plan(
+    block_id: str,
+    parameter_id: str,
+    value: int,
+    *,
+    slot: str | None = None,
+) -> patch_edit.PatchPlan:
+    return patch_edit.build_parameter_set_plan(block_id, parameter_id, str(value), slot=slot)
+
+
+def read_block_parameter_value(block_id: str, parameter_id: str, data: list[int]) -> int | None:
+    block = patch_edit.find_patch_block(block_id)
+    if isinstance(block, live.ResidentBlockDefinition):
+        base = block.offset
+        for parameter in block.parameters:
+            if parameter.id != parameter_id:
+                continue
+            index = parameter.offset - base
+            return data[index] if 0 <= index < len(data) else None
+    for parameter in block.parameters:
+        if parameter.id != parameter_id:
+            continue
+        index = parameter.offset
+        return data[index] if 0 <= index < len(data) else None
+    return None
+
+
+def _static_block_ids_by_chain_value() -> dict[int, str]:
+    mapping: dict[int, str] = {}
+    for block in list(live.SUMMARY_BLOCKS) + list(live.FX_ALGORITHM_BLOCKS) + list(live.RESIDENT_BLOCKS):
+        mapping[block.chain_element_value] = block.id
+    return mapping
+
+
+def _block_ids_by_chain_value(snapshot: dict[str, Any]) -> dict[int, str]:
+    mapping = _static_block_ids_by_chain_value()
+    for block in snapshot.get("blocks", []):
+        raw = block.get("chainElementValue")
+        block_id = block.get("id")
+        if isinstance(raw, int) and isinstance(block_id, str):
+            mapping[raw] = block_id
+    return mapping
+
+
+def blocks_on_divider_branch(snapshot: dict[str, Any], divider_id: str, channel: int) -> list[str]:
+    """Block ids on the active side of a single-mode divider (between divider and branch split, or split and mixer)."""
+    divider_id = normalize_divider_id(divider_id)
+    if channel not in {0, 1}:
+        raise ValueError("channel must be 0 (A) or 1 (B)")
+    by_value = _block_ids_by_chain_value(snapshot)
+    divider_value = DIVIDER_CHAIN_VALUE[divider_id]
+    branch_value = patch_edit.find_patch_block(DIVIDER_BRANCH_SPLIT[divider_id]).chain_element_value
+    mixer_value = patch_edit.find_patch_block(DIVIDER_MIXER[divider_id]).chain_element_value
+
+    elements = snapshot.get("signalChainElements", [])
+    divider_pos = branch_pos = mixer_pos = None
+    for element in elements:
+        raw = element.get("rawValue")
+        pos = element.get("position")
+        if raw == divider_value:
+            divider_pos = pos
+        elif raw == branch_value:
+            branch_pos = pos
+        elif raw == mixer_value:
+            mixer_pos = pos
+    if not all(isinstance(value, int) for value in (divider_pos, branch_pos, mixer_pos)):
+        return []
+    if channel == 0:
+        lo, hi = divider_pos + 1, branch_pos
+    else:
+        lo, hi = branch_pos, mixer_pos
+    skip_values = {divider_value, branch_value}
+    block_ids: list[str] = []
+    for element in elements:
+        pos = element.get("position")
+        raw = element.get("rawValue")
+        if not isinstance(pos, int) or not isinstance(raw, int):
+            continue
+        if lo <= pos < hi and raw not in skip_values:
+            block_id = by_value.get(raw)
+            if block_id:
+                block_ids.append(block_id)
+    return block_ids
+
+
+def gain_candidates_on_branch(snapshot: dict[str, Any], divider_id: str, channel: int) -> list[str]:
+    return [
+        block_id
+        for block_id in blocks_on_divider_branch(snapshot, divider_id, channel)
+        if block_has_parameter(block_id, "level")
+    ]
+
+
+def _render_branch_rms(
+    session: str,
+    divider_id: str,
+    channel: int,
+    *,
+    midi_timeout: float,
+    settle_seconds: float,
+) -> float | None:
+    apply_plan(build_channel_select_plan(divider_id, channel), timeout=midi_timeout, verify=False)
+    time.sleep(settle_seconds)
+    render = _render_branch(
+        session,
+        divider_id,
+        channel,
+        prepare_usb=False,
+        midi_timeout=midi_timeout,
+        settle_seconds=settle_seconds,
+    )
+    return render["wetMetrics"].get("rmsDbfs")
+
+
+def probe_parameter_gain_db(
+    session: str,
+    divider_id: str,
+    channel: int,
+    block_id: str,
+    parameter_id: str,
+    *,
+    midi_timeout: float,
+    settle_seconds: float,
+) -> float | None:
+    """Return |ΔRMS| between low and high parameter values on the active branch, or None if unreadable."""
+    original = read_block_data(block_id, midi_timeout)
+    current = read_block_parameter_value(block_id, parameter_id, original)
+    if current is None:
+        return None
+    try:
+        apply_plan(
+            build_block_param_plan(block_id, parameter_id, GAIN_PROBE_LOW),
+            timeout=midi_timeout,
+            verify=False,
+        )
+        low_rms = _render_branch_rms(
+            session,
+            divider_id,
+            channel,
+            midi_timeout=midi_timeout,
+            settle_seconds=settle_seconds,
+        )
+        apply_plan(
+            build_block_param_plan(block_id, parameter_id, GAIN_PROBE_HIGH),
+            timeout=midi_timeout,
+            verify=False,
+        )
+        high_rms = _render_branch_rms(
+            session,
+            divider_id,
+            channel,
+            midi_timeout=midi_timeout,
+            settle_seconds=settle_seconds,
+        )
+    finally:
+        restore_block_data(block_id, original, timeout=midi_timeout, verify=False)
+    if low_rms is None or high_rms is None:
+        return None
+    return abs(high_rms - low_rms)
+
+
+def probe_divider_level_gain_db(
+    session: str,
+    divider_id: str,
+    channel: int,
+    field: str,
+    *,
+    midi_timeout: float,
+    settle_seconds: float,
+) -> float | None:
+    original = read_divider_data(divider_id, midi_timeout)
+    try:
+        apply_plan(build_level_plan(divider_id, field, GAIN_PROBE_LOW), timeout=midi_timeout, verify=False)
+        low_rms = _render_branch_rms(
+            session,
+            divider_id,
+            channel,
+            midi_timeout=midi_timeout,
+            settle_seconds=settle_seconds,
+        )
+        apply_plan(build_level_plan(divider_id, field, GAIN_PROBE_HIGH), timeout=midi_timeout, verify=False)
+        high_rms = _render_branch_rms(
+            session,
+            divider_id,
+            channel,
+            midi_timeout=midi_timeout,
+            settle_seconds=settle_seconds,
+        )
+    finally:
+        restore_divider_data(divider_id, original, timeout=midi_timeout, verify=False)
+    if low_rms is None or high_rms is None:
+        return None
+    return abs(high_rms - low_rms)
+
+
+def resolve_gain_control(
+    session: str,
+    divider_id: str,
+    channel: int,
+    param: str,
+    snapshot: dict[str, Any],
+    *,
+    midi_timeout: float,
+    settle_seconds: float,
+) -> dict[str, Any]:
+    """Pick a parameter that actually moves USB re-amp level on this branch."""
+    kind, block_id, field_id = parse_match_param(param, divider_id)
+    if kind == "block":
+        assert block_id and field_id
+        if not block_has_parameter(block_id, field_id):
+            raise ValueError(f"{block_id} has no parameter {field_id!r}")
+        return {
+            "controlKind": "block",
+            "blockId": block_id,
+            "parameterId": field_id,
+            "paramLabel": f"{block_id}.{field_id}",
+        }
+
+    divider_field = field_id or ("levelB" if channel == 1 else "levelA")
+    if kind == "divider":
+        sensitivity = probe_divider_level_gain_db(
+            session,
+            divider_id,
+            channel,
+            divider_field,
+            midi_timeout=midi_timeout,
+            settle_seconds=settle_seconds,
+        )
+        if sensitivity is not None and sensitivity >= MIN_GAIN_SENSITIVITY_DB:
+            return {
+                "controlKind": "divider",
+                "blockId": divider_id,
+                "parameterId": divider_field,
+                "paramLabel": f"{divider_id}.{divider_field}",
+                "probeSensitivityDb": sensitivity,
+            }
+
+    candidates = gain_candidates_on_branch(snapshot, divider_id, channel)
+    best: tuple[float, str] | None = None
+    for candidate in candidates:
+        sensitivity = probe_parameter_gain_db(
+            session,
+            divider_id,
+            channel,
+            candidate,
+            "level",
+            midi_timeout=midi_timeout,
+            settle_seconds=settle_seconds,
+        )
+        if sensitivity is None or sensitivity < MIN_GAIN_SENSITIVITY_DB:
+            continue
+        if best is None or sensitivity > best[0]:
+            best = (sensitivity, candidate)
+    if best is None:
+        raise AudioLabError(
+            f"No level parameter on {BRANCH_LABELS[channel]} moved USB re-amp loudness by "
+            f"≥{MIN_GAIN_SENSITIVITY_DB} dB. Divider LEVEL A/B often do not affect single-mode USB capture; "
+            f"try --param blockId.level (e.g. dist1.level) or adjust blocks on the quieter branch path.",
+            64,
+        )
+    return {
+        "controlKind": "block",
+        "blockId": best[1],
+        "parameterId": "level",
+        "paramLabel": f"{best[1]}.level",
+        "probeSensitivityDb": best[0],
+        "autoSelected": kind in {"auto", "divider"},
+        "dividerLevelIneffective": kind == "divider",
+    }
 
 
 def apply_plan(plan: patch_edit.PatchPlan, *, timeout: float, verify: bool) -> dict[str, Any]:
@@ -335,14 +662,20 @@ def _branch_balance_hypothesis(delta_rms: float | None) -> dict[str, Any]:
         return {
             "status": "branchB_quieter",
             "detail": f"Branch B is about {abs(delta_rms):.1f} dB quieter than branch A.",
-            "suggestedParam": "levelB",
-            "suggestedAction": "Increase divider LEVEL B or reduce LEVEL A.",
+            "suggestedParam": "auto",
+            "suggestedAction": (
+                "Run audio match-levels --param auto --target-match branch-A "
+                "(divider LEVEL B often does not affect USB re-amp; a branch block level may)."
+            ),
         }
     return {
         "status": "branchB_louder",
         "detail": f"Branch B is about {delta_rms:.1f} dB louder than branch A.",
-        "suggestedParam": "levelA",
-        "suggestedAction": "Increase divider LEVEL A or reduce LEVEL B.",
+        "suggestedParam": "auto",
+        "suggestedAction": (
+            "Run audio match-levels --param auto --target-match branch-B "
+            "(divider LEVEL A often does not affect USB re-amp; a branch block level may)."
+        ),
     }
 
 
@@ -364,6 +697,28 @@ def level_step_for_delta(delta_db: float) -> int:
     return 8
 
 
+def _apply_gain_value(
+    control: dict[str, Any],
+    value: int,
+    *,
+    user_slot: str | None,
+    midi_timeout: float,
+    verify_writes: bool,
+) -> None:
+    if control["controlKind"] == "divider":
+        apply_plan(
+            build_level_plan(control["blockId"], control["parameterId"], value, slot=user_slot),
+            timeout=midi_timeout,
+            verify=verify_writes,
+        )
+    else:
+        apply_plan(
+            build_block_param_plan(control["blockId"], control["parameterId"], value, slot=user_slot),
+            timeout=midi_timeout,
+            verify=verify_writes,
+        )
+
+
 def match_levels(
     session: str,
     divider: str,
@@ -378,7 +733,6 @@ def match_levels(
     user_slot: str | None = None,
 ) -> dict[str, Any]:
     divider_id = normalize_divider_id(divider)
-    adjust_field = normalize_level_param(divider_id, param)
     reference_key = target_match.strip().lower().replace("_", "")
     if reference_key in {"branch-a", "brancha", "a"}:
         reference_channel = 0
@@ -401,14 +755,34 @@ def match_levels(
     ref_metrics = baseline["branchA"]["wetMetrics"] if reference_channel == 0 else baseline["branchB"]["wetMetrics"]
     ref_path = Path(baseline["branchA"]["wetPath"] if reference_channel == 0 else baseline["branchB"]["wetPath"])
 
-    original = read_divider_data(divider_id, midi_timeout)
-    divider_state = decode_divider_data(divider_id, original)
-    current_level = divider_state.get(adjust_field)
+    snapshot, _divider_bytes = read_branch_lab_context(divider_id, midi_timeout)
+
+    prepare_usb_reamp(midi_timeout, verify=True)
+    control = resolve_gain_control(
+        session,
+        divider_id,
+        adjust_channel,
+        param,
+        snapshot,
+        midi_timeout=midi_timeout,
+        settle_seconds=settle_seconds,
+    )
+
+    divider_original = read_divider_data(divider_id, midi_timeout)
+    gain_block_id = control["blockId"] if control["controlKind"] == "block" else None
+    gain_original = read_block_data(gain_block_id, midi_timeout) if gain_block_id else None
+    if control["controlKind"] == "divider":
+        current_level = decode_divider_data(divider_id, divider_original).get(control["parameterId"])
+        gain_original = None
+    else:
+        assert gain_block_id and gain_original is not None
+        current_level = read_block_parameter_value(gain_block_id, control["parameterId"], gain_original)
     if current_level is None:
-        raise AudioLabError(f"could not read {divider_id}.{adjust_field}", 64)
+        raise AudioLabError(f"could not read {control['paramLabel']}", 64)
 
     iterations: list[dict[str, Any]] = []
-    prepare_usb_reamp(midi_timeout, verify=True)
+    converged = False
+    limit_reason: str | None = None
     try:
         for index in range(max_iterations):
             apply_plan(
@@ -440,37 +814,71 @@ def match_levels(
             }
             iterations.append(iteration)
             if delta is None:
+                limit_reason = "missing_rms"
                 break
             if abs(delta) <= threshold_db:
+                converged = True
                 break
             step = level_step_for_delta(delta)
             if step == 0:
+                limit_reason = "step_too_small"
                 break
-            if delta < 0:
-                current_level = min(127, current_level + step)
-            else:
-                current_level = max(0, current_level - step)
-            apply_plan(
-                build_level_plan(divider_id, adjust_field, current_level, slot=user_slot),
-                timeout=midi_timeout,
-                verify=verify_writes,
+            next_level = current_level + step if delta < 0 else current_level - step
+            if next_level > 127:
+                next_level = 127
+                if current_level >= 127:
+                    limit_reason = "param_at_max"
+                    break
+            if next_level < 0:
+                next_level = 0
+                if current_level <= 0:
+                    limit_reason = "param_at_min"
+                    break
+            current_level = next_level
+            _apply_gain_value(
+                control,
+                current_level,
+                user_slot=user_slot,
+                midi_timeout=midi_timeout,
+                verify_writes=verify_writes,
             )
-            divider_state[adjust_field] = current_level
             time.sleep(settle_seconds)
+        else:
+            limit_reason = "max_iterations"
     finally:
-        restore = restore_divider_data(divider_id, original, timeout=midi_timeout, verify=verify_writes)
+        restore_divider = restore_divider_data(divider_id, divider_original, timeout=midi_timeout, verify=verify_writes)
+        restore_gain = None
+        if gain_block_id and gain_original is not None:
+            restore_gain = restore_block_data(gain_block_id, gain_original, timeout=midi_timeout, verify=verify_writes)
+
+    final_delta = iterations[-1]["deltaRmsVsReference"] if iterations else None
+    summary = baseline.get("summary", "")
+    if converged:
+        match_summary = (
+            f"Matched {BRANCH_LABELS[adjust_channel]} to {reference_label} via {control['paramLabel']} "
+            f"(|Δ|={abs(final_delta):.2f} dB)."
+        )
+    else:
+        match_summary = (
+            f"Could not reach {threshold_db} dB threshold via {control['paramLabel']} "
+            f"(last Δ={final_delta:+.2f} dB; {limit_reason or 'stopped'})."
+        )
 
     return {
         "id": "audioMatchLevels",
         "session": session,
         "dividerId": divider_id,
-        "param": f"{divider_id}.{adjust_field}",
+        "param": control["paramLabel"],
+        "gainControl": control,
         "targetMatch": reference_label,
         "thresholdDb": threshold_db,
+        "converged": converged,
+        "limitReason": limit_reason,
         "iterations": iterations,
-        "restore": restore,
+        "restore": {"divider": restore_divider, "gainBlock": restore_gain},
         "baselineCompare": baseline,
-        "summary": baseline.get("summary"),
+        "summary": match_summary,
+        "baselineSummary": summary,
         "referenceWetPath": str(ref_path),
         "note": "Run audio compare-branches again to confirm balance after matching.",
     }
