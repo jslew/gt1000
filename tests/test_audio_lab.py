@@ -166,7 +166,7 @@ class AudioLabTests(unittest.TestCase):
         return_value={"captureBackend": "coreaudio"},
     )
     @mock.patch(
-        "tools.gt1000.audio_lab.orchestrator.capture_patch_snapshot",
+        "tools.gt1000.audio_lab.orchestrator.read_patch_snapshot",
         return_value={"patchName": "TEST", "readHash": "abc", "chain": {"blocks": []}},
     )
     def test_session_render_appends_log(self, _patch_snap: mock.Mock, _patch_reamp: mock.Mock) -> None:

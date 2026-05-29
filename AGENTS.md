@@ -14,6 +14,7 @@
 - Main command surface is `scripts/gt1000-agent`.
 - The runtime skill at `skills/gt1000/SKILL.md` is a musician-facing interface. Keep CLI development, maintenance, and testing guidance in this `AGENTS.md` file or deeper implementation references, not in the skill, unless the detail directly guides a musician-facing device interaction.
 - Every CLI command should have unit test coverage and an explicit live test verification path. For commands that write, the live verification must use the command's validated/read-back verification flow where practical.
+- **Agents: after adding or changing MIDI/audio CLI behavior, run the relevant live tests before finishing** (do not treat unit tests alone as sufficient when hardware is available). Audio lab: `GT1000_AUDIO_LIVE=1` + `tests/test_live_audio_lab.py`. Broader MIDI: `GT1000_LIVE=1` + `tests/test_live_skill.py`.
 - Useful checks:
   - `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -q`
   - `GT1000_LIVE=1 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_live_skill -q`
@@ -30,7 +31,7 @@
   - `scripts/gt1000-agent --pretty audio record-dry --session <name> --duration 5`
   - `scripts/gt1000-agent --pretty audio reamp --session <name>`
   - `scripts/gt1000-agent --pretty audio analyze <a.wav> <b.wav>`
-  - `GT1000_AUDIO_LIVE=1 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_live_audio_lab -q` (requires `pip install -r skills/gt1000/requirements-audio.txt`; optional `GT1000_AUDIO_PYTHON` if not using the same interpreter)
+  - `GT1000_AUDIO_LIVE=1 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_live_audio_lab -q` (requires `pip install -r skills/gt1000/requirements-audio.txt`; optional `GT1000_AUDIO_PYTHON` if not using the same interpreter). **Run this after every audio-lab change** when the GT-1000 is connected.
 
 ## Audio Lab (USB record / re-amp)
 
@@ -44,6 +45,7 @@
   - `scripts/gt1000-agent --pretty audio session init --session div1-test --live --midi-timeout 20`
   - `scripts/gt1000-agent --pretty audio generate-tone --session div1-test --duration 3`
   - `scripts/gt1000-agent --pretty audio session render --session div1-test --label baseline`
+  - Chained renders from separate CLI processes: add `--no-prepare-usb` after the first `prepare-reamp`, and `--no-patch-snapshot` on follow-up renders to avoid CoreMIDI churn.
   - `scripts/gt1000-agent --pretty system inout-set usb-main-mix-level 100 --live --verify --timeout 20`
 
 ## Skill Maintenance

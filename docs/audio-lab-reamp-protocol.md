@@ -17,7 +17,7 @@ Checklist for repeatable GT-1000 USB re-amp renders (Phase 2). Implementation: `
 2. **Playback** — dry stereo is sent to GT-1000 USB playback (dry role → channels 3–4 in the 6-ch file). Use the **MAIN** USB playback device on firmware 1.20+ when the driver exposes it.
 3. **Capture** — duplex playback + record on the same PortAudio device; extract USB **1–2** (main/processed) to the wet WAV.
 4. **Settle** — after any patch SysEx writes, wait ≥0.25 s before render (`--settle-seconds` on `session render`).
-5. **Metadata** — each `session render --label <name>` writes:
+5. **Metadata** — each `session render --label <name>` writes (by default a MIDI patch snapshot; use `--no-patch-snapshot` when chaining multiple renders from separate CLI processes):
    - `renders/<label>-wet.wav`
    - `renders/<label>-patch.json` (temporary patch name, chain, read hash)
    - append to `meta.json` → `renders[]` log

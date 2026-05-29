@@ -7,7 +7,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-from tools.gt1000 import live
+try:
+    from tools.gt1000 import live
+except ModuleNotFoundError:
+    import live
 
 from .session import device_snapshots_dir
 
@@ -24,7 +27,10 @@ def _hash_reads(raw: dict[str, list[int]]) -> str:
 
 
 def capture_system_inout(timeout: float) -> dict[str, Any]:
-    from tools.gt1000 import agent_cli
+    try:
+        from tools.gt1000 import agent_cli
+    except ModuleNotFoundError:
+        import agent_cli
 
     raw = live.read_system_section(live.SYSTEM_IN_OUT, SYSTEM_INOUT_SIZE, timeout)
     data = raw.get(live.address_key(live.SYSTEM_IN_OUT), [])
@@ -36,7 +42,10 @@ def capture_system_inout(timeout: float) -> dict[str, Any]:
 
 
 def capture_setup_efct(timeout: float) -> dict[str, Any]:
-    from tools.gt1000.audio_lab.setup_efct import decode_setup_efct
+    try:
+        from tools.gt1000.audio_lab.setup_efct import decode_setup_efct
+    except ModuleNotFoundError:
+        from .setup_efct import decode_setup_efct
 
     raw = live.read_system_section(live.SETUP_EFCT, live.SETUP_EFCT_SIZE, timeout)
     data = raw.get(live.address_key(live.SETUP_EFCT), [])
@@ -48,7 +57,10 @@ def capture_setup_efct(timeout: float) -> dict[str, Any]:
 
 
 def capture_patch_snapshot(timeout: float) -> dict[str, Any]:
-    from tools.gt1000 import agent_cli
+    try:
+        from tools.gt1000 import agent_cli
+    except ModuleNotFoundError:
+        import agent_cli
 
     raw = live.read_data_sets(timeout=timeout, requests=live.INITIAL_READS)
     snapshot = agent_cli.snapshot_from_patch_records(live.INITIAL_READS, live.INITIAL_READS, raw)

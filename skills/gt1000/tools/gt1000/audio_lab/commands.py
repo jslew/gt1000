@@ -242,6 +242,7 @@ def cmd_session_render(
     midi_timeout: float = 8.0,
     playback_role: str = "dry",
     settle_seconds: float = 0.25,
+    snapshot_patch: bool = True,
 ) -> dict[str, Any]:
     return render_labeled_wet(
         session,
@@ -250,4 +251,5 @@ def cmd_session_render(
         midi_timeout=midi_timeout,
         playback_role=playback_role,
         settle_seconds=settle_seconds,
+        snapshot_patch=snapshot_patch,
     )

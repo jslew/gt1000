@@ -172,6 +172,11 @@ def register_audio_commands(subcommands: argparse._SubParsersAction) -> None:
         default=0.25,
         help="Delay after patch writes before re-amp capture (default 0.25).",
     )
+    session_render.add_argument(
+        "--no-patch-snapshot",
+        action="store_true",
+        help="Skip MIDI patch snapshot before render (useful when chaining renders in separate CLI processes).",
+    )
     session_render.set_defaults(func=wrap_audio_command(cmd_audio_session_render, requires_device=True))
 
 
@@ -243,4 +248,5 @@ def cmd_audio_session_render(args: argparse.Namespace) -> Any:
         midi_timeout=args.midi_timeout,
         playback_role=args.playback_role,
         settle_seconds=args.settle_seconds,
+        snapshot_patch=not args.no_patch_snapshot,
     )

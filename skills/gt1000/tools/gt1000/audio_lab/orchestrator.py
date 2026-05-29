@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from .audio_io import reamp_capture
-from .device_snapshot import capture_patch_snapshot, write_render_patch_snapshot
+from .device_snapshot import capture_patch_snapshot as read_patch_snapshot
+from .device_snapshot import write_render_patch_snapshot
 from .errors import AudioLabError
 from .metrics import analyze_file
 from .session import (
@@ -27,7 +28,7 @@ def render_labeled_wet(
     midi_timeout: float = 8.0,
     playback_role: str = "dry",
     settle_seconds: float = 0.25,
-    capture_patch_snapshot_enabled: bool = True,
+    snapshot_patch: bool = True,
 ) -> dict[str, Any]:
     """Re-amp session dry.wav to a labeled wet render with optional patch snapshot."""
     session_dir = resolve_session_dir(session, create=False)
@@ -42,8 +43,8 @@ def render_labeled_wet(
 
     patch_snapshot: dict[str, Any] | None = None
     patch_snapshot_path: Path | None = None
-    if capture_patch_snapshot_enabled:
-        patch_snapshot = capture_patch_snapshot(midi_timeout)
+    if snapshot_patch:
+        patch_snapshot = read_patch_snapshot(midi_timeout)
         patch_snapshot_path = write_render_patch_snapshot(session_dir, label, patch_snapshot)
 
     wet_path = render_wet_path(session_dir, label)

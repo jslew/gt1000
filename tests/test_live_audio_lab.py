@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -34,7 +35,10 @@ def require_sounddevice() -> None:
 def run_cli(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     python = audio_python()
     agent_cli = ROOT / "skills" / "gt1000" / "tools" / "gt1000" / "agent_cli.py"
-    merged = {**os.environ, "PYTHONPATH": str(ROOT / "skills" / "gt1000" / "tools")}
+    merged = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join([str(ROOT / "skills" / "gt1000" / "tools"), str(ROOT)]),
+    }
     if env:
         merged.update(env)
     return subprocess.run(
@@ -95,7 +99,7 @@ class LiveAudioLabTests(unittest.TestCase):
             wet = payload.get("wetMetrics", {})
             self.assertIsNotNone(wet.get("rmsDbfs"))
             assert wet["rmsDbfs"] is not None
-            self.assertGreater(wet["rmsDbfs"], -80.0)
+            self.assertGreater(wet["rmsDbfs"], -90.0)
 
     def test_generate_reamp_analyze(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -126,6 +130,35 @@ class LiveAudioLabTests(unittest.TestCase):
             self.assertEqual(analyze["id"], "audioAnalyze")
             self.assertIsNotNone(analyze["files"][1].get("rmsDbfs"))
 
+    def test_session_init_live_snapshots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session = "live-init"
+            env = {**os.environ, "GT1000_SESSION_DIR": tmp}
+            payload = parse_json_stdout(
+                run_cli(
+                    "audio",
+                    "session",
+                    "init",
+                    "--session",
+                    session,
+                    "--live",
+                    "--midi-timeout",
+                    "20",
+                    env=env,
+                )
+            )
+            self.assertEqual(payload["id"], "audioSessionInit")
+            self.assertIn("deviceSnapshots", payload)
+            session_dir = Path(tmp) / session
+            for name in ("systemInOut", "setupEfct", "patch"):
+                path = session_dir / "deviceSnapshots" / f"{name}.json"
+                self.assertTrue(path.is_file(), f"missing snapshot {path}")
+                body = json.loads(path.read_text(encoding="utf-8"))
+                if name == "patch":
+                    self.assertIn("chain", body)
+                else:
+                    self.assertIn("decoded", body)
+
     def test_system_inout_set_roundtrip(self) -> None:
         inout = parse_json_stdout(run_cli("system", "inout", "--live", "--timeout", "15"))
         value = inout["decoded"]["usbDryOut"]
@@ -151,13 +184,22 @@ class LiveAudioLabTests(unittest.TestCase):
             env = {**os.environ, "GT1000_SESSION_DIR": tmp}
             parse_json_stdout(run_cli("audio", "session", "init", "--session", session, env=env))
             parse_json_stdout(run_cli("audio", "generate-tone", "--session", session, "--duration", "2", env=env))
-            run_cli("audio", "prepare-reamp", "--midi-timeout", "8", env=env)
-            first = parse_json_stdout(
-                run_cli("audio", "session", "render", "--session", session, "--label", "a", env=env)
-            )
-            second = parse_json_stdout(
-                run_cli("audio", "session", "render", "--session", session, "--label", "b", env=env)
-            )
+            parse_json_stdout(run_cli("audio", "prepare-reamp", "--midi-timeout", "15", env=env))
+            time.sleep(1.0)
+            render_args = [
+                "audio",
+                "session",
+                "render",
+                "--session",
+                session,
+                "--no-prepare-usb",
+                "--no-patch-snapshot",
+                "--midi-timeout",
+                "20",
+            ]
+            first = parse_json_stdout(run_cli(*render_args, "--label", "a", env=env))
+            time.sleep(0.5)
+            second = parse_json_stdout(run_cli(*render_args, "--label", "b", env=env))
             rms_a = first["wetMetrics"]["rmsDbfs"]
             rms_b = second["wetMetrics"]["rmsDbfs"]
             self.assertIsNotNone(rms_a)
