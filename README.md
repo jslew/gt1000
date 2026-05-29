@@ -2,6 +2,8 @@
 
 An installable agent skill for musicians who use a BOSS/Roland GT-1000 or GT-1000CORE for live performance, recording, practice, MIDI control, direct rigs, amp rigs, and hybrid setups.
 
+NOTE: This version has only been tested on MacOS, using Antigravity/Gemini and Codex CLI AI harnesses.  It may not work on Windows/Linux.
+
 This is not meant to be a tool you operate by memorizing MIDI commands. It gives an agent enough GT-1000 knowledge and safe device access to work with you conversationally:
 
 ```text
