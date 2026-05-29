@@ -86,10 +86,13 @@ With DIR MON OFF and computer pass-through, you may **not hear** re-amp output o
 `gt1000-agent` uses **sounddevice** (PortAudio) for capture and playback — the same class of API GarageBand uses. **ffmpeg is not used.**
 
 ```sh
-pip install -r skills/gt1000/requirements-audio.txt
+# From the installed skill directory (next to SKILL.md):
+pip install -r requirements-audio.txt
 scripts/gt1000-agent --pretty audio ports
 scripts/gt1000-agent --pretty audio probe
 ```
+
+First-time setup and what macOS will prompt for (Microphone privacy, sandbox, driver): see **USB audio lab (first-time setup)** in the skill `SKILL.md`.
 
 **Device index** for `--device-index` is the **PortAudio** index from `audio ports` → `gt1000Inputs` / `gt1000Outputs`.
 
