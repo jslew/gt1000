@@ -84,6 +84,32 @@ def capture_silence_troubleshooting(*, bus: str | None = None) -> list[str]:
     return tips
 
 
+def _trim_channels(
+    per_channel: list[list[float]],
+    *,
+    sample_rate: int,
+    trim_start_seconds: float,
+    trim_end_seconds: float,
+) -> tuple[list[list[float]], dict[str, Any]]:
+    if trim_start_seconds < 0 or trim_end_seconds < 0:
+        raise ValueError("trim seconds must be non-negative")
+    frame_count = len(per_channel[0]) if per_channel else 0
+    start = min(frame_count, int(round(trim_start_seconds * sample_rate)))
+    end = max(start, frame_count - int(round(trim_end_seconds * sample_rate)))
+    if end <= start:
+        raise ValueError("trim removes entire file; use shorter trim or longer capture")
+    trimmed = [channel[start:end] for channel in per_channel]
+    return trimmed, {
+        "trimStartSeconds": trim_start_seconds,
+        "trimEndSeconds": trim_end_seconds,
+        "trimStartFrame": start,
+        "trimEndFrame": end,
+        "analyzedFrames": end - start,
+        "totalFrames": frame_count,
+        "analyzedDurationSeconds": (end - start) / float(sample_rate),
+    }
+
+
 def analyze_file(path: Path) -> dict[str, Any]:
     sample_rate, channels, per_channel = read_wav(path)
     if channels == 1:
@@ -97,6 +123,36 @@ def analyze_file(path: Path) -> dict[str, Any]:
         "sampleRate": sample_rate,
         "channels": channels,
         **metrics,
+    }
+
+
+def analyze_file_trimmed(
+    path: Path,
+    *,
+    trim_start_seconds: float = 0.0,
+    trim_end_seconds: float = 0.0,
+) -> dict[str, Any]:
+    """Measure RMS/peak on the middle of a file, dropping head/tail (reamp settle/tail)."""
+    sample_rate, channels, per_channel = read_wav(path)
+    trimmed, trim_info = _trim_channels(
+        per_channel,
+        sample_rate=sample_rate,
+        trim_start_seconds=trim_start_seconds,
+        trim_end_seconds=trim_end_seconds,
+    )
+    if channels == 1:
+        metrics = _stereo_metrics(trimmed[0], trimmed[0])
+    elif channels >= 2:
+        metrics = _stereo_metrics(trimmed[0], trimmed[1])
+    else:
+        raise ValueError(f"no audio channels in {path}")
+    return {
+        "path": str(path),
+        "sampleRate": sample_rate,
+        "channels": channels,
+        **metrics,
+        **trim_info,
+        "note": "Metrics computed on trimmed region only (excludes head/tail).",
     }
 
 

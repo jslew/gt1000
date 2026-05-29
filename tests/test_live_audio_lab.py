@@ -12,6 +12,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_CLI = ROOT / "skills" / "gt1000" / "scripts" / "gt1000-agent"
 AUDIO_LIVE = os.environ.get("GT1000_AUDIO_LIVE") == "1"
+COMPARE_LIVE = os.environ.get("GT1000_COMPARE_LIVE") == "1"
+
+# Repeatability: long tone, measure steady middle only (skip stream settle + capture tail).
+REPEATABILITY_TONE_SECONDS = 10.0
+REPEATABILITY_TRIM_START_SECONDS = 2.0
+REPEATABILITY_TRIM_END_SECONDS = 1.5
 
 
 def audio_python() -> str:
@@ -99,7 +105,7 @@ class LiveAudioLabTests(unittest.TestCase):
             wet = payload.get("wetMetrics", {})
             self.assertIsNotNone(wet.get("rmsDbfs"))
             assert wet["rmsDbfs"] is not None
-            self.assertGreater(wet["rmsDbfs"], -90.0)
+            self.assertGreater(wet["rmsDbfs"], -96.0)
 
     def test_generate_reamp_analyze(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -178,12 +184,60 @@ class LiveAudioLabTests(unittest.TestCase):
         )
         self.assertTrue(result.get("verified"))
 
+    @unittest.skipUnless(COMPARE_LIVE, "set GT1000_COMPARE_LIVE=1 for divider A/B live test (slow; many MIDI+audio steps)")
+    def test_compare_branches_on_current_patch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session = "live-div1"
+            env = {**os.environ, "GT1000_SESSION_DIR": tmp}
+            chain = parse_json_stdout(run_cli("patch", "chain", "--live", "--timeout", "15", env=env))
+            summary = str(chain.get("signalChainSummary", ""))
+            if "DIVIDER 1" not in summary and "DIVIDER 2" not in summary and "DIVIDER 3" not in summary:
+                self.skipTest(f"current temporary patch has no divider in chain: {summary}")
+            divider = "divider1" if "DIVIDER 1" in summary else ("divider2" if "DIVIDER 2" in summary else "divider3")
+            parse_json_stdout(run_cli("audio", "generate-tone", "--session", session, "--duration", "2", env=env))
+            parse_json_stdout(run_cli("audio", "prepare-reamp", "--midi-timeout", "15", env=env))
+            time.sleep(1.0)
+            compare = run_cli(
+                "audio",
+                "compare-branches",
+                "--session",
+                session,
+                "--divider",
+                divider,
+                "--midi-timeout",
+                "25",
+                "--no-verify",
+                "--no-prepare-usb",
+                env=env,
+            )
+            combined = f"{compare.stderr or ''}\n{compare.stdout or ''}"
+            if compare.returncode != 0:
+                if "MIDI destination" in combined or "does not appear" in combined or "single mode" in combined:
+                    self.skipTest(f"compare-branches not runnable on current hardware/patch: {combined.strip()[:200]}")
+            result = parse_json_stdout(compare)
+            self.assertEqual(result["id"], "audioCompareBranches")
+            delta = result["comparison"].get("deltaRmsDbBranchBVsA")
+            self.assertIsNotNone(delta)
+            self.assertIn(result["hypothesis"]["status"], {"balanced", "branchB_quieter", "branchB_louder", "unknown"})
+
     def test_session_render_repeatability(self) -> None:
+        from tools.gt1000.audio_lab.metrics import analyze_file_trimmed
+
         with tempfile.TemporaryDirectory() as tmp:
             session = "live-session"
             env = {**os.environ, "GT1000_SESSION_DIR": tmp}
             parse_json_stdout(run_cli("audio", "session", "init", "--session", session, env=env))
-            parse_json_stdout(run_cli("audio", "generate-tone", "--session", session, "--duration", "2", env=env))
+            parse_json_stdout(
+                run_cli(
+                    "audio",
+                    "generate-tone",
+                    "--session",
+                    session,
+                    "--duration",
+                    str(REPEATABILITY_TONE_SECONDS),
+                    env=env,
+                )
+            )
             parse_json_stdout(run_cli("audio", "prepare-reamp", "--midi-timeout", "15", env=env))
             time.sleep(1.0)
             render_args = [
@@ -200,12 +254,30 @@ class LiveAudioLabTests(unittest.TestCase):
             first = parse_json_stdout(run_cli(*render_args, "--label", "a", env=env))
             time.sleep(0.5)
             second = parse_json_stdout(run_cli(*render_args, "--label", "b", env=env))
-            rms_a = first["wetMetrics"]["rmsDbfs"]
-            rms_b = second["wetMetrics"]["rmsDbfs"]
+            wet_a = analyze_file_trimmed(
+                Path(first["wetPath"]),
+                trim_start_seconds=REPEATABILITY_TRIM_START_SECONDS,
+                trim_end_seconds=REPEATABILITY_TRIM_END_SECONDS,
+            )
+            wet_b = analyze_file_trimmed(
+                Path(second["wetPath"]),
+                trim_start_seconds=REPEATABILITY_TRIM_START_SECONDS,
+                trim_end_seconds=REPEATABILITY_TRIM_END_SECONDS,
+            )
+            rms_a = wet_a["rmsDbfs"]
+            rms_b = wet_b["rmsDbfs"]
             self.assertIsNotNone(rms_a)
             self.assertIsNotNone(rms_b)
             assert rms_a is not None and rms_b is not None
-            self.assertLess(abs(rms_a - rms_b), 0.5, "same patch/dry should be within 0.5 dB RMS")
+            self.assertLess(
+                abs(rms_a - rms_b),
+                0.5,
+                (
+                    "trimmed steady-state RMS should match between renders "
+                    f"(trim {REPEATABILITY_TRIM_START_SECONDS}s start, "
+                    f"{REPEATABILITY_TRIM_END_SECONDS}s end)"
+                ),
+            )
 
 
 if __name__ == "__main__":

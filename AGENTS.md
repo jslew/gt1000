@@ -32,6 +32,7 @@
   - `scripts/gt1000-agent --pretty audio reamp --session <name>`
   - `scripts/gt1000-agent --pretty audio analyze <a.wav> <b.wav>`
   - `GT1000_AUDIO_LIVE=1 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_live_audio_lab -q` (requires `pip install -r skills/gt1000/requirements-audio.txt`; optional `GT1000_AUDIO_PYTHON` if not using the same interpreter). **Run this after every audio-lab change** when the GT-1000 is connected.
+  - Divider A/B live test is opt-in (slow): `GT1000_AUDIO_LIVE=1 GT1000_COMPARE_LIVE=1 python3 -m unittest tests.test_live_audio_lab.LiveAudioLabTests.test_compare_branches_on_current_patch -v`
 
 ## Audio Lab (USB record / re-amp)
 
@@ -46,6 +47,7 @@
   - `scripts/gt1000-agent --pretty audio generate-tone --session div1-test --duration 3`
   - `scripts/gt1000-agent --pretty audio session render --session div1-test --label baseline`
   - Chained renders from separate CLI processes: add `--no-prepare-usb` after the first `prepare-reamp`, and `--no-patch-snapshot` on follow-up renders to avoid CoreMIDI churn.
+- Phase 3: `audio compare-branches --session <name> --divider divider1`, `audio match-levels --session <name> --param levelB --target-match branch-A` (uses `patch set` on temporary patch; divider bytes restored after run).
   - `scripts/gt1000-agent --pretty system inout-set usb-main-mix-level 100 --live --verify --timeout 20`
 
 ## Skill Maintenance

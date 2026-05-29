@@ -9,6 +9,7 @@ from .devices import USB_DRY_STEREO, USB_MAIN_STEREO, channel_map_doc
 from .errors import AudioLabError
 from .audio_io import list_devices, probe_capture, record_multichannel, reamp_capture
 from .metrics import analyze_file, analyze_multichannel_peaks, capture_silence_troubleshooting, compare_files
+from .branch_lab import compare_branches, match_levels
 from .device_snapshot import capture_live_snapshots, write_device_snapshots
 from .orchestrator import render_labeled_wet
 from .session import append_session_event, default_dry_path, resolve_session_dir, write_session_meta
@@ -232,6 +233,65 @@ def cmd_session_init(
             "Use --live on init to store system IN/OUT + patch snapshots under deviceSnapshots/."
         ),
     }
+
+
+def cmd_compare_branches(
+    session: str,
+    divider: str,
+    *,
+    midi_timeout: float = 20.0,
+    settle_seconds: float = 0.25,
+    verify_writes: bool = True,
+    prepare_usb: bool = True,
+    user_slot: str | None = None,
+) -> dict[str, Any]:
+    try:
+        return compare_branches(
+            session,
+            divider,
+            midi_timeout=midi_timeout,
+            settle_seconds=settle_seconds,
+            verify_writes=verify_writes,
+            prepare_usb=prepare_usb,
+            user_slot=user_slot,
+        )
+    except ValueError as error:
+        raise AudioLabError(str(error), 64) from error
+    except Exception as error:
+        try:
+            from tools.gt1000 import live
+        except ModuleNotFoundError:
+            import live
+        if isinstance(error, live.LiveMIDIError):
+            raise AudioLabError(str(error), 64) from error
+        raise
+
+
+def cmd_match_levels(
+    session: str,
+    divider: str,
+    param: str,
+    *,
+    target_match: str,
+    threshold_db: float = 1.0,
+    max_iterations: int = 8,
+    midi_timeout: float = 20.0,
+    settle_seconds: float = 0.25,
+    verify_writes: bool = True,
+    user_slot: str | None = None,
+) -> dict[str, Any]:
+    return match_levels(
+        session,
+        divider,
+        param,
+        target_match=target_match,
+        threshold_db=threshold_db,
+        max_iterations=max_iterations,
+        midi_timeout=midi_timeout,
+        settle_seconds=settle_seconds,
+        verify_writes=verify_writes,
+        user_slot=user_slot,
+    )
 
 
 def cmd_session_render(

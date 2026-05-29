@@ -16,6 +16,8 @@ try:
         cmd_probe,
         cmd_record_dry,
         cmd_reamp,
+        cmd_compare_branches,
+        cmd_match_levels,
         cmd_session_init,
         cmd_session_render,
     )
@@ -28,6 +30,8 @@ except ModuleNotFoundError:
         cmd_probe,
         cmd_record_dry,
         cmd_reamp,
+        cmd_compare_branches,
+        cmd_match_levels,
         cmd_session_init,
         cmd_session_render,
     )
@@ -179,6 +183,44 @@ def register_audio_commands(subcommands: argparse._SubParsersAction) -> None:
     )
     session_render.set_defaults(func=wrap_audio_command(cmd_audio_session_render, requires_device=True))
 
+    compare = audio_sub.add_parser(
+        "compare-branches",
+        help="Re-amp dry take on divider channel A and B; report loudness delta.",
+    )
+    compare.add_argument("--session", required=True, help="Session name with dry.wav.")
+    compare.add_argument("--divider", default="divider1", choices=["divider1", "divider2", "divider3"])
+    compare.add_argument("--midi-timeout", type=float, default=20.0)
+    compare.add_argument("--settle-seconds", type=float, default=0.25)
+    compare.add_argument("--no-verify", action="store_true", help="Skip SysEx read-back verification on divider writes.")
+    compare.add_argument(
+        "--no-prepare-usb",
+        action="store_true",
+        help="Skip SetupEfct DIR MON prepare (use after audio prepare-reamp).",
+    )
+    compare.add_argument("--user-slot", help="Optional user slot for persistent divider writes (default: temporary patch).")
+    compare.set_defaults(func=wrap_audio_command(cmd_audio_compare_branches, requires_device=True))
+
+    match = audio_sub.add_parser(
+        "match-levels",
+        help="Iteratively adjust divider LEVEL A/B to match branch loudness on the dry take.",
+    )
+    match.add_argument("--session", required=True, help="Session name with dry.wav.")
+    match.add_argument("--divider", default="divider1", choices=["divider1", "divider2", "divider3"])
+    match.add_argument("--param", required=True, help="levelA, levelB, or dividerN.levelA / levelB to adjust.")
+    match.add_argument(
+        "--target-match",
+        required=True,
+        choices=["branch-A", "branch-B"],
+        help="Reference branch to match (adjusts the other branch's level param).",
+    )
+    match.add_argument("--threshold-db", type=float, default=1.0, help="Stop when |Δ RMS| vs reference is below this.")
+    match.add_argument("--max-iterations", type=int, default=8)
+    match.add_argument("--midi-timeout", type=float, default=20.0)
+    match.add_argument("--settle-seconds", type=float, default=0.25)
+    match.add_argument("--no-verify", action="store_true")
+    match.add_argument("--user-slot", help="Optional user slot for persistent level writes.")
+    match.set_defaults(func=wrap_audio_command(cmd_audio_match_levels, requires_device=True))
+
 
 def cmd_audio_ports(_args: argparse.Namespace) -> Any:
     return cmd_ports()
@@ -249,4 +291,31 @@ def cmd_audio_session_render(args: argparse.Namespace) -> Any:
         playback_role=args.playback_role,
         settle_seconds=args.settle_seconds,
         snapshot_patch=not args.no_patch_snapshot,
+    )
+
+
+def cmd_audio_compare_branches(args: argparse.Namespace) -> Any:
+    return cmd_compare_branches(
+        args.session,
+        args.divider,
+        midi_timeout=args.midi_timeout,
+        settle_seconds=args.settle_seconds,
+        verify_writes=not args.no_verify,
+        prepare_usb=not args.no_prepare_usb,
+        user_slot=args.user_slot,
+    )
+
+
+def cmd_audio_match_levels(args: argparse.Namespace) -> Any:
+    return cmd_match_levels(
+        args.session,
+        args.divider,
+        args.param,
+        target_match=args.target_match,
+        threshold_db=args.threshold_db,
+        max_iterations=args.max_iterations,
+        midi_timeout=args.midi_timeout,
+        settle_seconds=args.settle_seconds,
+        verify_writes=not args.no_verify,
+        user_slot=args.user_slot,
     )

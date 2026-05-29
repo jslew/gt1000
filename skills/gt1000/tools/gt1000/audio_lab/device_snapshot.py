@@ -56,6 +56,17 @@ def capture_setup_efct(timeout: float) -> dict[str, Any]:
     }
 
 
+def read_patch_effect_snapshot(timeout: float) -> dict[str, Any]:
+    """Read temporary patch effect (chain + resident blocks) for branch-lab routing checks."""
+    request = live.PatchReadRequest("Patch Effect", live.TEMPORARY_PATCH_EFFECT, [0x00, 0x00, 0x01, 0x1C])
+    raw = live.read_data_sets(timeout=timeout, requests=[request])
+    data = raw.get(live.address_key(live.TEMPORARY_PATCH_EFFECT), [])
+    snapshot = live.empty_snapshot()
+    if data:
+        live.apply_data_set(snapshot, live.TEMPORARY_PATCH_EFFECT, data)
+    return snapshot
+
+
 def capture_patch_snapshot(timeout: float) -> dict[str, Any]:
     try:
         from tools.gt1000 import agent_cli

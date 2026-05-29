@@ -24,6 +24,8 @@ _AUDIO_CLI_PARSER_COVERAGE = """
 "audio", "prepare-reamp"
 "audio", "session", "init"
 "audio", "session", "render"
+"audio", "compare-branches"
+"audio", "match-levels"
 "system", "setup-efct"
 "system", "inout-set"
 """
@@ -49,6 +51,16 @@ class AudioLabTests(unittest.TestCase):
             assert report["rmsDbfs"] is not None
             expected = 20.0 * math.log10(0.5 / math.sqrt(2.0))
             self.assertAlmostEqual(report["rmsDbfs"], expected, delta=1.5)
+
+    def test_analyze_file_trimmed_excludes_head_and_tail(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "tone.wav"
+            wav_io.generate_sine_tone(path, duration=10.0, frequency=440.0, amplitude=0.5)
+            full = metrics.analyze_file(path)
+            trimmed = metrics.analyze_file_trimmed(path, trim_start_seconds=2.0, trim_end_seconds=2.0)
+            assert full["rmsDbfs"] is not None and trimmed["rmsDbfs"] is not None
+            self.assertAlmostEqual(trimmed["rmsDbfs"], full["rmsDbfs"], delta=0.5)
+            self.assertEqual(trimmed["analyzedFrames"], 6 * 44100)
 
     def test_compare_files_reports_delta(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

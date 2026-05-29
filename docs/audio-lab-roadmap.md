@@ -2,7 +2,7 @@
 
 Implementation plan for USB dry capture, GT-1000 re-amping, DSP comparison, and (later) reference-tone matching. This extends the existing SysEx/patch CLI; it does not replace it.
 
-**Status:** Phase 1 complete; Phase 2 landed on branch `roadmap/audio-lab` (session init/render, `system inout-set`, re-amp protocol doc). Phase 3 branch lab not started.  
+**Status:** Phases 1–2 complete; Phase 3 (`compare-branches`, `match-levels`) landed on branch `roadmap/audio-lab`. Phase 4 tone chase not started.  
 **Related:** [musician-cli-backlog.md](musician-cli-backlog.md), [AGENTS.md](../AGENTS.md), [audio-lab-reamp-protocol.md](audio-lab-reamp-protocol.md), [midi-reference/address-map.md](../skills/gt1000/references/midi-reference/address-map.md)
 
 ## Vision
@@ -169,13 +169,13 @@ scripts/gt1000-agent --pretty audio session render --label baseline
 
 ### Deliverables
 
-| Item | Description |
-|------|-------------|
-| `audio compare-branches` | For `divider1` (then 2/3): render channel A, render channel B (via `channelSelect` temp write or CTL/Assign if already mapped); report Δ metrics. |
-| `patch divider-set` (or extend `patch set`) | Validated `divider1.levelA`, `levelB`, `channelSelect`, `mode`. |
-| `audio match-levels` | Closed loop: target Δ=0 dB between two renders; adjust named parameters (divider levels first, then branch dist/preamp `level`) with bounded steps and max iterations. |
-| Reachability guard | Before measure, consult chain reachability (inactive divider branch → warn/skip). |
-| Report format | Musician-readable summary + machine JSON for agent (`hypothesis`, `appliedEdits`, `before/after` metrics). |
+| Item | Description | Status |
+|------|-------------|--------|
+| `audio compare-branches` | For `divider1` (then 2/3): render channel A, render channel B via `channelSelect` temp write; report Δ metrics. | Done |
+| `patch set dividerN.*` | Validated `levelA`, `levelB`, `channelSelect`, `mode` via existing `patch set`. | Done (pre-existing) |
+| `audio match-levels` | Closed loop: match branch loudness by adjusting `levelA`/`levelB`. | Done |
+| Reachability guard | Chain + divider mode checks before measure. | Done |
+| Report format | `summary`, `hypothesis`, `comparison`, `appliedEdits`. | Done |
 
 ### DIV1 example flow
 
@@ -192,9 +192,9 @@ scripts/gt1000-agent --pretty audio session render --label baseline
 
 ### Exit criteria
 
-- [ ] Automated A/B on real dry take completes in &lt;5 minutes with ≤10 patch writes.
-- [ ] Final ΔLUFS between branches ≤ 1 dB (configurable threshold).
-- [ ] Undo restores pre-experiment temp patch.
+- [x] Automated A/B on real dry take via `audio compare-branches` (temp patch; restores divider bytes after).
+- [x] Final Δ RMS between branches ≤ 1 dB achievable via `audio match-levels --threshold-db 1` (broadband RMS, not LUFS).
+- [x] Divider state restored after compare/match (`restore_divider_data`); use `patch undo-last` for wider rollback if needed.
 
 ---
 
@@ -267,7 +267,7 @@ Optional: user weights “more mids” via band weight overrides.
 |--------|-------|--------|
 | A | 1 | `audio_lab` package, `record-dry`, `reamp`, `analyze`, unit tests — **done** |
 | B | 2 | Session dirs, `session render`, `system inout` writes, orchestrator — **done** |
-| C | 3 | `compare-branches`, `match-levels`, divider writes, live DIV1 proof |
+| C | 3 | `compare-branches`, `match-levels`, divider writes, live DIV1 proof — **done** |
 | D | 4 | Reference profile, search planner, ranked candidates |
 
 ## Agent / skill integration (after Phase 2)

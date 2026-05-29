@@ -117,6 +117,8 @@ LIVE_VERIFIED_COMMAND_PATHS = {
     ("audio", "analyze"),
     ("audio", "prepare-reamp"),
     ("audio", "session"),
+    ("audio", "compare-branches"),
+    ("audio", "match-levels"),
     ("system", "setup-efct"),
     ("system", "inout-set"),
 }
