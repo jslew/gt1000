@@ -8,7 +8,7 @@ Level-matching two divider branches is one example goal, not a built-in closed-l
 
 - User wants a measurable outcome on the **same dry take** (e.g. “balance DIV1 A and B within 1 dB”, “see if drive is 3 dB hotter than clean”).
 - Patch uses a **divider in single mode** (or you can explain why compare-branches refused).
-- Hardware: GT-1000 USB, audio deps installed, `audio prepare-reamp` / DIR MON understood ([audio-lab-reamp-protocol.md](audio-lab-reamp-protocol.md)).
+- Hardware: GT-1000 USB, audio deps installed, `audio prepare-reamp` / DIR MON understood ([gt1000-wiki/usb-audio.md](gt1000-wiki/usb-audio.md)).
 
 Default investigation budget unless the user says otherwise: **5 minutes** of MIDI + re-amp steps. Log each iteration (hypothesis, command, metric) in the session `meta.json` `events` list or your run notes.
 
@@ -132,17 +132,16 @@ If the goal was **not** met, say what blocked progress (no effective control, pa
 
 3. **Wording example:** “Branch B now matches A within about 0.5 dB on the test tone by setting Distortion 1 level to 79. Your patch on the unit was restored after the test—nothing is saved yet. Want me to apply that to the current patch so you can try it, or save it to a user slot?”
 
-4. **Agent dev slots:** unless the user names another slot, prefer their current patch; for agent-initiated *unsolicited* persistent experiments use U10-1…U11-5 per [AGENTS.md](../AGENTS.md).
+4. **Agent dev slots:** unless the user names another slot, prefer their current patch; for agent-initiated *unsolicited* persistent experiments use U10-1…U11-5 (see gt1000 repo `AGENTS.md` when developing the CLI).
 
 5. **Do not** auto-run `--user-slot`, `patch clone`, or bank-wide writes as part of the investigation close-out.
 
 ## Verifying the workflow
 
-To test that an agent reaches the same conclusions as a known patch (e.g. IMPRESSION `U01-3`, `dist1.level` not `divider1.levelB`), use [audio-lab-investigation-verification.md](audio-lab-investigation-verification.md) (also under `skills/gt1000/references/` for installed skills): fresh-agent prompt, pass/fail rubric, and a mechanical CLI replay script.
+To test that an agent reaches the same conclusions as a known patch (e.g. IMPRESSION `U01-3`, `dist1.level` not `divider1.levelB`), use [audio-lab-investigation-verification.md](audio-lab-investigation-verification.md): fresh-agent prompt, pass/fail rubric, and a mechanical CLI replay script.
 
 ## Related
 
 - [audio-lab-investigation-verification.md](audio-lab-investigation-verification.md)  
-- [audio-lab-roadmap.md](audio-lab-roadmap.md)  
-- [AGENTS.md](../AGENTS.md)  
-- [audio-lab-reamp-protocol.md](audio-lab-reamp-protocol.md)
+- [gt1000-wiki/usb-audio.md](gt1000-wiki/usb-audio.md)  
+- [midi-reference/cli-usage.md](midi-reference/cli-usage.md)
