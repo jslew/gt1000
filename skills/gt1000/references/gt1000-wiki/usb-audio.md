@@ -80,3 +80,26 @@ With DIR MON OFF and computer pass-through, you may **not hear** re-amp output o
 - Prefer the **BOSS driver** and the documented **MAIN / DRY / SUB** routing over ad-hoc Core Audio devices when possible.
 - `audio reamp` upmixes playback to USB channels 3–4; verify **DIR MON OFF** if wet capture stays silent.
 - **DIR MON** is writable at runtime via `audio prepare-reamp` even though the Parameter Guide says it cannot be **saved** across power cycles.
+
+### macOS USB audio (sounddevice)
+
+`gt1000-agent` uses **sounddevice** (PortAudio) for capture and playback — the same class of API GarageBand uses. **ffmpeg is not used.**
+
+```sh
+pip install -r skills/gt1000/requirements-audio.txt
+scripts/gt1000-agent --pretty audio ports
+scripts/gt1000-agent --pretty audio probe
+```
+
+**Device index** for `--device-index` is the **PortAudio** index from `audio ports` → `gt1000Inputs` / `gt1000Outputs`.
+
+### Troubleshooting
+
+1. **Quit the DAW** if it holds exclusive USB access.
+2. **Microphone privacy** for Cursor/Terminal.
+3. **Play during capture** (probe is ~3–5 s).
+4. **Bus mismatch:** default `record-dry` saves **USB 3–4**; use `--bus main` or `--bus both` for **1–2**.
+
+```sh
+scripts/gt1000-agent --pretty audio record-dry --session my-take --bus both --duration 5
+```

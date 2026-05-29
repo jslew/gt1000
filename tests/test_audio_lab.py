@@ -7,6 +7,7 @@ from unittest import mock
 from pathlib import Path
 
 from tools.gt1000.audio_lab import devices, metrics, session, wav_io
+from tools.gt1000.audio_lab.metrics import analyze_multichannel_peaks
 from tools.gt1000.audio_lab.commands import cmd_analyze, cmd_generate_tone
 from tools.gt1000.audio_lab.setup_efct import build_dir_mon_data, decode_setup_efct
 
@@ -14,6 +15,7 @@ from tools.gt1000.audio_lab.setup_efct import build_dir_mon_data, decode_setup_e
 _AUDIO_CLI_PARSER_COVERAGE = """
 "audio", "ports"
 "audio", "generate-tone"
+"audio", "probe"
 "audio", "record-dry"
 "audio", "reamp"
 "audio", "analyze"
@@ -67,6 +69,26 @@ class AudioLabTests(unittest.TestCase):
             self.assertGreater(max(abs(sample) for sample in per[2]), 0.01)
             self.assertLess(max(abs(sample) for sample in per[0]), 0.001)
 
+    def test_analyze_multichannel_peaks_reports_per_channel(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            capture = Path(tmp) / "cap6.wav"
+            sample_rate = 44100
+            frames = 200
+            with wave.open(str(capture), "wb") as handle:
+                handle.setnchannels(6)
+                handle.setsampwidth(2)
+                handle.setframerate(sample_rate)
+                payload = bytearray()
+                for _ in range(frames):
+                    for channel in range(6):
+                        value = 5000 if channel == 0 else 0
+                        payload += struct.pack("<h", value)
+                handle.writeframes(payload)
+            report = analyze_multichannel_peaks(capture)
+            self.assertTrue(report["anySignal"])
+            self.assertIsNotNone(report["channelMetrics"][0]["peakDbfs"])
+            self.assertIsNone(report["channelMetrics"][1]["peakDbfs"])
+
     def test_extract_usb_dry_channels(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             capture = Path(tmp) / "cap6.wav"
@@ -88,16 +110,23 @@ class AudioLabTests(unittest.TestCase):
             left, right = wav_io.read_wav(dry)[2]
             self.assertAlmostEqual(max(abs(sample) for sample in left), 10000 / 32768.0, places=3)
 
-    def test_parse_avfoundation_inputs(self) -> None:
-        listing = """
-[AVFoundation indev @ 0x1] AVFoundation audio devices:
-[AVFoundation indev @ 0x1] [0] Mic
-[AVFoundation indev @ 0x1] [1] GT-1000
-"""
-        parsed = devices.parse_avfoundation_inputs(listing)
-        self.assertEqual(len(parsed), 2)
-        self.assertEqual(parsed[1].name, "GT-1000")
-        self.assertTrue(devices.is_gt1000_audio_name(parsed[1].name))
+    def test_record_multichannel_delegates_to_coreaudio(self) -> None:
+        from tools.gt1000.audio_lab import audio_io
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cap.wav"
+            with mock.patch(
+                "tools.gt1000.audio_lab.coreaudio_io.record_multichannel",
+                return_value={"captureBackend": "coreaudio", "anySignal": True},
+            ) as record:
+                result = audio_io.record_multichannel(path, duration=1.0)
+            record.assert_called_once()
+            self.assertEqual(result["captureBackend"], "coreaudio")
+
+    def test_is_gt1000_audio_name(self) -> None:
+        self.assertTrue(devices.is_gt1000_audio_name("GT-1000"))
+        self.assertTrue(devices.is_gt1000_audio_name("jp_co_roland_RDUSB0217Dev_Device"))
+        self.assertFalse(devices.is_gt1000_audio_name("Mac mini Speakers"))
 
     def test_session_generate_tone_writes_meta(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

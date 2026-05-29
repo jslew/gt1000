@@ -23,6 +23,19 @@ class PatchEditTests(unittest.TestCase):
         self.assertIn(live.PatchWrite("dist1 switch off", [0x10, 0x00, 0x13, 0x00], [0]), plan.writes)
         self.assertIn(live.PatchWrite("Assign 16 disabled", [0x10, 0x00, 0x0A, 0x40], patch_edit.DISABLED_ASSIGN_DATA), plan.writes)
 
+    def test_usb_direct_plan_chain_and_enabled_blocks(self):
+        plan = patch_edit.build_usb_direct_plan("USB DIRECT")
+        chain = next(write for write in plan.writes if write.label == "USB direct chain")
+
+        self.assertEqual(chain.data[:10], [22, 0, 3, 29, 30, 34, 33, 47, 48, 1])
+        self.assertEqual(len(set(chain.data)), 49)
+        self.assertIn(
+            live.PatchWrite("Compressor on", [0x10, 0x00, 0x12, 0x00], [1, 3, 42, 36, 45, 64, 8, 0]),
+            plan.writes,
+        )
+        self.assertNotIn(live.PatchWrite("comp switch off", [0x10, 0x00, 0x12, 0x00], [0]), plan.writes)
+        self.assertNotIn(live.PatchWrite("preamp1 switch off", [0x10, 0x00, 0x15, 0x00], [0]), plan.writes)
+
     def test_4cm_template_chain_and_ctl1_direct_mapping(self):
         plan = patch_edit.build_4cm_template_plan("PY 4CM CTL1")
         chain = next(write for write in plan.writes if write.label == "4CM CTL1 divider template chain")

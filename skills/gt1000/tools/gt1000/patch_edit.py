@@ -264,6 +264,37 @@ def build_default_patch_plan(name: str = "PY DEFAULT") -> PatchPlan:
     )
 
 
+def build_usb_direct_plan(name: str = "USB DIRECT") -> PatchPlan:
+    """Straight guitar-to-USB patch: volume, comp, preamp, cab sim, main outs; no branches."""
+    writes = [
+        live.PatchWrite("Patch name", live.TEMPORARY_PATCH_NAME, patch_name_data(name)),
+        chain_write(
+            [22, 0, 3, 29, 30, BYPASS_MAIN_R, BYPASS_MAIN_L, MAIN_OUT_L, MAIN_OUT_R],
+            "USB direct chain",
+        ),
+        live.PatchWrite("CTL1 direct function off", PATCH_CTL1_FUNCTION, [0x00, 0x00]),
+        live.PatchWrite("Foot volume", block_address("footVolume"), [0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x0E, 0x08, 0x00, 0x03, 0x0E, 0x08, 0x02]),
+        live.PatchWrite("Compressor on", block_address("comp"), [0x01, 0x03, 0x2A, 0x24, 0x2D, 0x40, 0x08, 0x00]),
+        live.PatchWrite("Preamp 1 on", block_address("preamp1"), [0x01, 0x0B, 0x41, 0x0D, 0x08, 0x2E, 0x3C, 0x3F, 0x32, 0x46, 0x00, 0x01, 0x00, 0x32]),
+        live.PatchWrite("Main speaker sim L on", block_address("mainSpeakerSimulatorL"), [0x01, 0x01, 0x02, 0x00, 0x01, 0x64, 0x00]),
+        live.PatchWrite("Main speaker sim R on", block_address("mainSpeakerSimulatorR"), [0x01, 0x02, 0x00, 0x01, 0x64, 0x00]),
+    ]
+    writes.extend(assign_switch_writes(enabled=False))
+    writes.extend(all_switchable_blocks_off())
+    writes = [
+        write for write in writes
+        if write.label not in {"comp switch off", "preamp1 switch off"}
+    ]
+    return PatchPlan(
+        id="usb-direct",
+        description=(
+            "USB recording patch: FOOT VOLUME -> COMP -> PREAMP 1 -> MAIN cab sim -> MAIN OUT "
+            "(processed on USB 1-2, dry on 3-4). No divider, send/return, or time-based FX."
+        ),
+        writes=writes,
+    )
+
+
 def build_4cm_template_plan(name: str = "PY 4CM CTL1") -> PatchPlan:
     writes = [
         live.PatchWrite("Patch name", live.TEMPORARY_PATCH_NAME, patch_name_data(name)),
@@ -293,6 +324,8 @@ def plan_by_id(plan_id: str, name: str | None = None) -> PatchPlan:
         return build_default_patch_plan(name or "PY DEFAULT")
     if plan_id in {"4cm", "4cm-template"}:
         return build_4cm_template_plan(name or "PY 4CM CTL1")
+    if plan_id in {"usb", "usb-direct"}:
+        return build_usb_direct_plan(name or "USB DIRECT")
     raise ValueError(f"unknown patch plan {plan_id}")
 
 
@@ -1816,7 +1849,10 @@ def all_switchable_blocks_off() -> list[live.PatchWrite]:
 
 
 def block_address(block_id: str) -> list[int]:
-    return parameter_address(find_patch_block(block_id), 0)
+    block = find_patch_block(block_id)
+    if isinstance(block, live.ResidentBlockDefinition):
+        return live.address_adding(live.TEMPORARY_PATCH_EFFECT, block.offset)
+    return parameter_address(block, 0)
 
 
 def find_patch_block(block_id: str) -> live.BlockDefinition | live.ResidentBlockDefinition:

@@ -15,7 +15,7 @@ Implementation plan for USB dry capture, GT-1000 re-amping, DSP comparison, and 
 ## Design principles
 
 1. **Patch truth stays in the existing CLI** — SysEx reads/writes, validation, `--verify`, undo. No raw SysEx from the audio layer.
-2. **Audio is file-based** — WAV sessions on disk; Core Audio (or `ffmpeg`) for I/O. No hard dependency on a specific DAW.
+2. **Audio is file-based** — WAV sessions on disk; PortAudio (`sounddevice`) for I/O on macOS. No hard dependency on a specific DAW.
 3. **One orchestrator process** — sequential live MIDI + audio to avoid interleaved SysEx replies (see AGENTS.md).
 4. **Reproducibility** — every render stores patch snapshot metadata, USB routing snapshot, sample rate, and channel map.
 5. **Musician-facing skill stays clean** — workflow and safety boundaries in SKILL.md; this document and AGENTS.md hold implementation detail.
@@ -240,7 +240,7 @@ Optional: user weights “more mids” via band weight overrides.
 | Dependency | Phases |
 |------------|--------|
 | Python 3.10+ | All |
-| `numpy` (+ optional `soundfile`, `sounddevice` or `ffmpeg` subprocess) | 1+ |
+| `numpy` + `sounddevice` (`skills/gt1000/requirements-audio.txt`) | 1+ |
 | Optional `pyloudnorm` | 1+ (LUFS) |
 | Core Audio permissions (non-sandboxed agent) | 1+ live |
 | Existing `live.py` / `patch_edit.py` | 2+ |

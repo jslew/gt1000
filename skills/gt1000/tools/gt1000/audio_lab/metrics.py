@@ -43,6 +43,47 @@ def _stereo_metrics(left: list[float], right: list[float]) -> dict[str, Any]:
     }
 
 
+def analyze_multichannel_peaks(path: Path) -> dict[str, Any]:
+    """Per-channel peak/RMS for multichannel captures (e.g. 6-ch GT-1000 USB)."""
+    sample_rate, channels, per_channel = read_wav(path)
+    channel_metrics: list[dict[str, Any]] = []
+    for index, samples in enumerate(per_channel):
+        channel_metrics.append(
+            {
+                "channel": index + 1,
+                "peakDbfs": _peak_dbfs(samples),
+                "rmsDbfs": _rms_dbfs(samples),
+            }
+        )
+    any_signal = any(item.get("peakDbfs") is not None for item in channel_metrics)
+    return {
+        "path": str(path),
+        "sampleRate": sample_rate,
+        "channels": channels,
+        "channelMetrics": channel_metrics,
+        "anySignal": any_signal,
+    }
+
+
+def capture_silence_troubleshooting(*, bus: str | None = None) -> list[str]:
+    tips = [
+        "Install Core Audio capture: pip install -r skills/gt1000/requirements-audio.txt "
+        "(sounddevice + numpy). This is the default capture path on macOS.",
+        "Quit GarageBand, Logic, or any other app using the GT-1000 USB audio device, then retry.",
+        "macOS: System Settings → Privacy & Security → Microphone → allow the app running gt1000-agent "
+        "(Cursor, Terminal, or iTerm).",
+        "Play guitar during the capture window; silence produces zero waveforms.",
+    ]
+    if bus == "dry":
+        tips.append(
+            "record-dry saves USB channels 3–4. GarageBand inputs 1–2 (MAIN/wet) are a different bus; "
+            "use `audio record-dry --bus main` or `audio probe` to verify channels 1–2."
+        )
+    elif bus == "main":
+        tips.append("This capture uses USB channels 1–2 (MAIN / processed path).")
+    return tips
+
+
 def analyze_file(path: Path) -> dict[str, Any]:
     sample_rate, channels, per_channel = read_wav(path)
     if channels == 1:

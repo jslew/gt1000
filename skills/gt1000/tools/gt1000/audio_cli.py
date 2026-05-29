@@ -13,12 +13,13 @@ try:
         cmd_analyze,
         cmd_generate_tone,
         cmd_ports,
+        cmd_probe,
         cmd_record_dry,
         cmd_reamp,
     )
     from tools.gt1000.audio_lab.errors import AudioLabError
 except ModuleNotFoundError:
-    from audio_lab.commands import cmd_analyze, cmd_generate_tone, cmd_ports, cmd_record_dry, cmd_reamp
+    from audio_lab.commands import cmd_analyze, cmd_generate_tone, cmd_ports, cmd_probe, cmd_record_dry, cmd_reamp
     from audio_lab.errors import AudioLabError
 
 
@@ -37,7 +38,7 @@ def assert_audio_environment() -> None:
         return
     raise AudioLabError(
         f"GT-1000 audio capture is blocked in the current environment: {reason}. "
-        "Run from a full-access shell on macOS with ffmpeg installed.",
+        "Run from a full-access shell on macOS with sounddevice and numpy installed.",
         77,
     )
 
@@ -55,7 +56,7 @@ def register_audio_commands(subcommands: argparse._SubParsersAction) -> None:
     audio = subcommands.add_parser("audio", help="USB audio capture, re-amp, and analysis.")
     audio_sub = audio.add_subparsers(dest="audio_command", required=True)
 
-    ports = audio_sub.add_parser("ports", help="List Core Audio / ffmpeg devices for GT-1000 USB audio.")
+    ports = audio_sub.add_parser("ports", help="List PortAudio (sounddevice) devices for GT-1000 USB audio.")
     ports.set_defaults(func=wrap_audio_command(cmd_audio_ports))
 
     generate = audio_sub.add_parser("generate-tone", help="Write a test-tone dry.wav into a session (offline).")
@@ -66,11 +67,29 @@ def register_audio_commands(subcommands: argparse._SubParsersAction) -> None:
     generate.add_argument("--sample-rate", type=int, default=44100, help="Sample rate, default 44100.")
     generate.set_defaults(func=wrap_audio_command(cmd_audio_generate_tone))
 
-    record = audio_sub.add_parser("record-dry", help="Capture USB dry channels 3-4 into a session.")
+    probe = audio_sub.add_parser(
+        "probe",
+        help="Capture ~3s from GT-1000 USB and report per-channel peaks (diagnostic).",
+    )
+    probe.add_argument("--duration", type=float, default=3.0, help="Capture duration in seconds.")
+    probe.add_argument("--sample-rate", type=int, default=44100, help="Sample rate, default 44100.")
+    probe.add_argument("--device-index", type=int, help="PortAudio input index (see audio ports → gt1000Inputs).")
+    probe.set_defaults(func=wrap_audio_command(cmd_audio_probe, requires_device=True))
+
+    record = audio_sub.add_parser(
+        "record-dry",
+        help="Capture GT-1000 USB audio into a session (default: dry 3-4; optional main 1-2).",
+    )
     record.add_argument("--session", required=True, help="Session name.")
     record.add_argument("--duration", type=float, default=5.0, help="Capture duration in seconds.")
     record.add_argument("--sample-rate", type=int, default=44100, help="Sample rate, default 44100.")
-    record.add_argument("--device-index", type=int, help="avfoundation input index override.")
+    record.add_argument("--device-index", type=int, help="PortAudio input index (see audio ports → gt1000Inputs).")
+    record.add_argument(
+        "--bus",
+        choices=["dry", "main", "both"],
+        default="dry",
+        help="USB bus to extract: dry=3-4, main=1-2 (wet), both.",
+    )
     record.set_defaults(func=wrap_audio_command(cmd_audio_record_dry, requires_device=True))
 
     reamp = audio_sub.add_parser("reamp", help="Play session dry.wav to GT-1000 and capture main USB 1-2.")
@@ -117,12 +136,21 @@ def cmd_audio_generate_tone(args: argparse.Namespace) -> Any:
     )
 
 
+def cmd_audio_probe(args: argparse.Namespace) -> Any:
+    return cmd_probe(
+        duration=args.duration,
+        sample_rate=args.sample_rate,
+        device_index=args.device_index,
+    )
+
+
 def cmd_audio_record_dry(args: argparse.Namespace) -> Any:
     return cmd_record_dry(
         args.session,
         duration=args.duration,
         sample_rate=args.sample_rate,
         device_index=args.device_index,
+        bus=args.bus,
     )
 
 

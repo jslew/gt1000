@@ -30,15 +30,15 @@
   - `scripts/gt1000-agent --pretty audio record-dry --session <name> --duration 5`
   - `scripts/gt1000-agent --pretty audio reamp --session <name>`
   - `scripts/gt1000-agent --pretty audio analyze <a.wav> <b.wav>`
-  - `GT1000_AUDIO_LIVE=1 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_live_audio_lab -q`
+  - `GT1000_AUDIO_LIVE=1 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_live_audio_lab -q` (requires `pip install -r skills/gt1000/requirements-audio.txt`; optional `GT1000_AUDIO_PYTHON` if not using the same interpreter)
 
 ## Audio Lab (USB record / re-amp)
 
 - Phase 1 lives under `skills/gt1000/tools/gt1000/audio_lab/` with CLI group `audio`. Roadmap: [docs/audio-lab-roadmap.md](docs/audio-lab-roadmap.md).
-- Requires **ffmpeg** on PATH (or `GT1000_FFMPEG`) on macOS. Sessions default to `~/gt1000-sessions/` or `GT1000_SESSION_DIR`.
-- USB channel map: 1–2 main, 3–4 dry, 5–6 sub. `record-dry` captures six channels and extracts 3–4; `reamp` plays dry to the GT-1000 USB output and captures processed 1–2.
-- Live audio needs the same full-access environment as CoreMIDI (not the read-only Codex sandbox).
-- If `reamp` wet levels stay silent, verify MENU > IN/OUT USB routing on the unit before assuming a software bug.
+- **USB audio (macOS):** `pip install -r skills/gt1000/requirements-audio.txt` (`sounddevice` + `numpy`). Capture and playback both use PortAudio/Core Audio (no ffmpeg). Sessions: `~/gt1000-sessions/` or `GT1000_SESSION_DIR`.
+- USB channel map: 1–2 main, 3–4 dry, 5–6 sub. `record-dry` (default `--bus dry`) captures six channels and extracts 3–4; `--bus main` or `--bus both` for 1–2. `audio probe` reports per-channel peaks.
+- Live audio needs full-access environment + Microphone privacy for the host app (Cursor/Terminal).
+- If `reamp` wet levels stay silent, verify USB DIR MON / routing on the unit (see `audio prepare-reamp`, wiki `usb-audio.md`).
 
 ## Skill Maintenance
 

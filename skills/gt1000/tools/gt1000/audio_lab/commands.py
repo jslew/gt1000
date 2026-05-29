@@ -5,10 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .devices import USB_DRY_STEREO, channel_map_doc
+from .devices import USB_DRY_STEREO, USB_MAIN_STEREO, channel_map_doc
 from .errors import AudioLabError
-from .ffmpeg_io import list_devices, record_multichannel, reamp_capture
-from .metrics import analyze_file, compare_files
+from .audio_io import list_devices, probe_capture, record_multichannel, reamp_capture
+from .metrics import analyze_file, analyze_multichannel_peaks, capture_silence_troubleshooting, compare_files
 from .session import append_session_event, default_dry_path, resolve_session_dir, write_session_meta
 from .wav_io import extract_channels, generate_sine_tone
 
@@ -19,7 +19,7 @@ def cmd_ports() -> dict[str, Any]:
         "id": "audioPorts",
         "channelMap": channel_map_doc(),
         **devices,
-        "note": "MIDI ports remain under `ports --live`. USB audio uses Core Audio via ffmpeg on macOS.",
+        "note": "MIDI ports remain under `ports --live`. USB audio uses sounddevice (PortAudio) on macOS.",
     }
 
 
@@ -59,47 +59,88 @@ def cmd_generate_tone(
     }
 
 
+def cmd_probe(
+    *,
+    duration: float,
+    sample_rate: int,
+    device_index: int | None,
+) -> dict[str, Any]:
+    return probe_capture(duration=duration, sample_rate=sample_rate, device_index=device_index)
+
+
 def cmd_record_dry(
     session: str,
     *,
     duration: float,
     sample_rate: int,
     device_index: int | None,
+    bus: str,
 ) -> dict[str, Any]:
     session_dir = resolve_session_dir(session, create=True)
     capture_path = session_dir / "capture6.wav"
-    dry_path = default_dry_path(session_dir)
     capture_info = record_multichannel(
         capture_path,
         duration=duration,
         sample_rate=sample_rate,
         device_index=device_index,
     )
-    extract_info = extract_channels(capture_path, USB_DRY_STEREO, dry_path)
-    write_session_meta(
-        session_dir,
-        {
-            "session": session,
-            "dryPath": str(dry_path),
-            "drySource": "usb-record",
-            "capturePath": str(capture_path),
-            **capture_info,
-            "dryExtract": extract_info,
-        },
-    )
-    append_session_event(session_dir, {"type": "record-dry", "durationSeconds": duration})
-    analysis = analyze_file(dry_path)
-    return {
+    peak_report = analyze_multichannel_peaks(capture_path)
+    troubleshooting = capture_silence_troubleshooting(bus=bus)
+    if not peak_report.get("anySignal"):
+        troubleshooting.append("All captured channels were silent.")
+
+    result: dict[str, Any] = {
         "id": "audioRecordDry",
         "session": session,
         "sessionDir": str(session_dir),
-        "dryPath": str(dry_path),
+        "bus": bus,
         "capturePath": str(capture_path),
         "capture": capture_info,
-        "dryExtract": extract_info,
-        "dryMetrics": analysis,
-        "note": "If dryMetrics are very low, confirm guitar/input signal and MENU > IN/OUT USB dry levels.",
+        "channelPeaks": peak_report,
+        "troubleshooting": troubleshooting,
     }
+
+    if bus in {"dry", "both"}:
+        dry_path = default_dry_path(session_dir)
+        dry_extract = extract_channels(capture_path, USB_DRY_STEREO, dry_path)
+        dry_metrics = analyze_file(dry_path)
+        write_session_meta(
+            session_dir,
+            {
+                "session": session,
+                "dryPath": str(dry_path),
+                "drySource": "usb-record",
+                "capturePath": str(capture_path),
+                "bus": bus,
+                **capture_info,
+                "dryExtract": dry_extract,
+            },
+        )
+        append_session_event(session_dir, {"type": "record-dry", "durationSeconds": duration, "bus": bus})
+        result["dryPath"] = str(dry_path)
+        result["dryExtract"] = dry_extract
+        result["dryMetrics"] = dry_metrics
+
+    if bus in {"main", "both"}:
+        renders = session_dir / "renders"
+        renders.mkdir(exist_ok=True)
+        wet_path = renders / "record-main.wav"
+        main_extract = extract_channels(capture_path, USB_MAIN_STEREO, wet_path)
+        wet_metrics = analyze_file(wet_path)
+        result["wetPath"] = str(wet_path)
+        result["mainExtract"] = main_extract
+        result["wetMetrics"] = wet_metrics
+
+    if bus == "dry":
+        result["note"] = (
+            "Saved USB dry channels 3–4. Strong signal on GarageBand inputs 1–2 does not appear in dry.wav; "
+            "use --bus main or --bus both to capture processed MAIN."
+        )
+    elif bus == "main":
+        result["note"] = "Saved USB main/processed channels 1–2."
+    else:
+        result["note"] = "Saved dry.wav (3–4) and renders/record-main.wav (1–2)."
+    return result
 
 
 def cmd_reamp(

@@ -703,12 +703,12 @@ def build_parser() -> argparse.ArgumentParser:
     inspect.set_defaults(func=cmd_patch_inspect)
 
     plan = patch_subcommands.add_parser("plan", help="Build a validated patch-write plan without sending it.")
-    plan.add_argument("plan_id", choices=["default", "4cm", "4cm-template"], help="Patch plan to build.")
+    plan.add_argument("plan_id", choices=["default", "4cm", "4cm-template", "usb", "usb-direct"], help="Patch plan to build.")
     plan.add_argument("--name", help="Patch name to write into the temporary patch.")
     plan.set_defaults(func=cmd_patch_plan)
 
     apply = patch_subcommands.add_parser("apply", help="Apply a validated patch-write plan to the temporary patch.")
-    apply.add_argument("plan_id", choices=["default", "4cm", "4cm-template"], help="Patch plan to apply.")
+    apply.add_argument("plan_id", choices=["default", "4cm", "4cm-template", "usb", "usb-direct"], help="Patch plan to apply.")
     apply.add_argument("--name", help="Patch name to write into the temporary patch.")
     apply.add_argument("--live", action="store_true", help="Required because this writes to the connected GT-1000 temporary patch.")
     apply.add_argument("--user-slot", help="Persist to a user patch slot instead of the temporary patch.")

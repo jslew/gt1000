@@ -1,0 +1,3 @@
+# USB audio capture and playback for gt1000-agent (macOS PortAudio via sounddevice).
+sounddevice>=0.4.6
+numpy>=1.24
