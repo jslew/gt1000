@@ -110,12 +110,15 @@ LIVE_VERIFIED_COMMAND_PATHS = {
     ("system", "pcmap"),
     ("system", "pitch"),
     ("audio", "ports"),
+    ("audio", "probe"),
     ("audio", "generate-tone"),
     ("audio", "record-dry"),
     ("audio", "reamp"),
     ("audio", "analyze"),
     ("audio", "prepare-reamp"),
+    ("audio", "session"),
     ("system", "setup-efct"),
+    ("system", "inout-set"),
 }
 
 

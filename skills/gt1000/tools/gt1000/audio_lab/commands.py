@@ -9,6 +9,8 @@ from .devices import USB_DRY_STEREO, USB_MAIN_STEREO, channel_map_doc
 from .errors import AudioLabError
 from .audio_io import list_devices, probe_capture, record_multichannel, reamp_capture
 from .metrics import analyze_file, analyze_multichannel_peaks, capture_silence_troubleshooting, compare_files
+from .device_snapshot import capture_live_snapshots, write_device_snapshots
+from .orchestrator import render_labeled_wet
 from .session import append_session_event, default_dry_path, resolve_session_dir, write_session_meta
 from .wav_io import extract_channels, generate_sine_tone
 
@@ -195,3 +197,57 @@ def cmd_analyze(paths: list[Path]) -> dict[str, Any]:
     if len(paths) == 1:
         return {"id": "audioAnalyze", "file": analyze_file(paths[0])}
     return {"id": "audioAnalyze", **compare_files(paths)}
+
+
+def cmd_session_init(
+    session: str,
+    *,
+    live: bool = False,
+    midi_timeout: float = 20.0,
+) -> dict[str, Any]:
+    session_dir = resolve_session_dir(session, create=True)
+    payload: dict[str, Any] = {
+        "session": session,
+        "sessionDir": str(session_dir),
+        "dryPath": str(default_dry_path(session_dir)),
+        "phase": 2,
+    }
+    device_snapshot_paths: dict[str, str] | None = None
+    if live:
+        snapshots = capture_live_snapshots(midi_timeout)
+        device_snapshot_paths = write_device_snapshots(session_dir, snapshots)
+        payload["deviceSnapshots"] = device_snapshot_paths
+        payload["patchReadHash"] = snapshots["patch"].get("readHash")
+        payload["patchName"] = snapshots["patch"].get("patchName")
+    write_session_meta(session_dir, payload)
+    append_session_event(
+        session_dir,
+        {"type": "session-init", "live": live, "deviceSnapshots": device_snapshot_paths},
+    )
+    return {
+        "id": "audioSessionInit",
+        **payload,
+        "note": (
+            "Add dry.wav via record-dry or generate-tone, then `audio session render --label <name>`. "
+            "Use --live on init to store system IN/OUT + patch snapshots under deviceSnapshots/."
+        ),
+    }
+
+
+def cmd_session_render(
+    session: str,
+    label: str,
+    *,
+    prepare_usb: bool = True,
+    midi_timeout: float = 8.0,
+    playback_role: str = "dry",
+    settle_seconds: float = 0.25,
+) -> dict[str, Any]:
+    return render_labeled_wet(
+        session,
+        label,
+        prepare_usb=prepare_usb,
+        midi_timeout=midi_timeout,
+        playback_role=playback_role,
+        settle_seconds=settle_seconds,
+    )

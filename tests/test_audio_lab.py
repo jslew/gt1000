@@ -1,3 +1,4 @@
+import json
 import math
 import struct
 import tempfile
@@ -8,7 +9,8 @@ from pathlib import Path
 
 from tools.gt1000.audio_lab import devices, metrics, session, wav_io
 from tools.gt1000.audio_lab.metrics import analyze_multichannel_peaks
-from tools.gt1000.audio_lab.commands import cmd_analyze, cmd_generate_tone
+from tools.gt1000.audio_lab.commands import cmd_analyze, cmd_generate_tone, cmd_session_init
+from tools.gt1000.audio_lab.session import sanitize_label
 from tools.gt1000.audio_lab.setup_efct import build_dir_mon_data, decode_setup_efct
 
 # CLI parser coverage markers for tests.test_agent_cli.test_cli_command_paths_have_test_coverage
@@ -20,7 +22,10 @@ _AUDIO_CLI_PARSER_COVERAGE = """
 "audio", "reamp"
 "audio", "analyze"
 "audio", "prepare-reamp"
+"audio", "session", "init"
+"audio", "session", "render"
 "system", "setup-efct"
+"system", "inout-set"
 """
 
 
@@ -143,6 +148,41 @@ class AudioLabTests(unittest.TestCase):
             payload = cmd_analyze([path])
             self.assertEqual(payload["id"], "audioAnalyze")
             self.assertIn("rmsDbfs", payload["file"])
+
+    def test_sanitize_render_label(self) -> None:
+        self.assertEqual(sanitize_label("baseline v2"), "baseline-v2")
+
+    def test_session_init_offline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(session, "session_root", return_value=Path(tmp)):
+                payload = cmd_session_init("lab-a", live=False)
+            session_dir = Path(payload["sessionDir"])
+            self.assertTrue((session_dir / "meta.json").is_file())
+            self.assertTrue((session_dir / "renders").is_dir())
+            self.assertEqual(payload["id"], "audioSessionInit")
+
+    @mock.patch(
+        "tools.gt1000.audio_lab.orchestrator.reamp_capture",
+        return_value={"captureBackend": "coreaudio"},
+    )
+    @mock.patch(
+        "tools.gt1000.audio_lab.orchestrator.capture_patch_snapshot",
+        return_value={"patchName": "TEST", "readHash": "abc", "chain": {"blocks": []}},
+    )
+    def test_session_render_appends_log(self, _patch_snap: mock.Mock, _patch_reamp: mock.Mock) -> None:
+        from tools.gt1000.audio_lab import orchestrator
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(session, "session_root", return_value=Path(tmp)):
+                cmd_generate_tone("render-test", duration=0.2, frequency=440.0, amplitude=0.2, sample_rate=44100)
+                wet_path = Path(tmp) / "render-test" / "renders" / "baseline-wet.wav"
+                wet_path.parent.mkdir(parents=True, exist_ok=True)
+                wav_io.generate_sine_tone(wet_path, duration=0.2, amplitude=0.1)
+                result = orchestrator.render_labeled_wet("render-test", "baseline", midi_timeout=1.0)
+            meta = json.loads((Path(tmp) / "render-test" / "meta.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(meta["renders"]), 1)
+            self.assertEqual(meta["renders"][0]["label"], "baseline")
+            self.assertEqual(result["id"], "audioSessionRender")
 
 
 if __name__ == "__main__":

@@ -16,10 +16,21 @@ try:
         cmd_probe,
         cmd_record_dry,
         cmd_reamp,
+        cmd_session_init,
+        cmd_session_render,
     )
     from tools.gt1000.audio_lab.errors import AudioLabError
 except ModuleNotFoundError:
-    from audio_lab.commands import cmd_analyze, cmd_generate_tone, cmd_ports, cmd_probe, cmd_record_dry, cmd_reamp
+    from audio_lab.commands import (
+        cmd_analyze,
+        cmd_generate_tone,
+        cmd_ports,
+        cmd_probe,
+        cmd_record_dry,
+        cmd_reamp,
+        cmd_session_init,
+        cmd_session_render,
+    )
     from audio_lab.errors import AudioLabError
 
 
@@ -121,6 +132,48 @@ def register_audio_commands(subcommands: argparse._SubParsersAction) -> None:
     analyze.add_argument("files", nargs="+", type=Path, help="WAV files to analyze.")
     analyze.set_defaults(func=wrap_audio_command(cmd_audio_analyze))
 
+    session = audio_sub.add_parser("session", help="Initialize and render repeatable audio lab sessions.")
+    session_sub = session.add_subparsers(dest="session_command", required=True)
+
+    session_init = session_sub.add_parser(
+        "init",
+        help="Create a session directory; optionally snapshot live system IN/OUT and patch state.",
+    )
+    session_init.add_argument("--session", required=True, help="Session name under GT1000_SESSION_DIR.")
+    session_init.add_argument(
+        "--live",
+        action="store_true",
+        help="Read system IN/OUT, SetupEfct, and temporary patch summary over MIDI.",
+    )
+    session_init.add_argument("--midi-timeout", type=float, default=20.0, help="MIDI timeout for --live snapshots.")
+    session_init.set_defaults(func=wrap_audio_command(cmd_audio_session_init))
+
+    session_render = session_sub.add_parser(
+        "render",
+        help="Re-amp session dry.wav to renders/<label>-wet.wav with patch snapshot metadata.",
+    )
+    session_render.add_argument("--session", required=True, help="Session name.")
+    session_render.add_argument("--label", required=True, help="Render label (used in output filenames).")
+    session_render.add_argument(
+        "--playback-role",
+        choices=["dry", "main"],
+        default="dry",
+        help="USB playback routing hint for dry.wav.",
+    )
+    session_render.add_argument(
+        "--no-prepare-usb",
+        action="store_true",
+        help="Skip SetupEfct SysEx that sets USB DIR MON OFF before playback.",
+    )
+    session_render.add_argument("--midi-timeout", type=float, default=8.0, help="SysEx timeout for USB prepare and patch snapshot.")
+    session_render.add_argument(
+        "--settle-seconds",
+        type=float,
+        default=0.25,
+        help="Delay after patch writes before re-amp capture (default 0.25).",
+    )
+    session_render.set_defaults(func=wrap_audio_command(cmd_audio_session_render, requires_device=True))
+
 
 def cmd_audio_ports(_args: argparse.Namespace) -> Any:
     return cmd_ports()
@@ -176,3 +229,18 @@ def cmd_audio_prepare_reamp(args: argparse.Namespace) -> Any:
 
 def cmd_audio_analyze(args: argparse.Namespace) -> Any:
     return cmd_analyze(list(args.files))
+
+
+def cmd_audio_session_init(args: argparse.Namespace) -> Any:
+    return cmd_session_init(args.session, live=args.live, midi_timeout=args.midi_timeout)
+
+
+def cmd_audio_session_render(args: argparse.Namespace) -> Any:
+    return cmd_session_render(
+        args.session,
+        args.label,
+        prepare_usb=not args.no_prepare_usb,
+        midi_timeout=args.midi_timeout,
+        playback_role=args.playback_role,
+        settle_seconds=args.settle_seconds,
+    )

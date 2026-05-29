@@ -383,6 +383,20 @@ def build_parser() -> argparse.ArgumentParser:
     inputs.add_argument("--timeout", type=float, default=QUICK_TIMEOUT, help="Live read timeout in seconds per setting.")
     inputs.set_defaults(func=cmd_system_inputs)
 
+    inout_set = system_subcommands.add_parser(
+        "inout-set",
+        help="Set one System IN/OUT USB level field (typed nibble write with optional verify).",
+    )
+    inout_set.add_argument(
+        "field",
+        help="Field id or alias, e.g. usbDryOut, usb-dry-out, usbMainMixLevel.",
+    )
+    inout_set.add_argument("value", type=int, help="Integer value 0...200 for USB nibble fields.")
+    inout_set.add_argument("--live", action="store_true", help="Required because this writes global system state.")
+    inout_set.add_argument("--verify", action="store_true", help="Re-read the written range and compare exact bytes.")
+    inout_set.add_argument("--timeout", type=float, default=PERSISTENT_TIMEOUT, help="Verification read timeout in seconds.")
+    inout_set.set_defaults(func=cmd_system_inout_set)
+
     patch = subcommands.add_parser("patch", help="Inspect GT-1000 patch data.")
     patch_subcommands = patch.add_subparsers(dest="patch_command", required=True)
 
@@ -1301,6 +1315,22 @@ def cmd_system_pcmap(args: argparse.Namespace) -> Any:
         "banks": decoded_banks,
         "note": "Each entry maps a received MIDI Program Change number to a user or preset patch according to MENU:MIDI:PROGRAM MAP.",
     }
+
+
+def cmd_system_inout_set(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("system inout-set requires --live because it writes global system state", 64)
+    try:
+        from tools.gt1000 import system_edit
+    except ModuleNotFoundError:
+        import system_edit
+    try:
+        plan = system_edit.build_system_inout_set_plan(args.field, args.value)
+        return apply_focused_plan_cli(plan, timeout=args.timeout, verify=args.verify)
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
 
 
 def cmd_system_inputs(args: argparse.Namespace) -> Any:

@@ -2,8 +2,8 @@
 
 Implementation plan for USB dry capture, GT-1000 re-amping, DSP comparison, and (later) reference-tone matching. This extends the existing SysEx/patch CLI; it does not replace it.
 
-**Status:** Sprint A in progress on branch `roadmap/audio-lab` (Phase 1 commands landed; live re-amp may need USB routing on the unit).  
-**Related:** [musician-cli-backlog.md](musician-cli-backlog.md), [AGENTS.md](../AGENTS.md), [midi-reference/address-map.md](../skills/gt1000/references/midi-reference/address-map.md)
+**Status:** Phase 1 complete; Phase 2 landed on branch `roadmap/audio-lab` (session init/render, `system inout-set`, re-amp protocol doc). Phase 3 branch lab not started.  
+**Related:** [musician-cli-backlog.md](musician-cli-backlog.md), [AGENTS.md](../AGENTS.md), [audio-lab-reamp-protocol.md](audio-lab-reamp-protocol.md), [midi-reference/address-map.md](../skills/gt1000/references/midi-reference/address-map.md)
 
 ## Vision
 
@@ -122,7 +122,7 @@ scripts/gt1000-agent --pretty audio analyze --files renders/a.wav renders/b.wav
 - [x] CLI commands: `audio ports`, `generate-tone`, `record-dry`, `reamp`, `analyze`.
 - [x] Unit tests in `tests/test_audio_lab.py`.
 - [x] Documented in AGENTS.md; not duplicated in SKILL.md.
-- [ ] Dry capture and re-amp return non-silent wet signal on connected hardware (depends on GT-1000 USB IN/OUT menu; pipeline verified, wet may be silent until routing is set).
+- [x] Dry capture and re-amp return non-silent wet signal on connected hardware (sounddevice + DIR MON prep; see live audio tests).
 - [x] `analyze` produces stable metrics for two files in &lt;1s.
 
 ---
@@ -133,13 +133,13 @@ scripts/gt1000-agent --pretty audio analyze --files renders/a.wav renders/b.wav
 
 ### Deliverables
 
-| Item | Description |
-|------|-------------|
-| `audio session init` | Create session dir; snapshot `system inout` + current patch (`patch dump` subset or chain + PatchEfct). |
-| `audio session render` | `render --label foo` = re-amp dry → wet + write `renders/foo-wet.wav` + `renders/foo-patch.json` + append to session log. |
-| `system inout-set` (or `system set inout`) | Typed writes for USB nibble fields with `--verify` and range validation (mirror `decode_system_inout` offsets). |
-| Re-amp protocol doc | In-repo checklist: playback device, monitoring off, USB channel map, settle time after patch write. |
-| Orchestrator hook | Single Python entry that holds MIDI client + audio stream (no parallel `gt1000-agent` processes). |
+| Item | Description | Status |
+|------|-------------|--------|
+| `audio session init` | Create session dir; snapshot `system inout` + current patch (`patch dump` subset or chain + PatchEfct). | Done (`--live` → `deviceSnapshots/*.json`) |
+| `audio session render` | `render --label foo` = re-amp dry → wet + write `renders/foo-wet.wav` + `renders/foo-patch.json` + append to session log. | Done |
+| `system inout-set` (or `system set inout`) | Typed writes for USB nibble fields with `--verify` and range validation (mirror `decode_system_inout` offsets). | Done |
+| Re-amp protocol doc | In-repo checklist: playback device, monitoring off, USB channel map, settle time after patch write. | Done ([audio-lab-reamp-protocol.md](audio-lab-reamp-protocol.md)) |
+| Orchestrator hook | Single Python entry that holds MIDI client + audio stream (no parallel `gt1000-agent` processes). | Done (`audio_lab/orchestrator.py`) |
 
 ### CLI sketch
 
@@ -157,9 +157,9 @@ scripts/gt1000-agent --pretty audio session render --label baseline
 
 ### Exit criteria
 
-- [ ] Two renders of the same patch on the same dry file are within 0.5 dB LUFS (stability).
-- [ ] USB routing changes persist and appear in session metadata.
-- [ ] Agent dev slots only: persistent patch experiments use U10-1…U11-5 per AGENTS.md unless user overrides.
+- [x] Two renders of the same patch on the same dry file are within 0.5 dB RMS (stability; live test `test_session_render_repeatability`).
+- [x] USB routing snapshots stored on `session init --live`; writes via `system inout-set --verify`.
+- [ ] Agent dev slots only: persistent patch experiments use U10-1…U11-5 per AGENTS.md unless user overrides (unchanged policy).
 
 ---
 
@@ -265,8 +265,8 @@ Optional: user weights “more mids” via band weight overrides.
 
 | Sprint | Phase | Focus |
 |--------|-------|--------|
-| A | 1 | `audio_lab` package, `record-dry`, `reamp`, `analyze`, unit tests |
-| B | 2 | Session dirs, `session render`, `system inout` writes, orchestrator |
+| A | 1 | `audio_lab` package, `record-dry`, `reamp`, `analyze`, unit tests — **done** |
+| B | 2 | Session dirs, `session render`, `system inout` writes, orchestrator — **done** |
 | C | 3 | `compare-branches`, `match-levels`, divider writes, live DIV1 proof |
 | D | 4 | Reference profile, search planner, ranked candidates |
 

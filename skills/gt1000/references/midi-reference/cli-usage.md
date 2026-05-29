@@ -69,10 +69,10 @@ Add `--user-slot Uxx-y --timeout 30` to make the change persistent.
 This section exists so the repo can sanity-check that the command surface is documented; most musicians can ignore it.
 
 - `ports`
-- `audio ports`, `audio generate-tone`, `audio record-dry`, `audio reamp`, `audio analyze`
+- `audio ports`, `audio generate-tone`, `audio record-dry`, `audio reamp`, `audio analyze`, `audio session init`, `audio session render`
 - `doctor`
 - `midi cc`, `midi pc`, `midi bank-select`
-- `system common`, `system midi`, `system pcmap`, `system inputs`, `system inout`, `system effects`, `system pitch`, `system controls`, `system manual`
+- `system common`, `system midi`, `system pcmap`, `system inputs`, `system inout`, `system inout-set`, `system effects`, `system pitch`, `system controls`, `system manual`
 - `patch overview`, `patch musician-summary`, `patch performance`, `patch chain`, `patch controls`, `patch summary`
 - `patch slot`, `patch bank`, `patch preset`
 - `patch diff`, `patch setlist-audit`, `patch level-audit`

@@ -39,6 +39,12 @@
 - USB channel map: 1–2 main, 3–4 dry, 5–6 sub. `record-dry` (default `--bus dry`) captures six channels and extracts 3–4; `--bus main` or `--bus both` for 1–2. `audio probe` reports per-channel peaks.
 - Live audio needs full-access environment + Microphone privacy for the host app (Cursor/Terminal).
 - If `reamp` wet levels stay silent, verify USB DIR MON / routing on the unit (see `audio prepare-reamp`, wiki `usb-audio.md`).
+- Phase 2: `audio session init`, `audio session render --label <name>`, `system inout-set <field> <value> --live --verify`. Protocol: [docs/audio-lab-reamp-protocol.md](docs/audio-lab-reamp-protocol.md).
+- Example session flow:
+  - `scripts/gt1000-agent --pretty audio session init --session div1-test --live --midi-timeout 20`
+  - `scripts/gt1000-agent --pretty audio generate-tone --session div1-test --duration 3`
+  - `scripts/gt1000-agent --pretty audio session render --session div1-test --label baseline`
+  - `scripts/gt1000-agent --pretty system inout-set usb-main-mix-level 100 --live --verify --timeout 20`
 
 ## Skill Maintenance
 

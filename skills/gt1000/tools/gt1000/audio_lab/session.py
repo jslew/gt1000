@@ -55,3 +55,39 @@ def append_session_event(session_dir: Path, event: dict[str, Any]) -> None:
         data["events"] = events
     events.append({**event, "at": datetime.now(timezone.utc).isoformat()})
     meta_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def sanitize_label(label: str) -> str:
+    text = label.strip()
+    if not text:
+        raise ValueError("render label must not be empty")
+    safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in text)
+    safe = safe.strip("-")
+    if not safe:
+        raise ValueError("render label must contain at least one alphanumeric character")
+    return safe
+
+
+def device_snapshots_dir(session_dir: Path) -> Path:
+    return session_dir / "deviceSnapshots"
+
+
+def render_wet_path(session_dir: Path, label: str) -> Path:
+    return session_dir / "renders" / f"{sanitize_label(label)}-wet.wav"
+
+
+def render_patch_snapshot_path(session_dir: Path, label: str) -> Path:
+    return session_dir / "renders" / f"{sanitize_label(label)}-patch.json"
+
+
+def append_render_log(session_dir: Path, record: dict[str, Any]) -> None:
+    meta_path = session_dir / "meta.json"
+    data: dict[str, Any] = {}
+    if meta_path.exists():
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+    renders = data.setdefault("renders", [])
+    if not isinstance(renders, list):
+        renders = []
+        data["renders"] = renders
+    renders.append({**record, "at": datetime.now(timezone.utc).isoformat()})
+    meta_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")

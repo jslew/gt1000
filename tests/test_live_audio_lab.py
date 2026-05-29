@@ -126,6 +126,45 @@ class LiveAudioLabTests(unittest.TestCase):
             self.assertEqual(analyze["id"], "audioAnalyze")
             self.assertIsNotNone(analyze["files"][1].get("rmsDbfs"))
 
+    def test_system_inout_set_roundtrip(self) -> None:
+        inout = parse_json_stdout(run_cli("system", "inout", "--live", "--timeout", "15"))
+        value = inout["decoded"]["usbDryOut"]
+        self.assertIsNotNone(value)
+        assert value is not None
+        result = parse_json_stdout(
+            run_cli(
+                "system",
+                "inout-set",
+                "usbDryOut",
+                str(value),
+                "--live",
+                "--verify",
+                "--timeout",
+                "20",
+            )
+        )
+        self.assertTrue(result.get("verified"))
+
+    def test_session_render_repeatability(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session = "live-session"
+            env = {**os.environ, "GT1000_SESSION_DIR": tmp}
+            parse_json_stdout(run_cli("audio", "session", "init", "--session", session, env=env))
+            parse_json_stdout(run_cli("audio", "generate-tone", "--session", session, "--duration", "2", env=env))
+            run_cli("audio", "prepare-reamp", "--midi-timeout", "8", env=env)
+            first = parse_json_stdout(
+                run_cli("audio", "session", "render", "--session", session, "--label", "a", env=env)
+            )
+            second = parse_json_stdout(
+                run_cli("audio", "session", "render", "--session", session, "--label", "b", env=env)
+            )
+            rms_a = first["wetMetrics"]["rmsDbfs"]
+            rms_b = second["wetMetrics"]["rmsDbfs"]
+            self.assertIsNotNone(rms_a)
+            self.assertIsNotNone(rms_b)
+            assert rms_a is not None and rms_b is not None
+            self.assertLess(abs(rms_a - rms_b), 0.5, "same patch/dry should be within 0.5 dB RMS")
+
 
 if __name__ == "__main__":
     unittest.main()
