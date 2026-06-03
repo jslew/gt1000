@@ -156,6 +156,7 @@ class AudioLabTests(unittest.TestCase):
             session_dir = Path(result["sessionDir"])
             self.assertTrue((session_dir / "dry.wav").is_file())
             self.assertTrue((session_dir / "meta.json").is_file())
+            self.assertIsNotNone(result["dryMetrics"]["rmsDbfs"])
 
     def test_cmd_analyze_cli_shape(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

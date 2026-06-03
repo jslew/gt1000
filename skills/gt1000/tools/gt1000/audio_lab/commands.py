@@ -60,11 +60,13 @@ def cmd_generate_tone(
         },
     )
     append_session_event(session_dir, {"type": "generate-tone", **tone_info})
+    dry_metrics = analyze_file(dry_path)
     return {
         "id": "audioGenerateTone",
         "session": session,
         "sessionDir": str(session_dir),
         "dryPath": str(dry_path),
+        "dryMetrics": dry_metrics,
         "tone": tone_info,
     }
 

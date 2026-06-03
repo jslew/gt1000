@@ -661,7 +661,7 @@ def list_ports() -> dict[str, Any]:
 
 
 def read_current_patch(timeout: float, requests: list[PatchReadRequest] | None = None) -> dict[str, Any]:
-    state = transact_requests(timeout=timeout, requests=requests or READ_PLAN)
+    state = transact_requests_with_endpoint_retry(timeout=timeout, requests=requests or READ_PLAN)
     return state.snapshot
 
 
@@ -799,12 +799,12 @@ def remap_temporary_patch_address(address: list[int], patch_base: list[int]) -> 
 
 
 def read_data_sets(timeout: float, requests: list[PatchReadRequest]) -> dict[str, list[int]]:
-    state = transact_requests(timeout=timeout, requests=requests)
+    state = transact_requests_with_endpoint_retry(timeout=timeout, requests=requests)
     return dict(state.data_sets)
 
 
 def read_data_sets_lenient(timeout: float, requests: list[PatchReadRequest]) -> dict[str, list[int]]:
-    state = transact_requests(timeout=timeout, requests=requests, require_all=False)
+    state = transact_requests_with_endpoint_retry(timeout=timeout, requests=requests, require_all=False)
     return dict(state.data_sets)
 
 
@@ -831,8 +831,7 @@ class PatchWrite:
 def write_data_sets(writes: list[PatchWrite], delay: float = 0.05) -> None:
     started = time.monotonic()
     diagnostic_event("live.write_data_sets.start", writeCount=len(writes), delay=delay, writes=diagnostic_write_summary(writes))
-    midi = CoreMIDI()
-    destination = find_endpoint(midi, midi.cm.MIDIGetNumberOfDestinations, midi.cm.MIDIGetDestination)
+    midi, destination = find_destination_with_endpoint_retry()
     if destination is None:
         diagnostic_event("live.write_data_sets.finish", status="error", durationSeconds=round(time.monotonic() - started, 6), error="No GT-1000 MIDI destination found")
         raise LiveMIDIError("No GT-1000 MIDI destination found")
@@ -865,8 +864,7 @@ def write_data_sets(writes: list[PatchWrite], delay: float = 0.05) -> None:
 def send_channel_voice(message: list[int], delay: float = 0.1) -> None:
     if len(message) not in {2, 3}:
         raise ValueError("channel voice messages must be two or three bytes")
-    midi = CoreMIDI()
-    destination = find_endpoint(midi, midi.cm.MIDIGetNumberOfDestinations, midi.cm.MIDIGetDestination)
+    midi, destination = find_destination_with_endpoint_retry()
     if destination is None:
         raise LiveMIDIError("No GT-1000 MIDI destination found")
 
@@ -888,6 +886,71 @@ def send_channel_voice(message: list[int], delay: float = 0.1) -> None:
     finally:
         if client.value:
             midi.cm.MIDIClientDispose(client)
+
+
+def find_destination_with_endpoint_retry() -> tuple[CoreMIDI, int | None]:
+    attempts = endpoint_retry_attempts()
+    for attempt in range(attempts):
+        midi = CoreMIDI()
+        destination = find_endpoint(midi, midi.cm.MIDIGetNumberOfDestinations, midi.cm.MIDIGetDestination)
+        if destination is not None:
+            return midi, destination
+        if attempt < attempts - 1:
+            delay = endpoint_retry_delay(attempt)
+            diagnostic_event(
+                "live.endpoint.destination_retry",
+                attempt=attempt + 1,
+                attempts=attempts,
+                delaySeconds=delay,
+            )
+            time.sleep(delay)
+    return midi, None
+
+
+def transact_requests_with_endpoint_retry(
+    timeout: float,
+    requests: list[PatchReadRequest],
+    *,
+    require_all: bool = True,
+) -> "PatchReadState":
+    attempts = endpoint_retry_attempts()
+    for attempt in range(attempts):
+        try:
+            return transact_requests(timeout=timeout, requests=requests, require_all=require_all)
+        except LiveMIDIError as error:
+            if not is_endpoint_unavailable_error(error) or attempt == attempts - 1:
+                raise
+            delay = endpoint_retry_delay(attempt)
+            diagnostic_event(
+                "live.transact.endpoint_retry",
+                attempt=attempt + 1,
+                attempts=attempts,
+                delaySeconds=delay,
+                error=str(error),
+            )
+            time.sleep(delay)
+    raise LiveMIDIError("GT-1000 endpoint retry exhausted")
+
+
+def is_endpoint_unavailable_error(error: Exception) -> bool:
+    message = str(error)
+    return "No GT-1000 MIDI destination found" in message or "No GT-1000 MIDI source found" in message
+
+
+def endpoint_retry_attempts() -> int:
+    try:
+        value = int(os.environ.get("GT1000_ENDPOINT_RETRY_ATTEMPTS", "4"))
+    except ValueError:
+        return 4
+    return max(1, value)
+
+
+def endpoint_retry_delay(attempt: int) -> float:
+    try:
+        base = float(os.environ.get("GT1000_ENDPOINT_RETRY_DELAY", "0.75"))
+    except ValueError:
+        base = 0.75
+    return min(3.0, max(0.0, base * (attempt + 1)))
 
 
 def transact_requests(timeout: float, requests: list[PatchReadRequest], *, require_all: bool = True) -> "PatchReadState":
@@ -939,6 +1002,8 @@ def transact_requests(timeout: float, requests: list[PatchReadRequest], *, requi
         wait_for_quiet_input(state)
 
         request_delay = float(os.environ.get("GT1000_REQUEST_DELAY", str(DEFAULT_REQUEST_DELAY)))
+        idle_timeout = read_idle_timeout(timeout)
+        request_total_timeout = read_request_total_timeout(timeout)
         request_retries = int(os.environ.get("GT1000_REQUEST_RETRIES", "1"))
         consecutive_misses = 0
         lenient_miss_limit = lenient_consecutive_miss_limit()
@@ -953,8 +1018,30 @@ def transact_requests(timeout: float, requests: list[PatchReadRequest], *, requi
                 diagnostic_event("live.request.send", label=request.label, address=hex_bytes(request.address), attempt=_attempt + 1)
                 send_message(midi, output_port.value, destination, request.message)
                 time.sleep(request_delay)
-                request_deadline = time.monotonic() + timeout
+                request_deadline = time.monotonic() + request_total_timeout
+                last_progress_marker = state.progress_marker()
+                last_progress_at = time.monotonic()
                 while time.monotonic() < request_deadline and not state.has_response(request.address):
+                    marker = state.progress_marker()
+                    if marker != last_progress_marker:
+                        last_progress_marker = marker
+                        last_progress_at = time.monotonic()
+                        diagnostic_event(
+                            "live.request.progress",
+                            label=request.label,
+                            address=hex_bytes(request.address),
+                            **state.progress_summary(),
+                        )
+                    elif time.monotonic() - last_progress_at >= idle_timeout:
+                        diagnostic_event(
+                            "live.request.idle_timeout",
+                            label=request.label,
+                            address=hex_bytes(request.address),
+                            idleSeconds=round(time.monotonic() - last_progress_at, 6),
+                            idleTimeout=idle_timeout,
+                            **state.progress_summary(),
+                        )
+                        break
                     time.sleep(0.01)
             if not state.has_response(request.address):
                 diagnostic_event(
@@ -971,7 +1058,11 @@ def transact_requests(timeout: float, requests: list[PatchReadRequest], *, requi
                     continue
                 missing = address_key(request.address)
                 diagnostic_event("live.transact.finish", status="error", durationSeconds=round(time.monotonic() - started, 6), missing=[missing])
-                raise LiveMIDIError(f"Timed out waiting for GT-1000 patch replies. Missing: ['{missing}']\nPartial snapshot:\n{snapshot_text_summary(state.snapshot)}")
+                raise LiveMIDIError(
+                    "Timed out waiting for GT-1000 patch replies after MIDI went idle. "
+                    f"Missing: ['{missing}']; progress: {state.progress_text()}\n"
+                    f"Partial snapshot:\n{snapshot_text_summary(state.snapshot)}"
+                )
             consecutive_misses = 0
             diagnostic_event(
                 "live.request.finish",
@@ -1005,6 +1096,9 @@ class PatchReadState:
         self.received: set[str] = set()
         self.data_sets: dict[str, list[int]] = {}
         self.last_packet_at: float | None = time.monotonic()
+        self.packet_count = 0
+        self.message_count = 0
+        self.data_set_count = 0
 
     def expect(self, addresses: list[list[int]]) -> None:
         with self.lock:
@@ -1024,6 +1118,7 @@ class PatchReadState:
         with self.lock:
             if packets:
                 self.last_packet_at = time.monotonic()
+                self.packet_count += len(packets)
             if os.environ.get("GT1000_DEBUG_MIDI"):
                 for packet in packets:
                     print(
@@ -1032,7 +1127,9 @@ class PatchReadState:
                         " ".join(f"{byte:02X}" for byte in packet[:16]),
                         file=sys.stderr,
                     )
-            for message in self.assembler.assemble(packets):
+            messages = self.assembler.assemble(packets)
+            self.message_count += len(messages)
+            for message in messages:
                 if os.environ.get("GT1000_DEBUG_MIDI"):
                     print(
                         "message",
@@ -1047,6 +1144,7 @@ class PatchReadState:
                 key = address_key(address)
                 self.received.add(key)
                 self.data_sets[key] = data
+                self.data_set_count += 1
                 apply_data_set(self.snapshot, address, data)
 
     def quiet_for(self) -> float:
@@ -1055,6 +1153,32 @@ class PatchReadState:
                 return float("inf")
             return time.monotonic() - self.last_packet_at
 
+    def progress_marker(self) -> tuple[int, int, int, int]:
+        with self.lock:
+            # Raw MIDI packets can include unrelated traffic. Treat only complete
+            # SysEx messages/data sets as read progress so idle timeout remains
+            # meaningful when the requested GT-1000 reply is missing.
+            return (self.message_count, self.data_set_count, len(self.received), len(self.expected))
+
+    def progress_summary(self) -> dict[str, Any]:
+        with self.lock:
+            return {
+                "packets": self.packet_count,
+                "messages": self.message_count,
+                "dataSets": self.data_set_count,
+                "received": len(self.received),
+                "expected": len(self.expected),
+                "quietForSeconds": None if self.last_packet_at is None else round(time.monotonic() - self.last_packet_at, 6),
+            }
+
+    def progress_text(self) -> str:
+        summary = self.progress_summary()
+        return (
+            f"{summary['received']}/{summary['expected']} records, "
+            f"{summary['messages']} SysEx messages, {summary['packets']} MIDI packets, "
+            f"quiet for {summary['quietForSeconds']}s"
+        )
+
 
 def wait_for_quiet_input(state: PatchReadState, quiet_seconds: float = 0.5, max_seconds: float = 15.0) -> None:
     deadline = time.monotonic() + max_seconds
@@ -1062,6 +1186,20 @@ def wait_for_quiet_input(state: PatchReadState, quiet_seconds: float = 0.5, max_
         if state.quiet_for() >= quiet_seconds:
             return
         time.sleep(0.05)
+
+
+def read_idle_timeout(timeout: float) -> float:
+    try:
+        return max(0.1, float(os.environ.get("GT1000_READ_IDLE_TIMEOUT", "")))
+    except ValueError:
+        return max(2.0, min(3.0, timeout / 3.0))
+
+
+def read_request_total_timeout(timeout: float) -> float:
+    try:
+        return max(timeout, float(os.environ.get("GT1000_READ_REQUEST_TOTAL_TIMEOUT", "")))
+    except ValueError:
+        return timeout
 
 
 def lenient_consecutive_miss_limit() -> int:
@@ -1122,14 +1260,22 @@ def packets_from_packet_list(packet_list: ctypes.POINTER(MIDIPacketList)) -> lis
 
 
 def find_endpoint(midi: CoreMIDI, count_fn: Callable[[], int], endpoint_fn: Callable[[int], int]) -> int | None:
-    for attempt in range(20):
+    for attempt in range(endpoint_find_attempts()):
         for index in range(count_fn()):
             endpoint = endpoint_fn(index)
             if is_default_gt1000_endpoint(midi.endpoint_name(endpoint)):
                 return endpoint
-        if attempt < 19:
+        if attempt < endpoint_find_attempts() - 1:
             time.sleep(0.25)
     return None
+
+
+def endpoint_find_attempts() -> int:
+    try:
+        value = int(os.environ.get("GT1000_ENDPOINT_FIND_ATTEMPTS", "12"))
+    except ValueError:
+        return 12
+    return max(1, value)
 
 
 def check_status(operation: str, status: int) -> None:

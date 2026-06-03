@@ -5,6 +5,33 @@ description: "GT-1000 v4+ musician-facing interface for conversing with a connec
 
 # GT-1000 Musician Interface
 
+## One CLI at a time (critical)
+
+**Never run two `$GT1000_AGENT` processes at the same time** — not for reads, not for writes, not “just to verify while applying.” The GT-1000 has one SysEx reply stream; overlapping CLI processes cause hangs, timeouts, and wrong patch data.
+
+**Agents:**
+
+- Start **one** CLI command, **wait until it exits**, then start the next.
+- **Forbidden:** parallel agent tool calls, shell `&&` / `;` between CLI invocations, background CLI while another runs, mirroring to a user slot while a live command is still in flight.
+
+**Tooling:** `gt1000-agent` holds an exclusive process lock (`~/.gt1000-agent/cli.lock`). A second invocation fails fast with exit code `75` instead of wedging MIDI. Override only for deliberate test harness use: `GT1000_ALLOW_CONCURRENT=1`.
+
+Details and edit rhythm: **Tool discipline → Sequential live MIDI** below.
+
+## Canonical CLI names
+
+Use CLI **IDs** for reasoning and edits; use display names only when talking to the musician.
+
+- `blockId` identifies a sound/routing block in schemas and block commands (`dist1`, `footVolume`, `sendReturn1`, `divider1`).
+- `parameterId` identifies the edited field on that block (`sw`, `level`, `channelSelect`).
+- `functionId` identifies a control mapping (`dist1`, `foot-volume`, `divider1-channel-select`).
+- `functionDisplayName` is the human label for that mapping.
+- `functionKind` tells what kind of action it is. Treat `effect-toggle` and `routing` as different musical operations even if both can live on CTL1.
+- `functionTargetRef` is the canonical `<blockId>.<parameterId>` reference when a control targets a block parameter.
+- `canEnableBlock` tells whether the control can bring an off block into the playable sound.
+
+Do not infer intent from display strings like “DISTORTION 1” or “DIVIDER 1 CHANNEL SELECT” alone. For clean/dirty requests, inspect `functionId` and `functionKind`: `dist1` / `effect-toggle` toggles a drive block; `divider1-channel-select` / `routing` switches paths.
+
 ## Scope
 
 Use the bundled GT-1000 references and CLI internally to help a musician inspect, understand, organize, and safely edit a connected BOSS/Roland GT-1000 or GT-1000CORE.
@@ -20,6 +47,92 @@ Default to musician-facing language. Talk about what the patch sounds like, wher
 Do not mention CLI commands, JSON fields, raw MIDI/SysEx addresses, encoded values, parser behavior, or implementation files in normal answers. Use those details internally, and surface them only when the user directly asks how the tooling works, asks for debugging details, or needs enough technical context to approve a potentially persistent or risky change.
 
 For edits, describe the musical intent and safety boundary first: what will change, whether it affects the temporary patch or a user slot/global setting, and whether verification/read-back succeeded. Keep protocol details out of the answer unless requested.
+
+Give **one closing summary per milestone** (inspect done, test done, edit applied). Do not repeat the same summary on the next turn unless the user asked for clarification or something changed.
+
+## Agent workflow
+
+Read this section before deep reference browsing. It governs how to use the rest of the skill.
+
+### Default path vs escalate
+
+1. User profile (onboarding if missing).
+2. **One** authoritative CLI read for the question class (see **Operational Principles** and `references/skill-routing-index.md`).
+3. Answer from that output when it is sufficient.
+
+**Escalate** (next command or one targeted reference page) only when:
+
+- The first read lacks a field you need to answer or act.
+- The user explicitly asked for deeper detail (`chain`, `summary`, protocol, manual wording).
+- A write or investigation needs validation the CLI cannot supply from the first read.
+
+Do not stack overlapping reads (`musician-summary` then `summary` then `chain` then many `patch block` calls) “to be thorough” before you have a specific gap.
+
+### Tool discipline
+
+#### Sequential live MIDI (non-negotiable)
+
+Follow **One CLI at a time (critical)** above. The GT-1000 uses **one CoreMIDI port and one SysEx reply stream**. Overlapping live I/O is **unsafe** — not a performance preference. It causes hung commands, timeouts, replies matched to the wrong request, and patch state that looks correct in one read and wrong in the next. The CLI process lock blocks concurrent invocations; agents must still avoid queuing a second command before the first finishes.
+
+**Required:**
+
+- Run exactly **one** `$GT1000_AGENT ... --live` command at a time.
+- **Wait for it to finish** (exit or clear failure) before starting the next live command — including the next turn in the same conversation.
+- Treat **verify read-backs** as live I/O too: a write with `--verify` must complete before another live command.
+
+**Forbidden:**
+
+- Parallel live tool calls (e.g. `patch controls` and `patch chain` in the same batch).
+- Shell chaining between live commands (`&&`, `;`, or one line with multiple `$GT1000_AGENT ... --live` calls).
+- A second CLI process talking to the same unit while one is in flight (separate terminals, background jobs, or “mirror to user slot while verifying”).
+- “Batching for speed” when syncing temp patch and user slot, or when inspecting then editing in one shot.
+
+**This applies even when steps feel independent** — e.g. read then write, temp patch then `--user-slot`, inspect two blocks, or apply then select. Do them **one after another**.
+
+Correct edit rhythm: **one live read** → decide → **one live write** (with `--verify` if writing) → confirm → next step.
+
+- **No duplicate commands**: do not re-run the same CLI or shell command unless the user changed the target, you fixed a documented blocker, or the prior run failed. After a failure, fix the blocker once, then retry **once**.
+- **No reference mining by default**: do not `grep`, `cat`, or open files under `references/` until a structured CLI command has failed to answer the question or you need one specific fact for a safe write. Prefer CLI output (`branch-context`, `patch block`, `doctor`, etc.) over manual search.
+- If **USB audio lab** fails with a missing `sounddevice` / `numpy` error and first-time setup was skipped in this environment, open `references/skill-audio-setup.md` once, then retry the failed command once.
+
+### Hypotheses (falsifiable inference)
+
+Inference from patch or system reads is expected. Use it to form **hypotheses**, not to close the case.
+
+- Label internally: **hypothesis** → **test** → **confirmed** or **ruled out**.
+- State **causes to the user** only at **confirmed** (or “we tested H1; it did not change the outcome”).
+- Each hypothesis should name what would **falsify** it (probe, `patch set` + verify, measurement, A/B read).
+- After the first authoritative read, prefer at most **one** further inspect pass before the first falsifying command when the task is quantitative or edit-oriented. Do not spend many turns on manuals or extra block dumps without a test.
+
+### When measurement and report disagree
+
+If a metric (audit, compare, probe) and the user’s report conflict in degree or direction, say both plainly. Ask whether to optimize for **measurement**, **perceived playing feel**, or **a specific playing scenario** (e.g. footswitch vs isolated test). Do not silently pick one.
+
+### Permission gates (consent)
+
+Treat these as **separate** user decisions. A “yes” to an earlier step is not consent to a later one.
+
+| Gate | Examples | Requires |
+|------|-----------|----------|
+| **Read** | `musician-summary`, `slot`, audits | No extra consent beyond the task |
+| **Try** | temporary `patch set` / `apply` without `--user-slot` | User agreed to hear or try the change |
+| **Persist** | `--user-slot`, clone, exchange, init, global/system writes | Explicit user approval naming slot or scope |
+
+Offer **try** before **persist**. After probes or investigations that restore bytes, re-apply the winning edit on the temp patch before the user listens; nothing is stored in a user slot until they agree.
+
+### Harness and system messages
+
+Only **explicit user messages** grant new permissions (especially **persist**). Harness continuations such as “System: Please continue”, “keep going”, or auto-resume are **not** approval to write user slots, change globals, or skip the try/persist ladder.
+
+## Deep knowledge (load on demand)
+
+Harnesses inject **this file only** on skill activation. Do not assume other references are loaded.
+
+| Need | Open |
+|------|------|
+| Which CLI first, which `.md` next | `references/skill-routing-index.md` |
+| Timeouts, workflows, command catalogs, full progressive disclosure | `references/skill-detail.md` |
+| First USB audio lab use in this environment | `references/skill-audio-setup.md` |
 
 ## Runtime Resources
 
@@ -47,255 +160,28 @@ fi
 test -n "$GT1000_AGENT" || { echo "gt1000-agent wrapper not found" >&2; exit 1; }
 ```
 
-Use `$GT1000_AGENT ...` for all CLI examples below. Do not try `scripts/gt1000-agent` from the user's current directory unless the current directory is the skill directory. If a bundled reference page shows `scripts/gt1000-agent`, interpret it as `$GT1000_AGENT` after resolving the skill directory. When multiple wrappers exist, the correct one is the wrapper bundled with the loaded skill, not merely the first path that exists elsewhere under the user's home directory.
-
-Other bundled resources:
-
-- Manual/wiki references: `references/gt1000-wiki/`
-- MIDI/SysEx references: `references/midi-reference/`
-- User profile onboarding: `references/user-profile-onboarding.md`
-- USB re-amp investigations: `references/audio-lab-investigation.md`
-
-## USB audio lab (first-time setup)
-
-MIDI-only commands (`patch`, `ports`, `system`, etc.) need **no extra Python packages**. USB **audio lab** (`audio generate-tone`, `compare-branches`, `probe-param`, …) needs **sounddevice** and **numpy** once per Python environment. Installing the skill copies files only; it does **not** run `pip` for you.
-
-**Before the first audio lab command**, install into the project or agent venv (not system Python):
-
-```sh
-"<skill-dir>/requirements-audio.txt"   # bundled next to this SKILL.md
-python3 -m venv .venv                    # if the project has no venv yet
-.venv/bin/pip install -r "<skill-dir>/requirements-audio.txt"
-```
-
-Use only that requirements file (`sounddevice`, `numpy`). **Do not** install `soundfile` or other extras unless another tool in the project needs them—the audio lab uses the stdlib `wave` module for WAV files.
-
-Confirm audio works:
-
-```sh
-$GT1000_AGENT --pretty audio ports
-$GT1000_AGENT --pretty audio probe --duration 3
-```
-
-Use the same interpreter for later audio commands (project `.venv/bin/python` behind the wrapper, or set `GT1000_AUDIO_PYTHON` when developing the gt1000 repo).
-
-### Tell the user what macOS will ask for
-
-Explain this **once**, in plain language, before the first capture or re-amp—not on every command.
-
-| What | Why |
-|------|-----|
-| **Microphone access** | System Settings → Privacy & Security → **Microphone** → allow the app running the agent (**Cursor**, **Terminal**, **iTerm**, **Gemini CLI**, etc.). USB capture from the GT-1000 is treated like microphone input. If capture is silent, check this before blaming the patch. |
-| **Full-access / sandbox off** | Same as live MIDI: the agent shell must reach **CoreMIDI** and **PortAudio**. Read-only or sandboxed agent modes can block USB audio and look like device failures. |
-| **Quit other apps on the GT-1000 USB driver** | **BOSS Tone Studio**, **GarageBand**, or a DAW may hold exclusive USB access. Only one app should use the interface during probe/record. |
-| **BOSS GT-1000 USB driver** | Required once per Mac ([boss.info support](https://www.boss.info/support/)). Without it, `audio ports` may not list sensible GT-1000 inputs/outputs. |
-| **DIR MON on the unit (not a macOS dialog)** | For computer re-amp, **USB MAIN → DIR MON** should be **OFF** (Parameter Guide: defaults ON after power-on). `audio prepare-reamp` sets this over MIDI for the session; mention it if wet USB stays silent. See `references/gt1000-wiki/usb-audio.md`. |
-
-**Permissions note:** `pip install -r …/requirements-audio.txt` inside a **project `.venv`** is the preferred approach—isolated from Homebrew/system Python and does not need `sudo`. Avoid `pip install --break-system-packages` on the system interpreter.
+Use `$GT1000_AGENT ...` for all CLI examples. Do not try `scripts/gt1000-agent` from the user's current directory unless the current directory is the skill directory. If a bundled reference page shows `scripts/gt1000-agent`, interpret it as `$GT1000_AGENT` after resolving the skill directory.
 
 ## Operational Principles
 
-- Always check for the user profile first, before live reads, summaries, edit planning, or reference lookups. If no profile exists, run the onboarding flow in `references/user-profile-onboarding.md` before continuing with the GT-1000 task.
+- Always check for the user profile first (paths below). If no profile exists, run `references/user-profile-onboarding.md` before continuing.
 - Always use the bundled CLI and markdown internally to interact with the device.
-- Live GT-1000 MIDI reads/writes require a harness process that can access macOS CoreMIDI. In Codex CLI, normal workspace/read-only sandbox mode can block CoreMIDI and cause misleading live timeouts; use yolo/`--dangerously-bypass-approvals-and-sandbox` or `-s danger-full-access` for live device interactions. The CLI fast-fails when it detects this sandbox block. The same access level is required for **USB audio lab** (see **USB audio lab (first-time setup)**).
-- For any musician-facing request to read or describe the current patch, run exactly `$GT1000_AGENT --pretty patch musician-summary --live --timeout 15` as the first live command. Answer from that result when it covers the request. Do not start with `overview`, `performance`, `chain`, or multiple commands; use those only when the user explicitly asks for deeper structured detail or the musician summary lacks a fact needed to answer.
-- For persistent user-slot descriptions, use `$GT1000_AGENT --pretty patch slot <slot> --live --view musician-summary --timeout 30` first. Answer from that result for normal "details", "describe this patch", or "what is this sound?" requests. Do not run a follow-up `--view summary` just to enrich a concise answer; use it only when the user explicitly asks for exhaustive block/type detail or when the first result is missing a required fact.
-- Run live reads sequentially. Do not chain multiple live reads with `&&` or start a second read while one is active. Separate processes can interleave GT-1000 replies on the same MIDI source.
-- If a live read is interrupted or `$GT1000_AGENT --pretty ports --live --timeout 8` times out, stop additional live reads and report the connection recovery path: verify other MIDI apps such as BOSS Tone Studio are closed, reconnect or power-cycle the GT-1000, and restart macOS only if CoreMIDI endpoint enumeration still hangs. Do not assume Tone Studio is open; if the user says it was closed, treat the current agent session as stale or the Python/CoreMIDI path as transiently wedged.
-
-## Live Timeout Guidance
-
-Choose timeouts that let the device finish normal SysEx reads before assuming the session is wedged:
-
-- Use `--timeout 8` for `ports`, `doctor` without write checks, and small system views.
-- Use `--timeout 15` for current-patch musician summaries, performance views, chains, controls, block details, and other focused single-patch reads.
-- Use `--timeout 20` for full current-patch summaries, setlist/level audits, and verified temporary-patch writes.
-- Use `--timeout 30` for persistent user-slot or preset musician summaries, bank reads, clone, import/export, exchange, insert, destructive recovery, or any operation that reads back persistent slots.
-
-For commands spanning multiple slots, treat the timeout as the per-slot or per-read allowance and expect total wall-clock time to scale with the number of slots. Do not start another live command while one is still running. If a command returns its own timeout error, do not immediately retry with a lower timeout; run `$GT1000_AGENT --pretty ports --live --timeout 8` once, then follow the connection recovery path if that fails.
+- Live GT-1000 MIDI reads/writes require a harness process that can access macOS CoreMIDI. In Codex CLI, normal workspace/read-only sandbox mode can block CoreMIDI and cause misleading live timeouts; use yolo/`--dangerously-bypass-approvals-and-sandbox` or `-s danger-full-access` for live device interactions. The CLI fast-fails when it detects this sandbox block. USB audio lab needs the same access plus audio deps (`references/skill-audio-setup.md`).
+- **Current patch description:** `$GT1000_AGENT --pretty patch musician-summary --live --timeout 15` first. Do not start with `overview`, `performance`, `chain`, or multiple commands unless the summary lacks a required fact or the user asked for depth.
+- **User-slot description:** `$GT1000_AGENT --pretty patch slot <slot> --live --view musician-summary --timeout 30` first. Do not add `--view summary` unless explicitly needed.
+- **Sequential live MIDI is mandatory** (see **Sequential live MIDI (non-negotiable)** under Tool discipline). Never parallelize or chain live commands. If `ports --live --timeout 8` times out, stop further live I/O; verify Tone Studio and other MIDI apps are closed, reconnect or power-cycle the GT-1000, restart macOS only if endpoint enumeration still hangs.
 
 ## User Profile Memory
 
-At the start of every GT-1000 skill interaction, before any device read, answer, edit plan, or reference lookup, check for a user-local profile. Do not tie this lookup to a specific LLM harness. Resolve the profile path in this order:
+Resolve profile path in order: user-provided path → `$GT1000_PROFILE_PATH` → `$GT1000_PROFILE_DIR/gt1000-profile.md` → harness config dir → `~/.config/gt1000/gt1000-profile.md` → legacy `~/.codex/memories/gt1000-profile.md` (copy forward if found).
 
-1. A profile path explicitly provided by the user.
-2. `$GT1000_PROFILE_PATH`.
-3. `$GT1000_PROFILE_DIR/gt1000-profile.md`.
-4. A harness-provided persistent user memory/config directory, if the active agent environment exposes one, using `gt1000-profile.md` inside it.
-5. `$XDG_CONFIG_HOME/gt1000/gt1000-profile.md`, or `~/.config/gt1000/gt1000-profile.md` when `XDG_CONFIG_HOME` is unset.
-6. Legacy fallback only: `$CODEX_HOME/memories/gt1000-profile.md` or `~/.codex/memories/gt1000-profile.md`. If a legacy profile is found, load it and copy it to the first usable harness-neutral path before continuing.
+If absent, run `references/user-profile-onboarding.md`. **Gemini CLI:** do not use workspace-limited file tools for `~/.config/gt1000/`; use shell read when permitted, or ask the user to set `$GT1000_PROFILE_PATH` in the workspace.
 
-If present, load it before doing anything else. If absent, do not proceed with generic guidance; use `references/user-profile-onboarding.md` to run a compact onboarding interview and create the profile first. If the user provides enough profile context unprompted, write the profile from that context and ask only for missing details that materially affect the immediate task.
+Profile is preference context, not device truth. Live CLI reads remain authoritative.
 
-Some harnesses restrict file-reading tools to the workspace even when shell commands can access user config paths. Gemini CLI is one such environment: do not use its workspace-limited file reader for `~/.config/gt1000/gt1000-profile.md`; use a shell check/read for the resolved profile path when permitted. If a profile read is blocked by the harness file tool, do not keep retrying the same inaccessible read. Use shell access, or ask the user to provide/copy the profile context into an accessible profile path such as `$GT1000_PROFILE_PATH` before continuing. Treat a tool-permission denial as "profile inaccessible", not as "no profile exists".
+## Safety (summary)
 
-Use the profile as preference context, not device truth. Live CLI reads and current patch data remain authoritative.
-
-## Start Here
-
-Load only the reference needed for the task:
-
-- CLI usage: `references/midi-reference/cli-usage.md`
-- User-facing manual/wiki overview: `references/gt1000-wiki/README.md`
-- Owner Manual extraction: `references/gt1000-wiki/owner-manual.md`
-- Parameter Guide extraction: `references/gt1000-wiki/parameter-guide.md`
-- Sound List extraction: `references/gt1000-wiki/sound-list.md`
-- Live agent workflows: `references/gt1000-wiki/agent-workflows.md`
-- Low-level MIDI/SysEx index: `references/midi-reference/README.md`
-- Patch physical controls: `references/midi-reference/patch-controls.md`
-- Assign encoding: `references/midi-reference/assigns.md`
-- PatchEfct chain/routing: `references/midi-reference/patch-effect.md`
-
-
-## Progressive Disclosure Routing
-
-Keep routine patch work on compact device summaries first. Do not load low-level MIDI tables, long manual extracts, or obscure parameter references unless the user request needs them, the device output is ambiguous, or a safe edit requires internal validation.
-
-Use this routing:
-
-- Patch description, "what is this sound?", "details of patch <slot>", or quick signal-chain review: load the user profile first, run onboarding if it is missing, then run `patch musician-summary` for a concise answer. Use `patch summary` only when the user asks for exhaustive block/type detail or the musician summary lacks a fact needed to answer. Do not open MIDI reference pages unless a decoded field is unclear.
-- When the user asks what is "active", "in use", "currently shaping the tone", or "currently affecting the sound", account for **reachability** as a separate concept from on/off.
-  - **Meaning**: a block can be present in the patch (and even have parameters and an on/off state) but still be **unreachable** in the current routing path (for example, on an inactive fixed divider branch). Unreachable blocks do not affect the audio until routing or control mappings make them reachable.
-  - **How to interpret**: decide based on the question whether to report (a) what is affecting the sound *right now* vs (b) what is part of the patch's playable potential if routing/controls change. Use `patch chain` or `patch summary` and consult `chain.elements[].isUnreachable`, `unreachableReason`, and `unreachablePath` to explain the distinction when relevant.
-- Patch comparison questions: use `patch diff <source> <target> --live` for user slots or `patch diff <before.json> <after.json>` for saved full patch dumps before opening lower-level views. Report the result as musical differences in sound, level, controls, routing, and library placement.
-- Setlist readiness questions: use `patch setlist-audit <bank-or-slots> --live` to check patch-level jumps, tuner access, BPM mismatches, expression-pedal changes, and SYSTEM-preference controls.
-- Patch loudness matching questions: use `patch level-audit <bank-or-slots> --live` before writing, then `patch normalize-levels <bank-or-slots> --target <level> --live --verify` when the user wants user-slot levels changed.
-- Divider branch balance or “match the clean/drive level” on the same test tone: run a USB re-amp investigation internally (see `references/audio-lab-investigation.md`; verification checklist in `references/audio-lab-investigation-verification.md`). When finished, **present findings** in plain language—starting gap, what control actually worked, final loudness vs their goal. **Do not save** anything to a user slot automatically. If the goal was met (or they accept a partial fix), **offer** to apply the same block changes to the current patch for them to try by ear, or to save to a named user slot only if they say so. Remind them that measurement restores the patch after each probe, so nothing is stored until they agree.
-- Common musician edit requests such as solo boost, tap tempo, delay toggle, tuner-on-control, or expression-volume setup: use `patch intent <intent> --live --verify` before dropping to lower-level control editors.
-- Switch/control questions: run `patch performance` first for stage-use questions and `patch controls` for raw control/Assign details. Open `references/midi-reference/patch-controls.md` only if a raw/unknown function appears or the user asks how a physical control is encoded.
-- Assign behavior, MIDI CC, tuner control, or assigned-off-block reachability: run `patch controls` or `patch summary` first. Open `references/midi-reference/assigns.md` only for source IDs, target min/max encoding, target table caveats, or write planning.
-- Installing tuner control: use `patch tuner-assign --live --verify` to install the supported tuner control mapping. Ask before writing it persistently with `--user-slot`.
-- Sending a MIDI CC for a known Assign source: use `midi cc <controller> <value> --channel N --live` only after confirming the mapped source and RX channel. Do not send raw MIDI bytes.
-- Sending a Program Change directly: prefer `patch select <slot>` for user-slot selection; use `midi pc <program> --channel N --live` only when the user explicitly asks for Program Change numbers or after checking `system pcmap`.
-- Sending Bank Select: use `midi bank-select <msb> [lsb] --channel N --live` only when the user explicitly needs bank-select/channel-voice behavior; follow it with `midi pc` if selecting via an external-style bank/program sequence. For selecting the GT-1000 itself, prefer `patch select` unless the user is deliberately testing Bank Select.
-- Signal-chain routing, divider/mixer behavior, chain element values, or reserved elements: run `patch chain` or `patch summary` first. Open `references/midi-reference/patch-effect.md` only when raw chain/routing details matter.
-- STOMPBOX questions: explain the user-facing caution from `references/gt1000-wiki/owner-manual.md`; use `patch stompbox --live` when the user asks whether a patch is using shared STOMPBOX slots.
-- System/global MIDI, IN/OUT, or control preference questions: use the relevant `system` CLI view first. Open `references/midi-reference/README.md` or address-map notes only when addresses, sizes, or SysEx behavior need explanation.
-- Connectivity or intermittent-timeout diagnosis: use `doctor --live` first. Report user-actionable device connection findings first; include protocol/tooling details only if the user asks or they are needed for recovery.
-- System metronome BPM questions: use `system common` first. Open address-map notes only if the user asks about the underlying System Common address or BPM nibble encoding.
-- Manual-mode switch questions: use `system manual` first. Open address-map notes only if the user asks how manual-mode NUM functions are encoded.
-- Program Change mapping questions: use `system pcmap --bank N` first for a focused bank read, or omit `--bank` only when comparing the full map. Open address-map notes only if the user asks about storage layout or patch-value encoding.
-- Input-setting questions: use `system inputs --number N` first for one named input setting, or omit `--number` only when comparing all ten.
-- Parameter meaning or musical interpretation: use CLI block detail first, then load only the relevant manual/wiki page from `references/gt1000-wiki/`.
-- Turning decoded blocks on or off: use `patch enable <block>` or `patch disable <block> --live --verify --timeout 20`, which routes through the validated block `sw` parameter. Open `references/midi-reference/cli-usage.md` only if the command surface or persistent-slot guardrails need explanation.
-- Changing a decoded effect type: use `patch type <block> <type> --live --verify --timeout 20`, which routes through the validated block `type` parameter. Use `patch block <block>` first if you need the current type or decoded options.
-- Moving decoded signal-chain blocks: use `patch move <block> --before <block>` or `patch move <block> --after <block> --live --verify --timeout 20`. Run `patch chain` first if the requested relative order is ambiguous.
-- Patch cleanup (tidy unreachable blocks): use `patch cleanup --live --verify --timeout 20` to move blocks/branch segments that are currently unreachable (fixed inactive divider subchain, or off-and-unassigned blocks) to the end of the chain without changing block settings. Use `--user-slot <slot> --timeout 30` to make it persistent.
-- Mapping a decoded target to MIDI CC: use `patch assign-cc <number> <block> <parameter> --cc <n> --mode <toggle|moment> --live --verify --timeout 20`. Open `references/midi-reference/assigns.md` only when source IDs, target min/max offset encoding, or target-table quirks matter.
-- Patch BPM edits: use `patch set-bpm <bpm> --live --verify --timeout 20` for tempo changes. Open `references/midi-reference/patch-effect.md` only if the user asks about the four-nibble `BPM * 10` encoding.
-- Writes: build a CLI `patch plan` or typed `patch set` intent first. Open low-level references only to validate address/range/model quirks before changing the validator.
-
-## Live Patch Inspection
-
-Use these commands internally for live patch and library inspection. The musician-facing answer should describe the patch, controls, routing, levels, or user-slot/library behavior rather than the command output.
-
-```sh
-$GT1000_AGENT --pretty ports --live --timeout 8
-$GT1000_AGENT --pretty doctor --live --timeout 8
-$GT1000_AGENT --pretty patch summary --live --timeout 20
-$GT1000_AGENT --pretty patch overview --live --timeout 8
-$GT1000_AGENT --pretty patch chain --live --timeout 15
-$GT1000_AGENT --pretty patch controls --live --timeout 15
-$GT1000_AGENT --pretty patch performance --live --timeout 15
-$GT1000_AGENT --pretty patch musician-summary --live --timeout 15
-$GT1000_AGENT --pretty patch slot U01-1 --live --view musician-summary --timeout 30
-$GT1000_AGENT --pretty patch bank U01 --live --view musician-summary --timeout 30
-$GT1000_AGENT --pretty patch diff U10-1 U10-2 --live --timeout 30
-$GT1000_AGENT --pretty patch setlist-audit U10 --live --timeout 20
-$GT1000_AGENT --pretty patch level-audit U10-1 U10-2 --live --timeout 20
-$GT1000_AGENT --pretty patch normalize-levels U10-1 U10-2 --target 90 --live --verify --timeout 20
-$GT1000_AGENT --pretty patch intent solo-boost --control ctl4 --amount 10 --live --verify --timeout 20
-$GT1000_AGENT --pretty patch block delay1 --user-slot U01-1 --timeout 20
-$GT1000_AGENT --pretty patch clone U10-1 U10-2 --live --verify --timeout 30
-$GT1000_AGENT --pretty midi cc 80 127 --channel 1 --live
-$GT1000_AGENT --pretty midi bank-select 0 --channel 1 --live
-$GT1000_AGENT --pretty midi pc 1 --channel 1 --live
-$GT1000_AGENT --pretty system common --live --timeout 8
-$GT1000_AGENT --pretty system midi --live --timeout 8
-$GT1000_AGENT --pretty system pcmap --live --bank 1 --timeout 8
-$GT1000_AGENT --pretty system inputs --live --number 1 --timeout 8
-$GT1000_AGENT --pretty system inout --live --timeout 8
-$GT1000_AGENT --pretty system effects --live --timeout 8
-$GT1000_AGENT --pretty system pitch --live --timeout 8
-$GT1000_AGENT --pretty system controls --live --timeout 8
-$GT1000_AGENT --pretty system manual --live --timeout 8
-$GT1000_AGENT --pretty patch block delay1 --live --timeout 15
-$GT1000_AGENT --pretty patch stompbox --live --timeout 15
-```
-
-Use `musician-summary` first for concise human patch descriptions. Do not follow it with `summary` for ordinary "details" requests; use `summary` only when full metadata, typed signal-chain data, and controls are explicitly needed.
-Use `performance` first for stage-use questions about what the physical controls do while playing.
-Use `slot` or `bank` for persistent user patch inspection; these read user patch memory directly and do not select the patch on the unit.
-Use `patch block --user-slot` for targeted persistent-slot block inspection.
-
-## Safe Edit Workflow
-
-Build plans before writing:
-
-```sh
-$GT1000_AGENT --pretty patch plan default
-$GT1000_AGENT --pretty patch plan 4cm-template
-```
-
-Temporary patch writes through validated CLI plans should be read-back verified internally:
-
-```sh
-$GT1000_AGENT --pretty patch apply default --live --verify --timeout 20
-$GT1000_AGENT --pretty patch apply 4cm-template --live --verify --timeout 20
-```
-
-Persistent patch writes may target any valid user slot. For global settings, MIDI settings, or unsupported edit intents, use or add a typed command that validates internally:
-
-- target memory area and patch/global address
-- parameter range and encoding
-- model-specific quirks
-- read-back verification
-
-Examples of currently implemented verified writes:
-
-```sh
-$GT1000_AGENT --pretty patch apply default --live --user-slot U10-1 --verify --timeout 30
-$GT1000_AGENT --pretty patch clone U10-1 U10-2 --live --verify --timeout 30
-$GT1000_AGENT --pretty patch set delay1 time 380 --live --user-slot U10-3 --verify --timeout 30
-$GT1000_AGENT --pretty patch enable delay1 --live --verify --timeout 20
-$GT1000_AGENT --pretty patch type dist1 T-SCREAM --live --verify --timeout 20
-$GT1000_AGENT --pretty patch move delay1 --before chorus --live --verify --timeout 20
-$GT1000_AGENT --pretty patch assign-cc 3 delay1 sw --cc 80 --mode moment --live --verify --timeout 20
-$GT1000_AGENT --pretty patch set-bpm 120.0 --live --verify --timeout 20
-$GT1000_AGENT --pretty patch tuner-assign --live --verify --timeout 20
-$GT1000_AGENT --pretty patch normalize-levels U10-1 U10-2 --target 90 --live --verify --timeout 20
-$GT1000_AGENT --pretty patch intent delay-toggle --control ctl2 --block delay1 --live --verify --timeout 20
-```
-
-Ask before persistent operations such as patch write, exchange, initialize, or insert.
-
-## Description Workflow
-
-For a human patch description:
-
-1. Load the user profile memory; if it does not exist, complete onboarding and create it before reading the patch.
-2. Read `summary`.
-3. Use `descriptionSignalChainSummary` and `descriptionElements` as the default human-facing chain.
-4. Mention only the audible/playable chain first.
-5. Mention switched-off blocks if assigned to a physical control, because they are part of the patch's playable potential.
-6. Read individual block details only when needed to explain specific settings.
-7. If a patch slot reports an unexpected name after selection, trust the live patch name and say so briefly.
-
-For an initialized or sparse patch, keep the answer short and avoid listing dormant off blocks unless asked.
-
-## Controls Workflow
-
-For physical switch mapping:
-
-1. Load the user profile memory; if it does not exist, complete onboarding and create it before reading controls.
-2. Use `$GT1000_AGENT --pretty patch performance --live --timeout 15` for musician-facing stage behavior.
-3. Use `$GT1000_AGENT --pretty patch controls --live --timeout 15` when raw control/Assign details are needed.
-4. If output is ambiguous, consult `references/midi-reference/patch-controls.md` and `references/midi-reference/assigns.md`.
-5. Report direct switch functions plus active Assign overlays.
-
-## Safety Rules
-
-- The normal endpoint is `GT-1000`; avoid `GT-1000 DAW CTRL` unless deliberately targeting DAW control.
-- Ask before changing user patches, global/system settings, patch order, initialize/exchange operations, Assigns, or anything persistent.
-- SysEx writes are not gated the same way as Channel Voice messages; verify MIDI RX channel when CCs do not work.
-- Use supported, validated intents for every write.
+- Normal MIDI endpoint: `GT-1000` (not `GT-1000 DAW CTRL` unless intentional).
+- Follow **Permission gates** before persistent or global writes.
+- SysEx is not RX-channel-gated like Channel Voice; check MIDI RX when CCs fail.
+- Expanded rules and edit examples: `references/skill-detail.md`.

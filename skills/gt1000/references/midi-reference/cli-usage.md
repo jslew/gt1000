@@ -37,6 +37,16 @@ scripts/gt1000-agent --pretty patch chain --live --timeout 15
 scripts/gt1000-agent --pretty patch controls --live --timeout 15
 ```
 
+For control output, the skill-facing vocabulary is:
+
+- `functionId`: canonical command/schema ID such as `dist1`, `foot-volume`, or `divider1-channel-select`
+- `functionDisplayName`: human label
+- `functionKind`: semantic class such as `effect-toggle`, `routing`, `utility`, or `parameter-control`
+- `functionTargetRef`: canonical target reference such as `dist1.sw` or `divider1.channelSelect`
+- `canEnableBlock`: whether the control can bring an off block into the playable sound
+
+Use `patch schema controls` to list the same canonical IDs and kinds before writing `patch control-set`.
+
 ### Compare / audit patches (setlist prep)
 
 ```sh
@@ -72,7 +82,7 @@ This section exists so the repo can sanity-check that the command surface is doc
 - `audio ports`, `audio generate-tone`, `audio record-dry`, `audio reamp`, `audio analyze`, `audio analyze-trimmed`, `audio session init`, `audio session render`, `audio branch-context`, `audio compare-branches`, `audio probe-branch`, `audio probe-param`, `audio render-branch`
 - `doctor`
 - `midi cc`, `midi pc`, `midi bank-select`
-- `system common`, `system midi`, `system pcmap`, `system inputs`, `system inout`, `system inout-set`, `system effects`, `system pitch`, `system controls`, `system manual`
+- `system common`, `system midi`, `system pcmap`, `system inputs`, `system inputs-set`, `system inout`, `system inout-set`, `system effects`, `system pitch`, `system controls`, `system manual`
 - `patch overview`, `patch musician-summary`, `patch performance`, `patch chain`, `patch controls`, `patch summary`
 - `patch slot`, `patch bank`, `patch preset`
 - `patch diff`, `patch setlist-audit`, `patch level-audit`

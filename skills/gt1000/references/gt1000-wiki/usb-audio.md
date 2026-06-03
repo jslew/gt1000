@@ -92,7 +92,7 @@ scripts/gt1000-agent --pretty audio ports
 scripts/gt1000-agent --pretty audio probe
 ```
 
-First-time setup and what macOS will prompt for (Microphone privacy, sandbox, driver): see **USB audio lab (first-time setup)** in the skill `SKILL.md`.
+First-time setup and what macOS will prompt for (Microphone privacy, sandbox, driver): see `references/skill-audio-setup.md` in the skill package.
 
 **Device index** for `--device-index` is the **PortAudio** index from `audio ports` → `gt1000Inputs` / `gt1000Outputs`.
 

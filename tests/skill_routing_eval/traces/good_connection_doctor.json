@@ -1,0 +1,9 @@
+{
+  "scenario_id": "connection_timeouts",
+  "events": [
+    {
+      "type": "shell",
+      "command": "/proj/gt1000-agent --pretty doctor --live --timeout 8"
+    }
+  ]
+}

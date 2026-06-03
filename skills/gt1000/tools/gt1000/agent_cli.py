@@ -16,6 +16,12 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+# Running agent_cli.py as a script puts this package dir on sys.path[0], which
+# breaks `from tools.gt1000 import …`. Prefer the parent `tools/` package root.
+_TOOLS_PKG_ROOT = Path(__file__).resolve().parents[1]
+if _TOOLS_PKG_ROOT.name == "tools" and str(_TOOLS_PKG_ROOT) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_PKG_ROOT))
+
 try:
     from tools.gt1000 import audio_cli, live, patch_edit
     from tools.gt1000.audio_lab.errors import AudioLabError
@@ -285,6 +291,17 @@ def normalize_diagnostic_log_argv(argv: list[str]) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from gt1000.cli_lock import CliProcessLockError, cli_process_lock
+
+    try:
+        with cli_process_lock():
+            return _run_main(argv)
+    except CliProcessLockError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 75
+
+
+def _run_main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     original_argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(normalize_diagnostic_log_argv(original_argv))
@@ -383,15 +400,36 @@ def build_parser() -> argparse.ArgumentParser:
     inputs.add_argument("--timeout", type=float, default=QUICK_TIMEOUT, help="Live read timeout in seconds per setting.")
     inputs.set_defaults(func=cmd_system_inputs)
 
+    inputs_set = system_subcommands.add_parser(
+        "inputs-set",
+        help="Set one System Input Setting field (input level dB or name) with optional verify.",
+    )
+    inputs_set.add_argument("number", type=int, choices=range(1, 11), metavar="1-10", help="Input setting preset 1...10.")
+    inputs_set.add_argument(
+        "field",
+        help="Field id or alias: inputLevel, input-level, name.",
+    )
+    inputs_set.add_argument(
+        "value",
+        help="Integer dB -20...+20 for inputLevel, or ASCII name (max 16 chars) for name.",
+    )
+    inputs_set.add_argument("--live", action="store_true", help="Required because this writes global system state.")
+    inputs_set.add_argument("--verify", action="store_true", help="Re-read the written range and compare exact bytes.")
+    inputs_set.add_argument("--timeout", type=float, default=PERSISTENT_TIMEOUT, help="Verification read timeout in seconds.")
+    inputs_set.set_defaults(func=cmd_system_inputs_set)
+
     inout_set = system_subcommands.add_parser(
         "inout-set",
-        help="Set one System IN/OUT USB level field (typed nibble write with optional verify).",
+        help="Set one System IN/OUT field (active input level dB or USB nibble level) with optional verify.",
     )
     inout_set.add_argument(
         "field",
-        help="Field id or alias, e.g. usbDryOut, usb-dry-out, usbMainMixLevel.",
+        help="Field id or alias, e.g. input-level, usbDryOut, usb-dry-out, usbMainMixLevel.",
     )
-    inout_set.add_argument("value", type=int, help="Integer value 0...200 for USB nibble fields.")
+    inout_set.add_argument(
+        "value",
+        help="Integer dB -20...+20 for input-level, or 0...200 for USB nibble fields.",
+    )
     inout_set.add_argument("--live", action="store_true", help="Required because this writes global system state.")
     inout_set.add_argument("--verify", action="store_true", help="Re-read the written range and compare exact bytes.")
     inout_set.add_argument("--timeout", type=float, default=PERSISTENT_TIMEOUT, help="Verification read timeout in seconds.")
@@ -1140,9 +1178,11 @@ def live_call_with_timeout(label: str, process_timeout: float, func: Callable[..
             pass
     if ok:
         diagnostic_event("live_call.finish", label=label, status="ok", durationSeconds=round(time.monotonic() - started, 6))
+        settle_after_live_call(label, func)
         return payload
     message, exit_code = payload
     diagnostic_event("live_call.finish", label=label, status="error", durationSeconds=round(time.monotonic() - started, 6), error=message, exitCode=exit_code)
+    settle_after_live_call(label, func)
     raise CLIError(message, exit_code)
 
 
@@ -1157,13 +1197,29 @@ def stop_live_process(process: multiprocessing.Process | None, *, terminate_time
         process.join(terminate_timeout)
 
 
+def settle_after_live_call(label: str, func: Callable[..., Any]) -> None:
+    module = getattr(func, "__module__", "")
+    if (
+        "--live" not in label
+        and "GT-1000" not in label
+        and not any(module.endswith(suffix) for suffix in ("gt1000.live", "gt1000.patch_edit"))
+    ):
+        return
+    try:
+        delay = float(os.environ.get("GT1000_LIVE_SETTLE_DELAY", "0.25"))
+    except ValueError:
+        delay = 0.25
+    if delay > 0:
+        time.sleep(delay)
+
+
 def live_timeout_recovery_hint() -> str:
     return (
-        "Stop additional GT-1000 live reads. Verify BOSS Tone Studio, Audio MIDI Setup, "
-        "DAWs, and other MIDI clients are closed, then retry ports --live. Tone Studio "
-        "having worked earlier does not prove this Python/CoreMIDI client can enumerate "
-        "or share the GT-1000 endpoints now. If port enumeration still hangs with those "
-        "apps closed, reconnect or power-cycle the GT-1000 and restart macOS if needed."
+        "Stop additional GT-1000 live reads. Retry ports --live once to distinguish "
+        "endpoint enumeration from a command/read timeout. If ports succeed, treat this "
+        "as a CLI/device read workload issue and avoid immediately retrying large reads. "
+        "If ports hang, recover the USB/CoreMIDI connection. Other MIDI clients can also "
+        "interfere, but do not assume they are the cause."
     )
 
 
@@ -1190,7 +1246,7 @@ def cmd_midi_cc(args: argparse.Namespace) -> Any:
         raise CLIError("midi cc requires --live because it sends MIDI to the connected GT-1000", 64)
     try:
         message = control_change_message(args.controller, args.value, args.channel)
-        live.send_channel_voice(message)
+        send_channel_voice_with_live_retry([message])
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -1210,7 +1266,7 @@ def cmd_midi_pc(args: argparse.Namespace) -> Any:
         raise CLIError("midi pc requires --live because it sends MIDI to the connected GT-1000", 64)
     try:
         message = program_change_message(args.program, args.channel)
-        live.send_channel_voice(message)
+        send_channel_voice_with_live_retry([message])
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -1230,8 +1286,7 @@ def cmd_midi_bank_select(args: argparse.Namespace) -> Any:
         raise CLIError("midi bank-select requires --live because it sends MIDI to the connected GT-1000", 64)
     try:
         messages = bank_select_messages(args.msb, args.lsb, args.channel)
-        for message in messages:
-            live.send_channel_voice(message)
+        send_channel_voice_with_live_retry(messages)
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -1244,6 +1299,45 @@ def cmd_midi_bank_select(args: argparse.Namespace) -> Any:
         "messagesHex": [live.hex_string(message) for message in messages],
         "note": "Bank Select is normally followed by Program Change and is gated by the GT-1000 MIDI RX channel.",
     }
+
+
+def send_channel_voice_with_live_retry(messages: list[list[int]]) -> None:
+    attempts = channel_voice_retry_attempts()
+    for attempt in range(attempts):
+        try:
+            for message in messages:
+                live.send_channel_voice(message)
+            delay = channel_voice_settle_delay()
+            if delay > 0:
+                time.sleep(delay)
+            return
+        except live.LiveMIDIError as error:
+            if attempt == attempts - 1 or not live.is_endpoint_unavailable_error(error):
+                raise
+            time.sleep(channel_voice_retry_delay(attempt))
+
+
+def channel_voice_retry_attempts() -> int:
+    try:
+        value = int(os.environ.get("GT1000_CHANNEL_VOICE_RETRY_ATTEMPTS", "4"))
+    except ValueError:
+        return 4
+    return max(1, value)
+
+
+def channel_voice_retry_delay(attempt: int) -> float:
+    try:
+        base = float(os.environ.get("GT1000_CHANNEL_VOICE_RETRY_DELAY", "1.0"))
+    except ValueError:
+        base = 1.0
+    return min(5.0, max(0.0, base * (attempt + 1)))
+
+
+def channel_voice_settle_delay() -> float:
+    try:
+        return max(0.0, float(os.environ.get("GT1000_CHANNEL_VOICE_SETTLE_DELAY", "1.0")))
+    except ValueError:
+        return 1.0
 
 
 def cmd_system_view(args: argparse.Namespace) -> Any:
@@ -1290,17 +1384,12 @@ def cmd_system_pcmap(args: argparse.Namespace) -> Any:
     for bank in banks:
         address = pcmap_bank_address(bank)
         size = [0x00, 0x00, 0x04, 0x00]
-        try:
-            raw = live_call_with_timeout(
-                f"system pcmap --live bank {bank}",
-                patch_record_process_timeout(args.timeout, 1),
-                live.read_system_section,
-                address,
-                size,
-                timeout=args.timeout,
-            )
-        except live.LiveMIDIError as error:
-            raise CLIError(str(error)) from error
+        raw = read_system_section_with_live_retry(
+            f"system pcmap --live bank {bank}",
+            address,
+            size,
+            timeout=args.timeout,
+        )
         data = raw.get(live.address_key(address), [])
         decoded_banks.append({
             "bank": bank,
@@ -1317,6 +1406,55 @@ def cmd_system_pcmap(args: argparse.Namespace) -> Any:
     }
 
 
+def read_system_section_with_live_retry(
+    label: str,
+    address: list[int],
+    size: list[int],
+    *,
+    timeout: float,
+) -> dict[str, list[int]]:
+    attempts = 2
+    for attempt in range(attempts):
+        try:
+            return live_call_with_timeout(
+                label,
+                patch_record_process_timeout(timeout, 1),
+                live.read_system_section,
+                address,
+                size,
+                timeout=timeout,
+            )
+        except CLIError as error:
+            if attempt == attempts - 1 or not is_retryable_live_read_error(error):
+                raise
+            time.sleep(3.0)
+    raise CLIError(f"{label} failed without returning a result")
+
+
+def is_retryable_live_read_error(error: Exception) -> bool:
+    message = str(error)
+    return (
+        "No GT-1000 MIDI destination found" in message
+        or "No GT-1000 MIDI source found" in message
+        or "live MIDI worker did not finish" in message
+    )
+
+
+def _coerce_inout_set_value(field: str, raw: str) -> int:
+    try:
+        from tools.gt1000 import system_edit
+    except ModuleNotFoundError:
+        import system_edit
+    canonical = system_edit.normalize_inout_field(field)
+    try:
+        value = int(raw)
+    except ValueError as error:
+        raise ValueError("value must be an integer") from error
+    if canonical == "inputLevel" and not -20 <= value <= 20:
+        raise ValueError("input level value must be an integer dB offset -20...+20")
+    return value
+
+
 def cmd_system_inout_set(args: argparse.Namespace) -> Any:
     if not args.live:
         raise CLIError("system inout-set requires --live because it writes global system state", 64)
@@ -1325,7 +1463,39 @@ def cmd_system_inout_set(args: argparse.Namespace) -> Any:
     except ModuleNotFoundError:
         import system_edit
     try:
-        plan = system_edit.build_system_inout_set_plan(args.field, args.value)
+        value = _coerce_inout_set_value(args.field, args.value)
+        plan = system_edit.build_system_inout_set_plan(args.field, value)
+        return apply_focused_plan_cli(plan, timeout=args.timeout, verify=args.verify)
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
+def _coerce_inputs_set_value(field: str, raw: str) -> int | str:
+    try:
+        from tools.gt1000 import system_edit
+    except ModuleNotFoundError:
+        import system_edit
+    canonical = system_edit.normalize_inputs_field(field)
+    if canonical == "inputLevel":
+        try:
+            return int(raw)
+        except ValueError as error:
+            raise ValueError("input level value must be an integer dB offset -20...+20") from error
+    return raw
+
+
+def cmd_system_inputs_set(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("system inputs-set requires --live because it writes global system state", 64)
+    try:
+        from tools.gt1000 import system_edit
+    except ModuleNotFoundError:
+        import system_edit
+    try:
+        value = _coerce_inputs_set_value(args.field, args.value)
+        plan = system_edit.build_system_inputs_set_plan(args.number, args.field, value)
         return apply_focused_plan_cli(plan, timeout=args.timeout, verify=args.verify)
     except ValueError as error:
         raise CLIError(str(error), 64) from error
@@ -2717,8 +2887,7 @@ def cmd_patch_select(args: argparse.Namespace) -> Any:
     try:
         slot = live.normalize_user_slot(args.slot)
         messages = program_change_messages_for_slot(slot, args.channel)
-        for message in messages:
-            live.send_channel_voice(message)
+        send_channel_voice_with_live_retry(messages)
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -3360,15 +3529,17 @@ def cmd_patch_move(args: argparse.Namespace) -> Any:
         before = chain_value_for_block_id(args.before) if args.before else None
         after = chain_value_for_block_id(args.after) if args.after else None
         if args.user_slot:
-            snapshot = read_user_slot_snapshot(args.user_slot, args.timeout, view="chain")
-        else:
-            snapshot = read_live_snapshot_with_timeout(
-                "patch move chain read --live",
+            patch_effect = read_user_patch_effect_record(
+                args.user_slot,
                 args.timeout,
-                requests=requests_for_view("chain"),
-                lenient_optional=True,
+                label=f"patch move {live.normalize_user_slot(args.user_slot)} Patch Effect",
             )
-        chain_values = [item["rawValue"] for item in snapshot.get("signalChainElements", [])]
+        else:
+            patch_effect = read_current_patch_effect_record(
+                args.timeout,
+                label="patch move Patch Effect",
+            )
+        chain_values = chain_values_from_patch_effect_data(patch_effect)
         plan = patch_edit.build_chain_move_plan(chain_values, element, before=before, after=after, slot=args.user_slot)
         result = apply_plan_cli(plan, timeout=args.timeout, verify=args.verify)
         return attach_encoding_confidence(result, ["patch.chain"])
@@ -3376,6 +3547,16 @@ def cmd_patch_move(args: argparse.Namespace) -> Any:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
         raise CLIError(str(error)) from error
+
+
+def chain_values_from_patch_effect_data(data: list[int]) -> list[int]:
+    snapshot = live.empty_snapshot()
+    live.apply_data_set(snapshot, live.TEMPORARY_PATCH_EFFECT, data)
+    return [
+        item["rawValue"]
+        for item in snapshot.get("signalChainElements", [])
+        if isinstance(item.get("rawValue"), int)
+    ]
 
 
 def cmd_patch_cleanup(args: argparse.Namespace) -> Any:
@@ -3489,7 +3670,7 @@ def cleanup_analysis_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
             for assign in assigns_by_block.get(divider_id, [])
         )
         has_direct = any(
-            control.get("targetParameterId") == "channelSelect"
+            split_target_ref(control.get("functionTargetRef"))[1] == "channelSelect"
             for control in direct_parameter_controls_by_block.get(divider_id, [])
         )
         if has_assign or has_direct:
@@ -3550,8 +3731,7 @@ def direct_controls_targeting_parameters(snapshot: dict[str, Any]) -> dict[str, 
 
     by_block: dict[str, list[dict[str, Any]]] = {}
     for control_name, control in controls.items():
-        block_id = control.get("functionTargetBlockId")
-        parameter_id = control.get("functionTargetParameterId")
+        block_id, parameter_id = split_target_ref(control.get("functionTargetRef"))
         if not isinstance(block_id, str) or not isinstance(parameter_id, str):
             continue
         if control.get("preference") != "PATCH":
@@ -3560,8 +3740,10 @@ def direct_controls_targeting_parameters(snapshot: dict[str, Any]) -> dict[str, 
             "control": control_name,
             "preference": control.get("preference"),
             "functionRaw": control.get("functionRaw"),
-            "function": control.get("function"),
-            "targetParameterId": parameter_id,
+            "functionId": control.get("functionId"),
+            "functionDisplayName": control.get("functionDisplayName"),
+            "functionKind": control.get("functionKind"),
+            "functionTargetRef": control.get("functionTargetRef"),
             "mode": control.get("mode"),
         })
     return by_block
@@ -3754,9 +3936,10 @@ def performance_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
             for assign in assigns_by_source.get(source, [])
         ]
         matched_assign_ids.update(assign.get("id", "") for assign in assigns)
-        direct_function = control.get("function")
-        direct_is_active = direct_function not in {None, "OFF"}
-        if direct_function and "TUNER" in direct_function:
+        direct_function_id = control.get("functionId")
+        direct_display_name = control.get("functionDisplayName")
+        direct_is_active = direct_function_id not in {None, "off"}
+        if direct_display_name and "TUNER" in direct_display_name:
             tuner_available = True
         if any("TUNER" in (assign.get("targetName") or "") for assign in assigns):
             tuner_available = True
@@ -3770,10 +3953,11 @@ def performance_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
             "kind": performance_control_kind(name),
             "preference": control.get("preference"),
             "mode": control.get("mode"),
-            "directFunction": direct_function,
-            "directTargetBlockId": control.get("functionTargetBlockId"),
-            "directTargetParameterId": control.get("functionTargetParameterId"),
-            "directCanEnableBlock": control.get("functionCanEnableBlock"),
+            "directFunctionId": direct_function_id,
+            "directFunctionDisplayName": direct_display_name,
+            "directFunctionKind": control.get("functionKind"),
+            "directTargetRef": control.get("functionTargetRef"),
+            "directCanEnableBlock": control.get("canEnableBlock"),
             "assignCount": len(formatted_assigns),
             "assigns": formatted_assigns,
             "action": performance_action_summary(control, formatted_assigns),
@@ -3956,8 +4140,8 @@ def performance_assign(assign: dict[str, Any]) -> dict[str, Any]:
 
 def performance_action_summary(control: dict[str, Any], assigns: list[dict[str, Any]]) -> str:
     parts = []
-    direct_function = control.get("function")
-    if direct_function and direct_function != "OFF":
+    direct_function = control.get("functionDisplayName")
+    if control.get("functionId") not in {None, "off"} and direct_function:
         mode = control.get("mode")
         parts.append(f"Direct: {direct_function}" + (f" ({mode})" if mode else ""))
     parts.extend(assign["summary"] for assign in assigns)
@@ -4063,7 +4247,13 @@ def controls_diff(source: dict[str, Any], target: dict[str, Any]) -> list[dict[s
         source_control = source_controls.get(name, {})
         target_control = target_controls.get(name, {})
         field_changes = []
-        for key, label in [("preference", "preference"), ("function", "function"), ("mode", "mode")]:
+        for key, label in [
+            ("preference", "preference"),
+            ("functionId", "function"),
+            ("functionKind", "function kind"),
+            ("functionTargetRef", "target"),
+            ("mode", "mode"),
+        ]:
             if source_control.get(key) != target_control.get(key):
                 field_changes.append({"field": key, "label": label, "source": source_control.get(key), "target": target_control.get(key)})
         if field_changes:
@@ -4426,12 +4616,18 @@ def read_live_snapshot_with_timeout(
                 deadline=deadline,
             ))
     else:
+        process_timeout = live_summary_total_timeout(timeout)
+        reader = patch_edit.read_data_sets_batched
+        if requests is None:
+            process_timeout = patch_record_process_timeout(timeout, len(transport_read_requests(source_requests)))
+            reader = patch_edit.read_data_sets_sequential_session
         raw = read_patch_records_with_timeout(
             label,
             timeout,
             source_requests,
+            reader=reader,
             attempts=1,
-            process_timeout=live_summary_total_timeout(timeout),
+            process_timeout=process_timeout,
         )
     return snapshot_from_patch_records(source_requests, source_requests, raw)
 
@@ -4995,7 +5191,7 @@ def probe_gt1000_connectivity(timeout: float) -> tuple[bool, str]:
 def patch_record_process_timeout(timeout: float, request_count: int) -> float:
     if request_count <= 0:
         return timeout
-    return min(300.0, max(timeout + 5.0, (timeout + 0.25) * request_count + 5.0))
+    return min(300.0, max(timeout + 18.0, (timeout + 0.25) * request_count + 5.0))
 
 
 def lenient_patch_record_process_timeout(timeout: float, request_count: int) -> float:
@@ -5042,6 +5238,7 @@ def apply_plan_cli(
         exactVerify=exact_verify,
         writes=diagnostic_write_summary(plan.writes),
     )
+    create_restore = create_restore and os.environ.get("GT1000_SKIP_RESTORE_POINT") != "1"
     restore_path = create_restore_point(plan, timeout=timeout) if create_restore else None
     try:
         write_started = time.monotonic()
@@ -5070,8 +5267,18 @@ def apply_plan_cli(
         diagnostic_event("apply_plan.verify_finish", plan=plan.id, status="ok", durationSeconds=round(time.monotonic() - verify_started, 6), ok=verification["ok"])
         result["verified"] = verification["ok"]
         result["verification"] = verification
+    delay = write_settle_delay()
+    if delay > 0:
+        time.sleep(delay)
     diagnostic_event("apply_plan.finish", plan=plan.id, durationSeconds=round(time.monotonic() - started, 6), verified=result["verified"])
     return result
+
+
+def write_settle_delay() -> float:
+    try:
+        return max(0.0, float(os.environ.get("GT1000_WRITE_SETTLE_DELAY", "1.0")))
+    except ValueError:
+        return 1.0
 
 
 def apply_focused_plan_cli(
@@ -5208,7 +5415,8 @@ def read_write_slices(writes: list[live.PatchWrite], timeout: float, *, label: s
 
 
 def verify_plan_with_timeout(plan: patch_edit.PatchPlan, *, timeout: float, exact: bool = False) -> dict[str, Any]:
-    request_by_write = [(write, write.read_request if exact else verification_read_request_for_write(write)) for write in plan.writes]
+    writes_to_verify = sampled_verification_writes(plan.writes)
+    request_by_write = [(write, write.read_request if exact else verification_read_request_for_write(write)) for write in writes_to_verify]
     requests = [request for _, request in request_by_write]
     read_timeout = targeted_read_timeout(timeout, requests)
     raw = read_patch_records_with_timeout(
@@ -5224,7 +5432,7 @@ def verify_plan_with_timeout(plan: patch_edit.PatchPlan, *, timeout: float, exac
         actual = raw.get(key)
         offset = live.seven_bit_address_value(write.address) - live.seven_bit_address_value(request.address)
         actual_slice = actual[offset:offset + len(write.data)] if actual is not None and offset >= 0 else []
-        ok = actual is not None and actual_slice == write.data
+        ok = actual is not None and write_verification_ok(write, actual_slice)
         checks.append({
             "label": write.label,
             "address": live.hex_bytes(write.address),
@@ -5236,6 +5444,57 @@ def verify_plan_with_timeout(plan: patch_edit.PatchPlan, *, timeout: float, exac
             "actualHex": live.hex_string(actual_slice),
         })
     return {"ok": all(check["ok"] for check in checks), "checks": checks}
+
+
+def write_verification_ok(write: live.PatchWrite, actual_slice: list[int]) -> bool:
+    if actual_slice == write.data:
+        return True
+    if is_chain_write(write) and len(actual_slice) == len(write.data) and set(actual_slice) == set(write.data):
+        first_difference = next(
+            (index for index, (expected, actual) in enumerate(zip(write.data, actual_slice)) if expected != actual),
+            len(write.data),
+        )
+        expected_tail = write.data[first_difference:]
+        actual_tail = actual_slice[first_difference:]
+        chain_utility_tail = {31, 32, 44, 45, 46}
+        return bool(expected_tail) and set(expected_tail) == set(actual_tail) and set(expected_tail) <= chain_utility_tail
+    return False
+
+
+def is_chain_write(write: live.PatchWrite) -> bool:
+    return len(write.data) == 49 and write.address[-2:] == [0x10, 0x68]
+
+
+def sampled_verification_writes(writes: list[live.PatchWrite]) -> list[live.PatchWrite]:
+    assign_disabled = [write for write in writes if is_disabled_assign_write(write)]
+    if len(assign_disabled) < 4:
+        return writes
+    assign_first = min(assign_disabled, key=lambda write: live.seven_bit_address_value(write.address))
+    assign_last = max(assign_disabled, key=lambda write: live.seven_bit_address_value(write.address))
+    sampled_assign_keys = {tuple(assign_first.address), tuple(assign_last.address)}
+    return [
+        write
+        for write in writes
+        if not is_disabled_assign_write(write) or tuple(write.address) in sampled_assign_keys
+    ]
+
+
+def is_disabled_assign_write(write: live.PatchWrite) -> bool:
+    if write.data != patch_edit.DISABLED_ASSIGN_DATA:
+        return False
+    for base in possible_assign_bank_bases(write.address):
+        base_value = live.seven_bit_address_value(base)
+        address_value = live.seven_bit_address_value(write.address)
+        offset = address_value - base_value
+        if offset >= 0 and offset % live.ASSIGN_STRIDE == 0 and offset < 16 * live.ASSIGN_STRIDE:
+            return True
+    return False
+
+
+def possible_assign_bank_bases(address: list[int]) -> list[list[int]]:
+    bases = [live.ASSIGN_BASE]
+    bases.extend(patch_edit.remap_clone_address(live.ASSIGN_BASE, slot) for slot in possible_user_slots_for_address(address))
+    return bases
 
 
 def targeted_read_timeout(timeout: float, requests: list[live.PatchReadRequest]) -> float:
@@ -5592,9 +5851,52 @@ def controls_editor_schema() -> dict[str, Any]:
         "controls": sorted(set(patch_edit.PATCH_CONTROL_FIELDS) | set(patch_edit.PATCH_EXP_PEDAL_FIELDS)),
         "switchFunctions": sorted(patch_edit.CONTROL_FUNCTION_VALUES),
         "pedalFunctions": sorted(patch_edit.EXP_PEDAL_FUNCTION_VALUES),
+        "functionDetails": control_function_schemas(),
+        "pedalFunctionDetails": exp_pedal_function_schemas(),
         "modes": ["toggle", "moment"],
         "preferences": ["patch", "system"],
     }
+
+
+def split_target_ref(target_ref: Any) -> tuple[str | None, str | None]:
+    if not isinstance(target_ref, str) or not target_ref:
+        return None, None
+    if "." not in target_ref:
+        return target_ref, None
+    block_id, parameter_id = target_ref.split(".", 1)
+    return block_id or None, parameter_id or None
+
+
+def control_function_schemas() -> list[dict[str, Any]]:
+    details = []
+    for function_id in sorted(patch_edit.CONTROL_FUNCTION_VALUES):
+        raw = patch_edit.CONTROL_FUNCTION_VALUES[function_id]
+        detail = decode_control_function_detail(raw, is_num=function_id == "matching-num")
+        details.append({
+            "id": function_id,
+            "raw": raw,
+            "displayName": detail["name"],
+            "kind": detail["kind"],
+            "targetRef": detail["targetRef"],
+            "canEnableBlock": detail["canEnableBlock"],
+        })
+    return details
+
+
+def exp_pedal_function_schemas() -> list[dict[str, Any]]:
+    details = []
+    for function_id in sorted(patch_edit.EXP_PEDAL_FUNCTION_VALUES):
+        raw = patch_edit.EXP_PEDAL_FUNCTION_VALUES[function_id]
+        detail = decode_exp_function_detail(raw)
+        details.append({
+            "id": function_id,
+            "raw": raw,
+            "displayName": detail["name"],
+            "kind": detail["kind"],
+            "targetRef": detail["targetRef"],
+            "canEnableBlock": detail["canEnableBlock"],
+        })
+    return details
 
 
 def assign_editor_schema() -> dict[str, Any]:
@@ -5873,10 +6175,11 @@ def controls_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
         controls[name] = {
             "preference": preference,
             "functionRaw": func_byte,
-            "function": function_detail["name"],
-            "functionTargetBlockId": function_detail["blockId"],
-            "functionTargetParameterId": function_detail["parameterId"],
-            "functionCanEnableBlock": function_detail["canEnableBlock"],
+            "functionId": function_detail["functionId"],
+            "functionDisplayName": function_detail["name"],
+            "functionKind": function_detail["kind"],
+            "functionTargetRef": function_detail["targetRef"],
+            "canEnableBlock": function_detail["canEnableBlock"],
             "mode": "MOMENT" if mode_byte == 1 else "TOGGLE",
         }
 
@@ -5892,10 +6195,11 @@ def controls_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
         controls[name] = {
             "preference": preference,
             "functionRaw": func_byte,
-            "function": function_detail["name"],
-            "functionTargetBlockId": function_detail["blockId"],
-            "functionTargetParameterId": function_detail["parameterId"],
-            "functionCanEnableBlock": function_detail["canEnableBlock"],
+            "functionId": function_detail["functionId"],
+            "functionDisplayName": function_detail["name"],
+            "functionKind": function_detail["kind"],
+            "functionTargetRef": function_detail["targetRef"],
+            "canEnableBlock": function_detail["canEnableBlock"],
         }
 
     return {
@@ -5911,12 +6215,30 @@ def decode_control_function(raw: int, is_num: bool = False) -> str:
 
 def decode_control_function_detail(raw: int, is_num: bool = False) -> dict[str, Any]:
     if is_num and raw == 1:
-        return control_function_detail(raw, "MATCHING NUM")
+        return control_function_detail(raw, "MATCHING NUM", functionId="matching-num")
 
     detail = CONTROL_FUNCTIONS.get(raw)
     if detail:
-        return control_function_detail(raw, **detail)
+        return control_function_detail(raw, functionId=control_function_id_for_raw(raw), **detail)
     return control_function_detail(raw, f"FUNC {raw}")
+
+
+def control_function_id_for_raw(raw: int) -> str | None:
+    candidates = [
+        function_id
+        for function_id, value in patch_edit.CONTROL_FUNCTION_VALUES.items()
+        if value == raw
+    ]
+    if raw == 1 and "bank-up" in candidates:
+        return "bank-up"
+    return candidates[0] if candidates else None
+
+
+def exp_function_id_for_raw(raw: int) -> str | None:
+    for function_id, value in patch_edit.EXP_PEDAL_FUNCTION_VALUES.items():
+        if value == raw:
+            return function_id
+    return None
 
 
 def control_function_detail(
@@ -5925,14 +6247,37 @@ def control_function_detail(
     blockId: str | None = None,
     parameterId: str | None = None,
     canEnableBlock: bool = False,
+    functionId: str | None = None,
+    kind: str | None = None,
 ) -> dict[str, Any]:
+    target_ref = f"{blockId}.{parameterId}" if blockId and parameterId else blockId
     return {
         "raw": raw,
+        "functionId": functionId,
         "name": name,
+        "kind": kind or control_function_kind(functionId, blockId, parameterId, canEnableBlock),
         "blockId": blockId,
         "parameterId": parameterId,
+        "targetRef": target_ref,
         "canEnableBlock": canEnableBlock,
     }
+
+
+def control_function_kind(
+    function_id: str | None,
+    block_id: str | None,
+    parameter_id: str | None,
+    can_enable_block: bool,
+) -> str:
+    if function_id and function_id.startswith("divider"):
+        return "routing"
+    if can_enable_block and parameter_id == "sw":
+        return "effect-toggle"
+    if block_id and parameter_id:
+        return "parameter-control"
+    if block_id:
+        return "block-control"
+    return "utility"
 
 
 CONTROL_FUNCTIONS: dict[int, dict[str, Any]] = {
@@ -6011,7 +6356,7 @@ def decode_exp_function_detail(raw: int) -> dict[str, Any]:
     }
     detail = names.get(raw)
     if detail:
-        return control_function_detail(raw, **detail)
+        return control_function_detail(raw, functionId=exp_function_id_for_raw(raw), **detail)
     return control_function_detail(raw, f"FUNC {raw}")
 
 
@@ -6328,15 +6673,17 @@ def direct_controls_by_block(snapshot: dict[str, Any]) -> dict[str, list[dict[st
 
     by_block: dict[str, list[dict[str, Any]]] = {}
     for control_name, control in controls.items():
-        block_id = control.get("functionTargetBlockId")
-        if not block_id or not control.get("functionCanEnableBlock"):
+        block_id, parameter_id = split_target_ref(control.get("functionTargetRef"))
+        if not block_id or not control.get("canEnableBlock"):
             continue
         by_block.setdefault(block_id, []).append({
             "control": control_name,
             "preference": control.get("preference"),
             "functionRaw": control.get("functionRaw"),
-            "function": control.get("function"),
-            "targetParameterId": control.get("functionTargetParameterId"),
+            "functionId": control.get("functionId"),
+            "functionDisplayName": control.get("functionDisplayName"),
+            "functionKind": control.get("functionKind"),
+            "functionTargetRef": control.get("functionTargetRef"),
             "mode": control.get("mode"),
         })
     return by_block
@@ -6609,10 +6956,11 @@ def decode_system_manual_controls(data: list[int]) -> dict[str, Any]:
         function_detail = decode_manual_control_function_detail(function_raw) if function_raw is not None else None
         controls[control_name] = {
             "functionRaw": function_raw,
-            "function": function_detail["name"] if function_detail else None,
-            "functionTargetBlockId": function_detail["blockId"] if function_detail else None,
-            "functionTargetParameterId": function_detail["parameterId"] if function_detail else None,
-            "functionCanEnableBlock": function_detail["canEnableBlock"] if function_detail else False,
+            "functionId": function_detail["functionId"] if function_detail else None,
+            "functionDisplayName": function_detail["name"] if function_detail else None,
+            "functionKind": function_detail["kind"] if function_detail else None,
+            "functionTargetRef": function_detail["targetRef"] if function_detail else None,
+            "canEnableBlock": function_detail["canEnableBlock"] if function_detail else False,
             "modeRaw": data[mode_offset] if len(data) > mode_offset else None,
             "mode": "MOMENT" if len(data) > mode_offset and data[mode_offset] == 1 else "TOGGLE" if len(data) > mode_offset else None,
             "preferenceRaw": data[0x0A + index] if len(data) > 0x0A + index else None,
@@ -6686,8 +7034,28 @@ def decode_manual_control_function_detail(raw: int) -> dict[str, Any]:
     }
     detail = names.get(raw)
     if detail:
-        return control_function_detail(raw, **detail)
+        return control_function_detail(raw, functionId=manual_control_function_id_for_raw(raw), **detail)
     return control_function_detail(raw, f"FUNC {raw}")
+
+
+def manual_control_function_id_for_raw(raw: int) -> str | None:
+    direct_ids = {
+        0: "off",
+        1: "level-plus-10",
+        2: "level-plus-20",
+        3: "level-minus-10",
+        4: "level-minus-20",
+        5: "bpm-tap",
+        55: "tuner",
+        56: "manual",
+        57: "manual-tuner",
+        58: "fx4",
+        59: "fx4-trigger",
+    }
+    if raw in direct_ids:
+        return direct_ids[raw]
+    # Manual-mode raw values after BPM TAP are shifted by -4 from patch control values.
+    return control_function_id_for_raw(raw + 4)
 
 
 def decode_system_controls(data: list[int]) -> dict[str, Any]:
@@ -6707,10 +7075,11 @@ def decode_system_controls(data: list[int]) -> dict[str, Any]:
         function_detail = decode_control_function_detail(function_raw, is_num=name.startswith("NUM ")) if function_raw is not None else None
         controls[name] = {
             "functionRaw": function_raw,
-            "function": function_detail["name"] if function_detail else None,
-            "functionTargetBlockId": function_detail["blockId"] if function_detail else None,
-            "functionTargetParameterId": function_detail["parameterId"] if function_detail else None,
-            "functionCanEnableBlock": function_detail["canEnableBlock"] if function_detail else False,
+            "functionId": function_detail["functionId"] if function_detail else None,
+            "functionDisplayName": function_detail["name"] if function_detail else None,
+            "functionKind": function_detail["kind"] if function_detail else None,
+            "functionTargetRef": function_detail["targetRef"] if function_detail else None,
+            "canEnableBlock": function_detail["canEnableBlock"] if function_detail else False,
             "modeRaw": mode_raw,
             "mode": "MOMENT" if mode_raw == 1 else "TOGGLE" if mode_raw is not None else None,
             "preferenceRaw": preference_raw,
@@ -6724,10 +7093,11 @@ def decode_system_controls(data: list[int]) -> dict[str, Any]:
         function_detail = decode_exp_function_detail(function_raw) if function_raw is not None else None
         controls[name] = {
             "functionRaw": function_raw,
-            "function": function_detail["name"] if function_detail else None,
-            "functionTargetBlockId": function_detail["blockId"] if function_detail else None,
-            "functionTargetParameterId": function_detail["parameterId"] if function_detail else None,
-            "functionCanEnableBlock": function_detail["canEnableBlock"] if function_detail else False,
+            "functionId": function_detail["functionId"] if function_detail else None,
+            "functionDisplayName": function_detail["name"] if function_detail else None,
+            "functionKind": function_detail["kind"] if function_detail else None,
+            "functionTargetRef": function_detail["targetRef"] if function_detail else None,
+            "canEnableBlock": function_detail["canEnableBlock"] if function_detail else False,
             "preferenceRaw": preference_raw,
             "preference": decode_enum(preference_raw, ["PATCH", "SYSTEM"]) if preference_raw is not None else None,
         }

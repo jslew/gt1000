@@ -117,7 +117,7 @@ In/out settings are critical to tone description. The same patch can sound very 
 
 Important areas:
 
-- Input level.
+- Input level (ten global presets; per-patch MASTER → INPUT SETTING). See [Input Level and Gain Staging](input-level-gain-staging.md) for symptoms and inspect order.
 - Main out and sub out output select.
 - Phones setting.
 - Total settings such as total noise suppressor and total reverb level.

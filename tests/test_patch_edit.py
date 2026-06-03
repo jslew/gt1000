@@ -7,6 +7,17 @@ from tools.gt1000 import live, patch_edit
 
 
 class PatchEditTests(unittest.TestCase):
+    def test_write_retry_attempts_defaults_and_honors_env(self):
+        with unittest.mock.patch.dict(patch_edit.os.environ, {}, clear=False):
+            patch_edit.os.environ.pop("GT1000_WRITE_RETRY_ATTEMPTS", None)
+            self.assertEqual(patch_edit.write_retry_attempts(), 4)
+        with unittest.mock.patch.dict(patch_edit.os.environ, {"GT1000_WRITE_RETRY_ATTEMPTS": "4"}):
+            self.assertEqual(patch_edit.write_retry_attempts(), 4)
+        with unittest.mock.patch.dict(patch_edit.os.environ, {"GT1000_WRITE_RETRY_ATTEMPTS": "bad"}):
+            self.assertEqual(patch_edit.write_retry_attempts(), 4)
+        with unittest.mock.patch.dict(patch_edit.os.environ, {"GT1000_WRITE_RETRY_ATTEMPTS": "0"}):
+            self.assertEqual(patch_edit.write_retry_attempts(), 1)
+
     def test_default_plan_builds_minimal_no_branch_chain_and_off_writes(self):
         plan = patch_edit.build_default_patch_plan("PY DEFAULT")
         chain = next(write for write in plan.writes if write.label == "Minimal no-branch chain")
@@ -227,7 +238,7 @@ class PatchEditTests(unittest.TestCase):
             nonlocal calls
             calls += 1
             if calls == 1:
-                raise live.LiveMIDIError("No GT-1000 MIDI destination found")
+                raise live.LiveMIDIError("Timed out waiting for GT-1000 patch replies")
             return {live.address_key(requests[0].address): [1]}
 
         try:
@@ -240,6 +251,25 @@ class PatchEditTests(unittest.TestCase):
 
         self.assertEqual(calls, 2)
         self.assertEqual(result, {"20 00 00 00": [1]})
+
+    def test_batched_read_does_not_split_when_endpoint_is_unavailable(self):
+        request = live.PatchReadRequest("Read", [0x20, 0x00, 0x00, 0x00], [0, 0, 0, 1])
+        calls = 0
+        original_read_data_sets = patch_edit.live.read_data_sets
+
+        def fake_read_data_sets(*, timeout, requests):
+            nonlocal calls
+            calls += 1
+            raise live.LiveMIDIError("No GT-1000 MIDI destination found")
+
+        try:
+            patch_edit.live.read_data_sets = fake_read_data_sets
+            with self.assertRaises(live.LiveMIDIError):
+                patch_edit.read_data_set_batch_resilient(timeout=20, requests=[request])
+        finally:
+            patch_edit.live.read_data_sets = original_read_data_sets
+
+        self.assertEqual(calls, 1)
 
     def test_apply_plan_retries_transient_write_failure(self):
         plan = patch_edit.PatchPlan("retry", "Retry write", [live.PatchWrite("Write", [0x10, 0, 0, 0], [1])])

@@ -13,6 +13,31 @@ $GT1000_AGENT --pretty --diagnostic-log patch master-set level 90 --user-slot U1
 $GT1000_AGENT --pretty --diagnostic-log=/tmp/gt1000-master-set.jsonl patch master-set level 90 --user-slot U10-1 --live --verify --timeout 20
 ```
 
+## Skill routing coverage
+
+After adding or renaming any `references/**/*.md` file, update the **File registry** in `references/skill-routing-index.md` and run:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_skill_routing -q
+```
+
+## Skill routing eval (LLM traces)
+
+After changing routing rules or `skill-routing-index.md` intents, update `tests/skill_routing_eval/scenarios.json` and golden traces, then:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_skill_routing_eval -q
+```
+
+Score a Gemini/Cursor JSONL export:
+
+```sh
+scripts/gt1000-routing-eval score-jsonl --jsonl /path/to/session.jsonl --scenario describe_current_patch
+scripts/gt1000-routing-eval-run suite   # live agy from gt1000-scratch (see skill-routing-eval.md)
+```
+
+See `references/skill-routing-eval.md`.
+
 ## Verification (tests)
 
 Routine unit and read-only live checks:
@@ -47,5 +72,5 @@ These are for maintaining confidence in low-level encodings, not for normal musi
 ## Live connectivity / recovery notes (high level)
 
 - If `ports --live` hangs or times out, stop live testing and recover CoreMIDI/the USB connection before continuing. Quit BOSS Tone Studio if it is open, then power-cycle or reconnect the GT-1000.
-- Run live commands one at a time; avoid `&&` chaining of multiple `--live` reads.
+- Run live commands one at a time; avoid `&&` chaining of multiple `--live` reads. `gt1000-agent` holds an exclusive process lock (`~/.gt1000-agent/cli.lock`, exit code `75` on conflict). Test harnesses may set `GT1000_ALLOW_CONCURRENT=1` to bypass.
 

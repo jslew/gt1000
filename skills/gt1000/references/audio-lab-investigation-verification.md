@@ -20,7 +20,7 @@ On a GT-1000 with IMPRESSION loaded (divider 1, single mode), USB re-amp of a sh
 
 ### Setup
 
-1. GT-1000 connected; audio deps installed once per venv (`pip install -r <skill-dir>/requirements-audio.txt`; see **USB audio lab (first-time setup)** in `SKILL.md`).
+1. GT-1000 connected; audio deps installed once per venv (`pip install -r <skill-dir>/requirements-audio.txt`; see `references/skill-audio-setup.md`).
 2. `patch select U01-3 --live` (IMPRESSION).
 3. New Cursor chat with gt1000 skill + repo context; **do not** paste this verification doc into the prompt.
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -26,8 +27,8 @@ BYPASS_MAIN_R = 34
 
 CANONICAL_FULL_CHAIN = [
     0, 34, 33, 47, 48, 1, 2, 3, 4, 5, 6, 7, 8, 9, 20, 10, 11, 12, 13, 14, 15,
-    16, 17, 18, 19, 21, 22, 23, 24, 25, 26, 32, 27, 28, 29, 30, 35, 36, 37, 38,
-    39, 40, 41, 42, 43, 31, 45, 46, 44,
+    16, 17, 18, 19, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 35, 36, 37, 38,
+    39, 40, 41, 42, 43, 32, 31, 45, 46, 44,
 ]
 
 CTL1_SOURCE = 0x08
@@ -1013,15 +1014,23 @@ def apply_plan(plan: PatchPlan, *, timeout: float, verify: bool) -> dict[str, An
 
 
 def write_data_sets_resilient(writes: list[live.PatchWrite]) -> None:
-    attempts = 3
+    attempts = write_retry_attempts()
     for attempt in range(attempts):
         try:
             live.write_data_sets(writes)
             return
-        except live.LiveMIDIError:
+        except live.LiveMIDIError as error:
             if attempt == attempts - 1:
                 raise
-            time.sleep(0.5)
+            time.sleep(3.0 if live.is_endpoint_unavailable_error(error) else 0.5)
+
+
+def write_retry_attempts() -> int:
+    try:
+        value = int(os.environ.get("GT1000_WRITE_RETRY_ATTEMPTS", "4"))
+    except ValueError:
+        return 4
+    return max(1, value)
 
 
 def build_parameter_set_plan(block_id: str, parameter_id: str, raw_value: str, *, slot: str | None = None) -> PatchPlan:
@@ -1611,7 +1620,9 @@ def read_data_set_batch_resilient(*, timeout: float, requests: list[live.PatchRe
     for attempt in range(attempts):
         try:
             return live.read_data_sets(timeout=timeout, requests=requests)
-        except live.LiveMIDIError:
+        except live.LiveMIDIError as error:
+            if live.is_endpoint_unavailable_error(error):
+                raise
             if attempt == attempts - 1:
                 if len(requests) == 1:
                     raise

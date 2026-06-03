@@ -50,7 +50,8 @@ class AgentCLITests(unittest.TestCase):
         with self.assertRaises(agent_cli.CLIError) as context:
             agent_cli.live_call_with_timeout("test", 0.1, time.sleep, 5)
         self.assertIn("did not finish", str(context.exception))
-        self.assertIn("Verify BOSS Tone Studio", str(context.exception))
+        self.assertIn("Retry ports --live once", str(context.exception))
+        self.assertIn("do not assume they are the cause", str(context.exception))
 
     def test_stop_live_process_kills_running_child(self):
         context = multiprocessing.get_context("spawn")
@@ -74,6 +75,27 @@ class AgentCLITests(unittest.TestCase):
         mock = MagicMock(return_value={"ok": True})
         self.assertEqual(agent_cli.live_call_with_timeout("mock", 2, mock, timeout=8.0), {"ok": True})
         mock.assert_called_once_with(timeout=8.0)
+
+    def test_sampled_verification_writes_keeps_assign_edges(self):
+        plan = agent_cli.patch_edit.build_4cm_template_plan()
+        sampled = agent_cli.sampled_verification_writes(plan.writes)
+        assign_writes = [write for write in sampled if agent_cli.is_disabled_assign_write(write)]
+
+        self.assertEqual(len(assign_writes), 2)
+        self.assertEqual(assign_writes[0].label, "Assign 1 disabled")
+        self.assertEqual(assign_writes[1].label, "Assign 16 disabled")
+        self.assertLess(len(sampled), len(plan.writes))
+
+    def test_chain_verification_tolerates_device_tail_normalization(self):
+        write = agent_cli.live.PatchWrite(
+            "Minimal no-branch chain",
+            [0x20, 0x2D, 0x10, 0x68],
+            list(agent_cli.patch_edit.CANONICAL_FULL_CHAIN),
+        )
+        actual = list(write.data)
+        actual[-4:] = [46, 31, 45, 44]
+
+        self.assertTrue(agent_cli.write_verification_ok(write, actual))
 
     def test_diagnostic_log_option_writes_jsonl_events(self):
         parser = agent_cli.build_parser()
@@ -857,6 +879,127 @@ class AgentCLITests(unittest.TestCase):
         with unittest.mock.patch.dict(agent_cli.os.environ, {"GT1000_LENIENT_READ_BATCH_SIZE": "0"}):
             self.assertEqual(agent_cli.lenient_read_batch_size(), 1)
 
+    def test_channel_voice_retry_helpers_default_and_honor_env(self):
+        with unittest.mock.patch.dict(agent_cli.os.environ, {}, clear=False):
+            agent_cli.os.environ.pop("GT1000_CHANNEL_VOICE_RETRY_ATTEMPTS", None)
+            agent_cli.os.environ.pop("GT1000_CHANNEL_VOICE_RETRY_DELAY", None)
+            agent_cli.os.environ.pop("GT1000_CHANNEL_VOICE_SETTLE_DELAY", None)
+            agent_cli.os.environ.pop("GT1000_WRITE_SETTLE_DELAY", None)
+            agent_cli.os.environ.pop("GT1000_LIVE_SETTLE_DELAY", None)
+            self.assertEqual(agent_cli.channel_voice_retry_attempts(), 4)
+            self.assertEqual(agent_cli.channel_voice_retry_delay(0), 1.0)
+            self.assertEqual(agent_cli.channel_voice_settle_delay(), 1.0)
+            self.assertEqual(agent_cli.write_settle_delay(), 1.0)
+            with unittest.mock.patch.object(agent_cli.time, "sleep") as sleep:
+                agent_cli.settle_after_live_call("patch overview --live", agent_cli.live.read_data_sets)
+            sleep.assert_called_once_with(0.25)
+        with unittest.mock.patch.dict(agent_cli.os.environ, {
+            "GT1000_CHANNEL_VOICE_RETRY_ATTEMPTS": "2",
+            "GT1000_CHANNEL_VOICE_RETRY_DELAY": "0.5",
+            "GT1000_CHANNEL_VOICE_SETTLE_DELAY": "0",
+            "GT1000_WRITE_SETTLE_DELAY": "0",
+            "GT1000_LIVE_SETTLE_DELAY": "0",
+        }):
+            self.assertEqual(agent_cli.channel_voice_retry_attempts(), 2)
+            self.assertEqual(agent_cli.channel_voice_retry_delay(1), 1.0)
+            self.assertEqual(agent_cli.channel_voice_settle_delay(), 0.0)
+            self.assertEqual(agent_cli.write_settle_delay(), 0.0)
+            with unittest.mock.patch.object(agent_cli.time, "sleep") as sleep:
+                agent_cli.settle_after_live_call("patch overview --live", agent_cli.live.read_data_sets)
+            sleep.assert_not_called()
+        with unittest.mock.patch.dict(agent_cli.os.environ, {
+            "GT1000_CHANNEL_VOICE_RETRY_ATTEMPTS": "bad",
+            "GT1000_CHANNEL_VOICE_RETRY_DELAY": "bad",
+            "GT1000_CHANNEL_VOICE_SETTLE_DELAY": "bad",
+            "GT1000_WRITE_SETTLE_DELAY": "bad",
+            "GT1000_LIVE_SETTLE_DELAY": "bad",
+        }):
+            self.assertEqual(agent_cli.channel_voice_retry_attempts(), 4)
+            self.assertEqual(agent_cli.channel_voice_retry_delay(0), 1.0)
+            self.assertEqual(agent_cli.channel_voice_settle_delay(), 1.0)
+            self.assertEqual(agent_cli.write_settle_delay(), 1.0)
+            with unittest.mock.patch.object(agent_cli.time, "sleep") as sleep:
+                agent_cli.settle_after_live_call("patch overview --live", agent_cli.live.read_data_sets)
+            sleep.assert_called_once_with(0.25)
+
+    def test_channel_voice_send_retries_endpoint_unavailable(self):
+        error = agent_cli.live.LiveMIDIError("No GT-1000 MIDI destination found")
+        send = MagicMock(side_effect=[error, None])
+        sleep = MagicMock()
+        original_send = agent_cli.live.send_channel_voice
+        original_sleep = agent_cli.time.sleep
+        agent_cli.live.send_channel_voice = send
+        agent_cli.time.sleep = sleep
+        try:
+            with unittest.mock.patch.dict(agent_cli.os.environ, {
+                "GT1000_CHANNEL_VOICE_RETRY_ATTEMPTS": "2",
+                "GT1000_CHANNEL_VOICE_RETRY_DELAY": "0.25",
+                "GT1000_CHANNEL_VOICE_SETTLE_DELAY": "0",
+            }):
+                agent_cli.send_channel_voice_with_live_retry([[0xC0, 0x00]])
+        finally:
+            agent_cli.time.sleep = original_sleep
+            agent_cli.live.send_channel_voice = original_send
+
+        self.assertEqual(send.call_count, 2)
+        sleep.assert_called_once_with(0.25)
+
+    def test_patch_select_uses_channel_voice_retry_wrapper(self):
+        calls = []
+
+        def fake_send(messages):
+            calls.append(messages)
+
+        original_send = agent_cli.send_channel_voice_with_live_retry
+        agent_cli.send_channel_voice_with_live_retry = fake_send
+        try:
+            result = agent_cli.cmd_patch_select(agent_cli.build_parser().parse_args(["patch", "select", "U10-1", "--live"]))
+        finally:
+            agent_cli.send_channel_voice_with_live_retry = original_send
+
+        self.assertEqual(result["selectedSlot"], "U10-1")
+        self.assertEqual(calls, [agent_cli.program_change_messages_for_slot("U10-1", 1)])
+
+    def test_patch_move_user_slot_reads_only_patch_effect(self):
+        data = [0] * 0x11C
+        data[0x68:0x68 + len(agent_cli.patch_edit.CANONICAL_FULL_CHAIN)] = agent_cli.patch_edit.CANONICAL_FULL_CHAIN
+        calls = []
+
+        def fake_read_patch_effect(slot, timeout, *, label):
+            calls.append((slot, timeout, label))
+            return data
+
+        original_read_patch_effect = agent_cli.read_user_patch_effect_record
+        original_read_snapshot = agent_cli.read_user_slot_snapshot
+        original_apply = agent_cli.apply_plan_cli
+        apply = MagicMock(return_value={"plan": "move:chain:15:before:14:U10-2", "writeCount": 1, "verified": True})
+        agent_cli.read_user_patch_effect_record = fake_read_patch_effect
+        agent_cli.read_user_slot_snapshot = MagicMock(side_effect=AssertionError("broad snapshot read should not be used"))
+        agent_cli.apply_plan_cli = apply
+        try:
+            result = agent_cli.cmd_patch_move(
+                agent_cli.build_parser().parse_args([
+                    "patch",
+                    "move",
+                    "delay1",
+                    "--before",
+                    "chorus",
+                    "--live",
+                    "--user-slot",
+                    "U10-2",
+                    "--verify",
+                ])
+            )
+        finally:
+            agent_cli.apply_plan_cli = original_apply
+            agent_cli.read_user_slot_snapshot = original_read_snapshot
+            agent_cli.read_user_patch_effect_record = original_read_patch_effect
+
+        self.assertEqual(result["plan"], "move:chain:15:before:14:U10-2")
+        self.assertEqual(calls, [("U10-2", 20.0, "patch move U10-2 Patch Effect")])
+        plan = apply.call_args.args[0]
+        self.assertEqual(plan.id, "move:chain:15:before:14:U10-2")
+
     def test_required_patch_read_batches_required_records_and_retries_missing(self):
         requests = [
             agent_cli.live.PatchReadRequest("Patch Common", [0x20, 0x00, 0x00, 0x00], [0, 0, 0, 1]),
@@ -1077,6 +1220,12 @@ class AgentCLITests(unittest.TestCase):
         self.assertEqual(controls["encodingConfidence"]["confidence"], "legacy")
         self.assertIn("ctl1", controls["controls"])
         self.assertIn("dist1", controls["switchFunctions"])
+        function_details = {function["id"]: function for function in controls["functionDetails"]}
+        self.assertEqual(function_details["dist1"]["kind"], "effect-toggle")
+        self.assertEqual(function_details["dist1"]["targetRef"], "dist1.sw")
+        self.assertEqual(function_details["divider1-channel-select"]["kind"], "routing")
+        pedal_details = {function["id"]: function for function in controls["pedalFunctionDetails"]}
+        self.assertEqual(pedal_details["foot-volume"]["targetRef"], "footVolume")
 
         assign = agent_cli.cmd_patch_schema(agent_cli.build_parser().parse_args(["patch", "schema", "assign"]))
         self.assertEqual(assign["id"], "assign")

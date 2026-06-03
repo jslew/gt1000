@@ -17,6 +17,8 @@ Do not treat this as a complete copy of the manuals. It is a navigable working i
 - [Owner Manual Extraction](owner-manual.md): hardware, play modes, editing workflow, external control, USB/MIDI, looper.
 - [USB Audio and Re-Amp](usb-audio.md): 6×6 channel map, USB AUDIO menu, re-amp flow, DIR MON preflight.
 - [Parameter Guide Extraction](parameter-guide.md): effect blocks, menu sections, control/assign, in/out, MIDI, hardware settings.
+- [Input Level and Gain Staging](input-level-gain-staging.md): global input presets, MASTER INPUT SETTING, symptoms, CLI inspect order.
+- [Input Level Calibration Workflow](input-level-calibration.md): agent steps to calibrate and save a global input preset for one instrument.
 - [Sound List Extraction](sound-list.md): preset patch list shape and physical control columns.
 - [Agent Workflows](agent-workflows.md): how to combine wiki knowledge with CLI reads.
 
