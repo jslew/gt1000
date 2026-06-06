@@ -2,15 +2,23 @@
 
 MIDI-only commands (`patch`, `ports`, `system`, etc.) need **no extra Python packages**. USB **audio lab** (`audio generate-tone`, `compare-branches`, `probe-param`, …) needs **sounddevice** and **numpy** once per Python environment. Installing the skill copies files only; it does **not** run `pip` for you.
 
-**Before the first audio lab command**, install into the project or agent venv (not system Python):
+**Before the first audio lab command**, install into the Python environment that will run `$GT1000_AGENT`.
+Prefer a project or agent venv instead of system Python:
 
 ```sh
-"<skill-dir>/requirements-audio.txt"   # bundled next to SKILL.md
 python3 -m venv .venv                    # if the project has no venv yet
 .venv/bin/pip install -r "<skill-dir>/requirements-audio.txt"
 ```
 
+In the source checkout, `<skill-dir>` is usually `skills/gt1000`, so the direct command is:
+
+```sh
+python3 -m pip install -r skills/gt1000/requirements-audio.txt
+```
+
 Use only that requirements file (`sounddevice`, `numpy`). **Do not** install `soundfile` or other extras unless another tool in the project needs them—the audio lab uses the stdlib `wave` module for WAV files.
+
+If an audio command fails with `ModuleNotFoundError: No module named 'numpy'` or `No module named 'sounddevice'`, install the requirements above and retry the failed audio command once. Do not keep retrying the live command before fixing the Python environment.
 
 Confirm audio works:
 
@@ -20,6 +28,13 @@ $GT1000_AGENT --pretty audio probe --duration 3
 ```
 
 Use the same interpreter for later audio commands (project `.venv/bin/python` behind the wrapper, or set `GT1000_AUDIO_PYTHON` when developing the gt1000 repo).
+
+## Operational recovery notes
+
+- If `audio compare-branches` or `audio render-branch` fails with `No GT-1000 MIDI destination found`, stop the investigation and run exactly one `$GT1000_AGENT --pretty ports --live --timeout 8`.
+- If ports are missing or port enumeration hangs, quit BOSS Tone Studio/DAWs, reconnect or power-cycle the GT-1000, then check ports again before any write or render.
+- If ports are visible but a known small write/read still fails, do not keep issuing temporary divider writes. Re-select the slot after recovery so the temporary patch returns to a known state, then restart the measurement step.
+- For repeated branch renders in one investigation, run `audio prepare-reamp` once, then pass `--no-prepare-usb` on later render/compare commands to reduce extra CoreMIDI traffic.
 
 ## Tell the user what macOS will ask for
 

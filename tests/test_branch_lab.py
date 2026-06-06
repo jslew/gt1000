@@ -1,9 +1,12 @@
+import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from tools.gt1000.audio_lab import branch_lab
+from tools.gt1000 import live, patch_edit
 
 
 class BranchLabTests(unittest.TestCase):
@@ -80,17 +83,39 @@ class BranchLabTests(unittest.TestCase):
             ), mock.patch.object(
                 branch_lab, "apply_plan", return_value={"verified": True}
             ), mock.patch.object(
+                branch_lab, "apply_plan_after_audio", return_value={"verified": True}
+            ), mock.patch.object(
                 branch_lab,
                 "_render_branch",
                 side_effect=[
                     {"label": "divider1-branch-A", "wetPath": "/tmp/a.wav", "wetMetrics": {"rmsDbfs": -20.0}},
                     {"label": "divider1-branch-B", "wetPath": "/tmp/b.wav", "wetMetrics": {"rmsDbfs": -24.0}},
                 ],
-            ), mock.patch.object(branch_lab, "restore_divider_data", return_value={"verified": True}):
+            ), mock.patch.object(branch_lab, "restore_divider_data_after_audio", return_value={"verified": True}):
                 result = branch_lab.compare_branches("lab", "divider1", midi_timeout=1.0, verify_writes=False)
 
         self.assertEqual(result["id"], "audioCompareBranches")
         self.assertAlmostEqual(result["comparison"]["deltaRmsDbBranchBVsA"], -4.0)
+
+    def test_apply_plan_fresh_process_serializes_plan(self) -> None:
+        plan = patch_edit.PatchPlan(
+            "set:divider1.channelSelect",
+            "Set divider channel",
+            [live.PatchWrite("Set divider1.channelSelect", [0x10, 0x00, 0x10, 0x0E], [1])],
+        )
+        completed = subprocess.CompletedProcess(
+            args=["python"],
+            returncode=0,
+            stdout='{"plan": "set:divider1.channelSelect", "verified": false}',
+            stderr="",
+        )
+        with mock.patch.object(branch_lab.subprocess, "run", return_value=completed) as run:
+            result = branch_lab.apply_plan_fresh_process(plan, timeout=12, verify=False)
+
+        self.assertEqual(result["plan"], "set:divider1.channelSelect")
+        payload = json.loads(run.call_args.kwargs["input"])
+        self.assertEqual(payload["writes"][0]["address"], [0x10, 0x00, 0x10, 0x0E])
+        self.assertEqual(payload["writes"][0]["data"], [1])
 
 
 if __name__ == "__main__":

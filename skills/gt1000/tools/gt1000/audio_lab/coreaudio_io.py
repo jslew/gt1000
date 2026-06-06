@@ -21,12 +21,44 @@ def coreaudio_available() -> bool:
     return True
 
 
+def _initialize_portaudio() -> None:
+    import sounddevice as sd
+
+    initialize = getattr(sd, "_initialize", None)
+    if initialize is None:
+        return
+    try:
+        initialize()
+    except Exception:
+        pass
+
+
 def _require_coreaudio() -> None:
     if not coreaudio_available():
         raise AudioLabError(
             "PortAudio I/O requires sounddevice and numpy: pip install -r skills/gt1000/requirements-audio.txt",
             64,
         )
+    _initialize_portaudio()
+
+
+def _teardown_portaudio() -> None:
+    """Release PortAudio/CoreAudio handles before the next CoreMIDI operation."""
+    try:
+        import sounddevice as sd
+    except ImportError:
+        return
+    try:
+        sd.stop()
+    except Exception:
+        pass
+    terminate = getattr(sd, "_terminate", None)
+    if terminate is None:
+        return
+    try:
+        terminate()
+    except Exception:
+        pass
 
 
 def list_input_devices() -> list[dict[str, Any]]:
@@ -205,14 +237,17 @@ def record_multichannel(
         recorded_chunks.append(indata.copy())
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with sd.InputStream(
-        device=index,
-        samplerate=sample_rate,
-        channels=channels,
-        dtype="float32",
-        callback=callback,
-    ):
-        sd.sleep(int(capture_seconds * 1000))
+    try:
+        with sd.InputStream(
+            device=index,
+            samplerate=sample_rate,
+            channels=channels,
+            dtype="float32",
+            callback=callback,
+        ):
+            sd.sleep(int(capture_seconds * 1000))
+    finally:
+        _teardown_portaudio()
 
     if not recorded_chunks:
         raise AudioLabError("sounddevice capture returned no audio frames", 64)
@@ -261,9 +296,13 @@ def play_wav(
     duration = audio.shape[0] / float(sample_rate)
     if pre_roll > 0:
         time.sleep(pre_roll)
-    sd.play(audio, sample_rate, device=index, blocking=blocking)
-    if blocking:
-        sd.wait()
+    try:
+        sd.play(audio, sample_rate, device=index, blocking=blocking)
+        if blocking:
+            sd.wait()
+    finally:
+        if blocking:
+            _teardown_portaudio()
     device_info = _device_dict(index, device, direction="output")
     return {
         "playbackPath": str(input_path),
@@ -330,10 +369,13 @@ def duplex_playback_capture(
         dtype="float32",
         callback=callback,
     )
-    with stream:
-        if pre_roll > 0:
-            sd.sleep(int(pre_roll * 1000))
-        sd.sleep(int((capture_frames / sample_rate) * 1000) + 100)
+    try:
+        with stream:
+            if pre_roll > 0:
+                sd.sleep(int(pre_roll * 1000))
+            sd.sleep(int((capture_frames / sample_rate) * 1000) + 100)
+    finally:
+        _teardown_portaudio()
 
     if not recorded_chunks:
         raise AudioLabError("duplex capture returned no audio frames", 64)

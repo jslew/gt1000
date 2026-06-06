@@ -10,7 +10,7 @@ from typing import Any
 from . import coreaudio_io
 from .devices import USB_DRY_STEREO, USB_MAIN_STEREO
 from .errors import AudioLabError
-from .metrics import analyze_multichannel_peaks, capture_silence_troubleshooting
+from .metrics import analyze_multichannel_peaks, capture_silence_troubleshooting, reamp_silence_error_message
 from .setup_efct import prepare_usb_reamp
 from .wav_io import extract_channels, upmix_stereo_for_usb_role
 
@@ -153,6 +153,11 @@ def reamp_capture(
         if temp_dir is not None:
             temp_dir.cleanup()
     capture_info = duplex_info or {}
+    if capture_info.get("digitalSilence"):
+        raise AudioLabError(
+            reamp_silence_error_message(playback_role=playback_role, capture_path=capture_path),
+            66,
+        )
 
     extract_info = extract_channels(capture_path, USB_MAIN_STEREO, output_path)
     return {

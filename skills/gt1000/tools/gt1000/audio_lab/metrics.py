@@ -8,6 +8,8 @@ from typing import Any
 
 from .wav_io import read_wav
 
+SIGNAL_RMS_FLOOR_DBFS = -96.0
+
 
 def _rms_dbfs(samples: list[float]) -> float | None:
     if not samples:
@@ -55,7 +57,10 @@ def analyze_multichannel_peaks(path: Path) -> dict[str, Any]:
                 "rmsDbfs": _rms_dbfs(samples),
             }
         )
-    any_signal = any(item.get("peakDbfs") is not None for item in channel_metrics)
+    any_signal = any(
+        rms is not None and rms > SIGNAL_RMS_FLOOR_DBFS
+        for rms in (item.get("rmsDbfs") for item in channel_metrics)
+    )
     return {
         "path": str(path),
         "sampleRate": sample_rate,
@@ -69,9 +74,9 @@ def capture_silence_troubleshooting(*, bus: str | None = None) -> list[str]:
     tips = [
         "Install Core Audio capture: pip install -r skills/gt1000/requirements-audio.txt "
         "(sounddevice + numpy). This is the default capture path on macOS.",
+        "macOS: System Settings > Privacy & Security > Microphone > allow the app running gt1000-agent "
+        "(Codex, Terminal, Ghostty, Cursor, or iTerm), then restart that app.",
         "Quit GarageBand, Logic, or any other app using the GT-1000 USB audio device, then retry.",
-        "macOS: System Settings → Privacy & Security → Microphone → allow the app running gt1000-agent "
-        "(Cursor, Terminal, or iTerm).",
         "Play guitar during the capture window; silence produces zero waveforms.",
     ]
     if bus == "dry":
@@ -82,6 +87,19 @@ def capture_silence_troubleshooting(*, bus: str | None = None) -> list[str]:
     elif bus == "main":
         tips.append("This capture uses USB channels 1–2 (MAIN / processed path).")
     return tips
+
+
+def reamp_silence_error_message(*, playback_role: str, capture_path: Path) -> str:
+    tips = [
+        "GT-1000 USB re-amp captured digital silence on all input channels after playing a non-silent dry WAV.",
+        f"Playback role was {playback_role!r}; six-channel capture path: {capture_path}.",
+        "Most likely cause: macOS Microphone permission is missing for the app running gt1000-agent "
+        "(Codex, Terminal, Ghostty, Cursor, or iTerm). Grant it, restart that app, then retry.",
+        "Also quit GarageBand, Logic, Tone Studio, or any other app using the GT-1000 USB audio device.",
+        "If permissions are correct, verify the GT-1000 USB audio routing: USB DIR MON OFF for re-amp, "
+        "USB TO EFX/EFX OUT levels up, and any physical send/return loop used by the patch closed.",
+    ]
+    return " ".join(tips)
 
 
 def _trim_channels(

@@ -20,7 +20,7 @@ On a GT-1000 with IMPRESSION loaded (divider 1, single mode), USB re-amp of a sh
 
 ### Setup
 
-1. GT-1000 connected; audio deps installed once per venv (`pip install -r <skill-dir>/requirements-audio.txt`; see `references/skill-audio-setup.md`).
+1. GT-1000 connected; audio deps installed once per active Python environment (`pip install -r <skill-dir>/requirements-audio.txt`; see `references/skill-audio-setup.md`). If `numpy` or `sounddevice` is missing, install the requirements and retry the failed audio command once.
 2. `patch select U01-3 --live` (IMPRESSION).
 3. New Cursor chat with gt1000 skill + repo context; **do not** paste this verification doc into the prompt.
 
@@ -66,7 +66,7 @@ $PY -B $AGENT --pretty audio generate-tone --session "$SESSION" --duration 3
 $PY -B $AGENT --pretty audio prepare-reamp --midi-timeout 15
 
 echo "=== branch-context ==="
-$PY -B $AGENT --pretty audio branch-context --divider divider1 --live --timeout 15
+$PY -B $AGENT --pretty audio branch-context --divider divider1 --midi-timeout 15
 
 echo "=== baseline compare ==="
 $PY -B $AGENT --pretty audio compare-branches --session "$SESSION" --divider divider1 \
@@ -117,6 +117,7 @@ After selecting U01-3, the live compare test must pass (divider in chain, plausi
 - First process: `prepare-reamp`; later: `--no-prepare-usb`.
 - Re-select `U01-3` before each agent trial so temp patch matches the library.
 - Compare agent **narrative** to Test B **numbers** (Δ, `affectsReamp`, ranked control).
+- If `compare-branches` fails with `No GT-1000 MIDI destination found`, stop the replay, run one `ports --live --timeout 8`, and recover USB/CoreMIDI before continuing. Do not score a single branch render as a complete A/B result.
 
 ## Related
 

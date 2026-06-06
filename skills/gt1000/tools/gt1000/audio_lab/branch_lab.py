@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -672,7 +676,7 @@ def render_branch(
     finally:
         if restore_divider:
             try:
-                restore = restore_divider_data(divider_id, original, timeout=midi_timeout, verify=verify_writes)
+                restore = restore_divider_data_after_audio(divider_id, original, timeout=midi_timeout, verify=verify_writes)
             except live.LiveMIDIError:
                 restore = {"ok": False, "warning": "Could not restore divider bytes after render-branch."}
 
@@ -715,6 +719,75 @@ def apply_plan(plan: patch_edit.PatchPlan, *, timeout: float, verify: bool) -> d
         return patch_edit.apply_plan(plan, timeout=timeout, verify=verify)
 
 
+def _plan_payload(plan: patch_edit.PatchPlan) -> dict[str, Any]:
+    return {
+        "id": plan.id,
+        "description": plan.description,
+        "writes": [
+            {
+                "label": write.label,
+                "address": list(write.address),
+                "data": list(write.data),
+            }
+            for write in plan.writes
+        ],
+    }
+
+
+def apply_plan_fresh_process(plan: patch_edit.PatchPlan, *, timeout: float, verify: bool) -> dict[str, Any]:
+    """Apply a MIDI write in a fresh process after PortAudio has run in this one."""
+    script = """
+import json
+import sys
+from gt1000 import live, patch_edit
+
+payload = json.load(sys.stdin)
+plan = patch_edit.PatchPlan(
+    id=payload["id"],
+    description=payload.get("description", payload["id"]),
+    writes=[
+        live.PatchWrite(item["label"], item["address"], item["data"])
+        for item in payload["writes"]
+    ],
+)
+result = patch_edit.apply_plan(plan, timeout=float(payload["timeout"]), verify=bool(payload["verify"]))
+json.dump(result, sys.stdout)
+"""
+    tools_dir = Path(__file__).resolve().parents[2]
+    env = dict(os.environ)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env.setdefault("GT1000_WRITE_RETRY_ATTEMPTS", "2")
+    env["PYTHONPATH"] = os.pathsep.join(
+        item
+        for item in [str(tools_dir), env.get("PYTHONPATH", "")]
+        if item
+    )
+    payload = {**_plan_payload(plan), "timeout": timeout, "verify": verify}
+    process_timeout = max(45.0, timeout + 35.0)
+    completed = subprocess.run(
+        [sys.executable, "-B", "-c", script],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+        timeout=process_timeout,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        raise live.LiveMIDIError(detail or f"fresh MIDI write process exited {completed.returncode}")
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise live.LiveMIDIError(f"fresh MIDI write returned invalid JSON: {completed.stdout!r}") from error
+
+
+def apply_plan_after_audio(plan: patch_edit.PatchPlan, *, timeout: float, verify: bool) -> dict[str, Any]:
+    if os.environ.get("GT1000_BRANCH_LAB_FRESH_MIDI_AFTER_AUDIO", "1") == "0":
+        return apply_plan(plan, timeout=timeout, verify=verify)
+    return apply_plan_fresh_process(plan, timeout=timeout, verify=verify)
+
+
 def restore_divider_data(divider_id: str, original: list[int], *, timeout: float, verify: bool) -> dict[str, Any]:
     address = patch_edit.block_address(divider_id)
     plan = patch_edit.PatchPlan(
@@ -723,6 +796,16 @@ def restore_divider_data(divider_id: str, original: list[int], *, timeout: float
         writes=[live.PatchWrite(f"Restore {divider_id}", address, list(original))],
     )
     return apply_plan(plan, timeout=timeout, verify=verify)
+
+
+def restore_divider_data_after_audio(divider_id: str, original: list[int], *, timeout: float, verify: bool) -> dict[str, Any]:
+    address = patch_edit.block_address(divider_id)
+    plan = patch_edit.PatchPlan(
+        id=f"restore:{divider_id}",
+        description=f"Restore {divider_id} bytes captured before branch lab.",
+        writes=[live.PatchWrite(f"Restore {divider_id}", address, list(original))],
+    )
+    return apply_plan_after_audio(plan, timeout=timeout, verify=verify)
 
 
 def _render_branch(
@@ -805,7 +888,11 @@ def compare_branches(
             settle_seconds=settle_seconds,
         )
         time.sleep(0.75)
-        apply_plan(build_channel_select_plan(divider_id, 1, slot=user_slot), timeout=midi_timeout, verify=verify_writes)
+        apply_plan_after_audio(
+            build_channel_select_plan(divider_id, 1, slot=user_slot),
+            timeout=midi_timeout,
+            verify=verify_writes,
+        )
         applied.append({"channel": 1, "label": BRANCH_LABELS[1]})
         time.sleep(settle_seconds)
         render_b = _render_branch(
@@ -817,15 +904,16 @@ def compare_branches(
             settle_seconds=settle_seconds,
         )
     except live.LiveMIDIError as error:
-        try:
-            restore_divider_data(divider_id, original, timeout=midi_timeout, verify=False)
-        except live.LiveMIDIError:
-            pass
+        if restore is None:
+            try:
+                restore = restore_divider_data_after_audio(divider_id, original, timeout=midi_timeout, verify=False)
+            except live.LiveMIDIError:
+                restore = {"ok": False, "warning": "Could not restore divider bytes after failed branch lab run."}
         raise AudioLabError(str(error), 64) from error
     finally:
         if restore is None:
             try:
-                restore = restore_divider_data(divider_id, original, timeout=midi_timeout, verify=verify_writes)
+                restore = restore_divider_data_after_audio(divider_id, original, timeout=midi_timeout, verify=verify_writes)
             except live.LiveMIDIError:
                 restore = {"ok": False, "warning": "Could not restore divider bytes over MIDI after branch lab run."}
 
@@ -895,5 +983,3 @@ def _compare_summary(divider_id: str, comparison: dict[str, Any], hypothesis: di
     if delta is None:
         return f"{divider_id}: branch comparison incomplete (missing RMS)."
     return f"{divider_id}: Δ(B−A) = {delta:+.2f} dB RMS. {hypothesis.get('detail', '')}"
-
-

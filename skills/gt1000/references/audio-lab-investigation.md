@@ -8,7 +8,7 @@ Level-matching two divider branches is one example goal, not a built-in closed-l
 
 - User wants a measurable outcome on the **same dry take** (e.g. “balance DIV1 A and B within 1 dB”, “see if drive is 3 dB hotter than clean”).
 - Patch uses a **divider in single mode** (or you can explain why compare-branches refused).
-- Hardware: GT-1000 USB, audio deps installed, `audio prepare-reamp` / DIR MON understood ([gt1000-wiki/usb-audio.md](gt1000-wiki/usb-audio.md)).
+- Hardware: GT-1000 USB, audio deps installed, `audio prepare-reamp` / DIR MON understood ([skill-audio-setup.md](skill-audio-setup.md), [gt1000-wiki/usb-audio.md](gt1000-wiki/usb-audio.md)).
 
 Default investigation budget unless the user says otherwise: **5 minutes** of MIDI + re-amp steps. Log each iteration (hypothesis, command, metric) in the session `meta.json` `events` list or your run notes.
 
@@ -18,7 +18,7 @@ Default investigation budget unless the user says otherwise: **5 minutes** of MI
 |-----------|---------|------|
 | Chain inspect | `patch chain --live` | Full routing, unreachable branches |
 | Block inspect | `patch block <id> --live` | Current parameter values |
-| Branch context | `audio branch-context --divider divider1 --live` | Divider state, per-branch blocks + adjustable params, reachability (no re-amp) |
+| Branch context | `audio branch-context --divider divider1 --midi-timeout 15` | Divider state, per-branch blocks + adjustable params, reachability (no re-amp) |
 | Baseline A/B | `audio compare-branches --session <s> --divider divider1` | Two renders (A/B), Δ RMS; restores divider bytes |
 | Screen controls | `audio probe-branch --session <s> --channel branch-B` | Low/high probe per candidate block; ranked `effectiveControls` |
 | Single-param test | `audio probe-param --session <s> --channel branch-B --block dist1 --param level` | One hypothesis check; restores probed block |
@@ -31,6 +31,8 @@ Default investigation budget unless the user says otherwise: **5 minutes** of MI
 | Session | `audio session init`, `audio generate-tone` / `record-dry` | Shared `dry.wav` |
 
 Do **not** assume divider `levelA` / `levelB` work until `probe-param` or `probe-branch` shows `affectsReamp: true`.
+
+Before the first audio-lab command in a new environment, check [skill-audio-setup.md](skill-audio-setup.md). If an audio command fails because `numpy` or `sounddevice` is missing, install `requirements-audio.txt` into the active Python environment and retry the failed audio command once.
 
 ## Investigation loop (agent-owned)
 
@@ -53,7 +55,7 @@ flowchart TD
 
 ```bash
 scripts/gt1000-agent --pretty patch chain --live --timeout 15
-scripts/gt1000-agent --pretty audio branch-context --divider divider1 --live --timeout 15
+scripts/gt1000-agent --pretty audio branch-context --divider divider1 --midi-timeout 15
 ```
 
 ### 2. Hypothesis
@@ -89,6 +91,8 @@ Use `--trim-start` / `--trim-end` on `render-branch` or `analyze-trimmed` for lo
 - Re-measure after each meaningful edit.
 - Respect time budget (~5 min default).
 - Restore: `compare-branches` / `render-branch` / `probe-*` restore divider or probed blocks; re-`patch select` if the temp patch is messy.
+- If a render/compare fails with `No GT-1000 MIDI destination found`, stop live writes and run one `ports --live --timeout 8` check. If ports are missing or a small known write still fails, recover the USB/CoreMIDI connection before continuing. Do not repeatedly retry divider writes against an unstable endpoint.
+- If `compare-branches` fails after producing only one branch render, do not report a complete A/B baseline. You may analyze the completed WAV offline, but label it as partial and restart measurement after MIDI recovery.
 
 ## Example goal: DIV1 branches within 1 dB
 
@@ -96,7 +100,7 @@ Use `--trim-start` / `--trim-end` on `render-branch` or `analyze-trimmed` for lo
 scripts/gt1000-agent --pretty audio session init --session div-inv --live --midi-timeout 20
 scripts/gt1000-agent --pretty audio generate-tone --session div-inv --duration 10
 scripts/gt1000-agent --pretty audio prepare-reamp --midi-timeout 15
-scripts/gt1000-agent --pretty audio branch-context --divider divider1 --live
+scripts/gt1000-agent --pretty audio branch-context --divider divider1 --midi-timeout 15
 scripts/gt1000-agent --pretty audio compare-branches --session div-inv --divider divider1 --no-prepare-usb
 scripts/gt1000-agent --pretty audio probe-branch --session div-inv --channel branch-B --no-prepare-usb
 # Agent picks best effectiveControl, iterates patch set + compare-branches until |Δ| ≤ 1 dB or timeout

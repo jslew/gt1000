@@ -93,7 +93,8 @@ Correct edit rhythm: **one live read** → decide → **one live write** (with `
 
 - **No duplicate commands**: do not re-run the same CLI or shell command unless the user changed the target, you fixed a documented blocker, or the prior run failed. After a failure, fix the blocker once, then retry **once**.
 - **No reference mining by default**: do not `grep`, `cat`, or open files under `references/` until a structured CLI command has failed to answer the question or you need one specific fact for a safe write. Prefer CLI output (`branch-context`, `patch block`, `doctor`, etc.) over manual search.
-- If **USB audio lab** fails with a missing `sounddevice` / `numpy` error and first-time setup was skipped in this environment, open `references/skill-audio-setup.md` once, then retry the failed command once.
+- If **USB audio lab** fails with a missing `sounddevice` / `numpy` error and first-time setup was skipped in this environment, open `references/skill-audio-setup.md`, install the bundled audio requirements into the active Python environment, then retry the failed command once.
+- If a branch render/compare fails with `No GT-1000 MIDI destination found`, stop live writes, run one `ports --live --timeout 8` check, and follow the recovery path in `references/skill-audio-setup.md`. Do not repeatedly retry divider writes against an unstable endpoint.
 
 ### Hypotheses (falsifiable inference)
 

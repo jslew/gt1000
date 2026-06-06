@@ -1,13 +1,15 @@
 import json
 import math
 import struct
+import sys
 import tempfile
 import unittest
 import wave
 from unittest import mock
 from pathlib import Path
 
-from tools.gt1000.audio_lab import devices, metrics, session, wav_io
+from tools.gt1000.audio_lab import audio_io, coreaudio_io, devices, metrics, session, wav_io
+from tools.gt1000.audio_lab.errors import AudioLabError
 from tools.gt1000.audio_lab.metrics import analyze_multichannel_peaks
 from tools.gt1000.audio_lab.commands import cmd_analyze, cmd_generate_tone, cmd_session_init
 from tools.gt1000.audio_lab.session import sanitize_label
@@ -110,6 +112,25 @@ class AudioLabTests(unittest.TestCase):
             self.assertIsNotNone(report["channelMetrics"][0]["peakDbfs"])
             self.assertIsNone(report["channelMetrics"][1]["peakDbfs"])
 
+    def test_analyze_multichannel_peaks_treats_sub_floor_noise_as_no_signal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            capture = Path(tmp) / "cap6.wav"
+            sample_rate = 44100
+            frames = 200
+            with wave.open(str(capture), "wb") as handle:
+                handle.setnchannels(6)
+                handle.setsampwidth(2)
+                handle.setframerate(sample_rate)
+                payload = bytearray()
+                for frame in range(frames):
+                    for channel in range(6):
+                        value = 1 if channel == 0 and frame == 0 else 0
+                        payload += struct.pack("<h", value)
+                handle.writeframes(payload)
+            report = analyze_multichannel_peaks(capture)
+            self.assertFalse(report["anySignal"])
+            self.assertIsNotNone(report["channelMetrics"][0]["peakDbfs"])
+
     def test_extract_usb_dry_channels(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             capture = Path(tmp) / "cap6.wav"
@@ -143,6 +164,50 @@ class AudioLabTests(unittest.TestCase):
                 result = audio_io.record_multichannel(path, duration=1.0)
             record.assert_called_once()
             self.assertEqual(result["captureBackend"], "coreaudio")
+
+    def test_probe_silence_warning_names_codex_and_restart(self) -> None:
+        with mock.patch(
+            "tools.gt1000.audio_lab.audio_io.record_multichannel",
+            return_value={"captureBackend": "coreaudio", "anySignal": False},
+        ), mock.patch(
+            "tools.gt1000.audio_lab.audio_io.analyze_multichannel_peaks",
+            return_value={"anySignal": False, "channelMetrics": []},
+        ):
+            result = audio_io.probe_capture(duration=0.1)
+        warning = " ".join(result["troubleshooting"])
+        self.assertIn("Codex", warning)
+        self.assertIn("restart", warning)
+
+    def test_reamp_fails_when_duplex_capture_is_digital_silence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dry = Path(tmp) / "dry.wav"
+            wet = Path(tmp) / "wet.wav"
+            wav_io.generate_sine_tone(dry, duration=0.1, amplitude=0.2)
+            with mock.patch(
+                "tools.gt1000.audio_lab.coreaudio_io.duplex_playback_capture",
+                return_value={"digitalSilence": True, "captureBackend": "coreaudio"},
+            ):
+                with self.assertRaises(AudioLabError) as caught:
+                    audio_io.reamp_capture(dry, wet, prepare_usb=False)
+        message = str(caught.exception)
+        self.assertIn("captured digital silence", message)
+        self.assertIn("Microphone permission", message)
+        self.assertIn("Codex", message)
+        self.assertIn("send/return", message)
+        self.assertEqual(caught.exception.exit_code, 66)
+
+    def test_coreaudio_teardown_stops_and_terminates_portaudio(self) -> None:
+        fake_sounddevice = mock.Mock()
+        with mock.patch.dict(sys.modules, {"sounddevice": fake_sounddevice}):
+            coreaudio_io._teardown_portaudio()
+        fake_sounddevice.stop.assert_called_once_with()
+        fake_sounddevice._terminate.assert_called_once_with()
+
+    def test_coreaudio_require_initializes_portaudio(self) -> None:
+        fake_sounddevice = mock.Mock()
+        with mock.patch.dict(sys.modules, {"sounddevice": fake_sounddevice, "numpy": mock.Mock()}):
+            coreaudio_io._require_coreaudio()
+        fake_sounddevice._initialize.assert_called_once_with()
 
     def test_is_gt1000_audio_name(self) -> None:
         self.assertTrue(devices.is_gt1000_audio_name("GT-1000"))
