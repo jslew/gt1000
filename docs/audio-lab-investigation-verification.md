@@ -120,5 +120,5 @@ After selecting U01-3, the live compare test must pass (divider in chain, plausi
 
 ## Related
 
-- [audio-lab-investigation.md](audio-lab-investigation.md) — protocol  
-- [AGENTS.md](../AGENTS.md) — live audio env  
+- [audio-lab-investigation.md](audio-lab-investigation.md) — protocol
+- [AGENTS.md](../AGENTS.md) — live audio env

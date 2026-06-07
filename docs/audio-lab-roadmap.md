@@ -2,7 +2,7 @@
 
 Implementation plan for USB dry capture, GT-1000 re-amping, DSP comparison, and (later) reference-tone matching. This extends the existing SysEx/patch CLI; it does not replace it.
 
-**Status:** Phases 1–2 complete; Phase 3 (measurement + investigation primitives for agent-led experiments) on branch `roadmap/audio-lab`. Phase 4 tone chase not started.  
+**Status:** Phases 1-3 complete; Phase 4 tone chase not started.
 **Related:** [musician-cli-backlog.md](musician-cli-backlog.md), [AGENTS.md](../AGENTS.md), [audio-lab-reamp-protocol.md](audio-lab-reamp-protocol.md), [midi-reference/address-map.md](../skills/gt1000/references/midi-reference/address-map.md)
 
 ## Vision
@@ -241,7 +241,7 @@ Optional: user weights “more mids” via band weight overrides.
 
 | Dependency | Phases |
 |------------|--------|
-| Python 3.10+ | All |
+| Python 3.9+ | All |
 | `numpy` + `sounddevice` (`skills/gt1000/requirements-audio.txt`) | 1+ |
 | Optional `pyloudnorm` | 1+ (LUFS) |
 | Core Audio permissions (non-sandboxed agent) | 1+ live |

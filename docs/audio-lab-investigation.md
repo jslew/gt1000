@@ -142,7 +142,7 @@ To test that an agent reaches the same conclusions as a known patch (e.g. IMPRES
 
 ## Related
 
-- [audio-lab-investigation-verification.md](audio-lab-investigation-verification.md)  
-- [audio-lab-roadmap.md](audio-lab-roadmap.md)  
-- [AGENTS.md](../AGENTS.md)  
+- [audio-lab-investigation-verification.md](audio-lab-investigation-verification.md)
+- [audio-lab-roadmap.md](audio-lab-roadmap.md)
+- [AGENTS.md](../AGENTS.md)
 - [audio-lab-reamp-protocol.md](audio-lab-reamp-protocol.md)

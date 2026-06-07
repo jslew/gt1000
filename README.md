@@ -139,7 +139,7 @@ If you prefer not to use a CLI tool, you can copy the `skills/gt1000` directory 
 ## Requirements
 
 - macOS for the bundled live backend, which uses CoreMIDI through Python `ctypes`.
-- Python 3.
+- Python 3.9 or newer. The bundled skill is tested against the default macOS Python 3.9 runtime and newer Homebrew Python builds.
 - A GT-1000 or GT-1000CORE connected over USB/MIDI.
 - The normal MIDI endpoint should appear as `GT-1000`. Avoid `GT-1000 DAW CTRL` unless you deliberately want DAW-control behavior.
 
@@ -268,4 +268,3 @@ The bundled live backend currently targets macOS/CoreMIDI, and the current write
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
 **Disclaimer:** This software is an independent open-source project and is **not** affiliated with, authorized, maintained, sponsored, or endorsed by Roland Corporation, BOSS, or any of their affiliates or subsidiaries. Using this software to read/write to your device via MIDI SysEx is done at your own risk. See the [DISCLAIMER.md](DISCLAIMER.md) file for more details.
-

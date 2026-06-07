@@ -146,6 +146,6 @@ To test that an agent reaches the same conclusions as a known patch (e.g. IMPRES
 
 ## Related
 
-- [audio-lab-investigation-verification.md](audio-lab-investigation-verification.md)  
-- [gt1000-wiki/usb-audio.md](gt1000-wiki/usb-audio.md)  
+- [audio-lab-investigation-verification.md](audio-lab-investigation-verification.md)
+- [gt1000-wiki/usb-audio.md](gt1000-wiki/usb-audio.md)
 - [midi-reference/cli-usage.md](midi-reference/cli-usage.md)
