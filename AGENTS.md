@@ -86,6 +86,7 @@
 ## Python Live MIDI Notes
 
 - `skills/gt1000/tools/gt1000/live.py` uses Python `ctypes` against CoreMIDI.
+- `gt1000-agent` takes a global process lock for the whole CLI, including `--help`, offline plans, and audio/session commands. Do not run multiple `gt1000-agent` invocations in parallel with `multi_tool_use.parallel`; even non-live probes can fail with exit `75` and create review/test friction. Parallel shell reads such as `rg`, `sed`, `git diff`, and `nl` are fine.
 - Codex CLI live MIDI verification must run outside the normal workspace/read-only sandbox, for example with yolo/`--dangerously-bypass-approvals-and-sandbox` or `-s danger-full-access`. The normal sandbox can deny CoreMIDI Mach service access and look like a GT-1000 timeout; the CLI includes a fast-fail sandbox/CoreMIDI preflight for live commands.
 - CoreMIDI callbacks run on CoreMIDI-owned threads. Copy packet bytes in the callback, then update guarded Python state.
 - Run live patch reads sequentially. Separate CLI processes can interleave GT-1000 replies on the same MIDI source. `gt1000-agent` enforces one process at a time via `~/.gt1000-agent/cli.lock` (exit `75` if another instance is running).
