@@ -73,9 +73,9 @@ Use this to distinguish dry, mono, wide, diffuse, and echo-like candidates. Do n
 
 The reference profile includes a `highEnd` section for upper-end matching:
 
-- presence relative to vocal mids
-- fizz (`5-8 kHz`) relative to presence and vocal mids
-- air (`8-12 kHz`) relative to vocal mids and presence
+- presence relative to lead mids
+- fizz (`5-8 kHz`) relative to presence and lead mids
+- air (`8-12 kHz`) relative to lead mids and presence
 - median and high-percentile ratios across active windows
 
 Use this to avoid candidates with excess high-end hash even when the broad spectral score improves. Excess fizz is penalized asymmetrically: being too fizzy hurts more than being slightly too dark. The metric uses lightweight probe frequencies, so narrow synthetic tones can fall between probes; treat `highEnd` as a robust direction signal, not a laboratory spectrum.
@@ -85,7 +85,7 @@ Use this to avoid candidates with excess high-end hash even when the broad spect
 The reference profile includes a `lowBody` section for body-versus-boom matching:
 
 - sub-bass (`80-160 Hz`) relative to body and mids
-- body (`160-320 Hz`) relative to low mids and vocal mids
+- body (`160-320 Hz`) relative to low mids and lead mids
 - combined body/low-mid (`160-640 Hz`) relative to `640-2500 Hz`
 - asymmetric flub guard for excess sub-bass
 
@@ -103,3 +103,13 @@ The reference profile includes an `envelope` section for dynamics matching:
 - fraction of sustain frames that remain within 12 dB of peak
 
 Use this to distinguish singing sustain from spiky attack or fast decay. This descriptor is most meaningful when comparing renders from the same dry take or otherwise similar phrases. Reverb and delay tails belong primarily to `space`; `envelope` focuses on active/post-attack frames.
+
+### Lead-Mid Focus
+
+The reference profile includes a `leadMid` section for how forward the guitar's singing range is:
+
+- lead-mid energy (`1250-2500 Hz`) relative to low mids, upper low mids, presence, and fizz
+- lead focus index across the surrounding guitar bands
+- median and P10/P90 active-window ratios for consistency across the phrase
+
+Use this to distinguish focused lead guitar mids from low-mid body or high-end fizz. A candidate should not score well here merely because it is brighter or boomier; it should keep the main lead range present relative to the surrounding bands. The fizz ratio is ignored when both reference and candidate are at the spectral floor for fizz, because that case means "no measurable fizz" rather than a meaningful tonal difference.

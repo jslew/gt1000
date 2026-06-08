@@ -25,6 +25,8 @@ HIGH_END_WINDOW_FRAMES = 8192
 HIGH_END_WINDOW_COUNT = 9
 LOW_BODY_WINDOW_FRAMES = 8192
 LOW_BODY_WINDOW_COUNT = 9
+LEAD_MID_FOCUS_WINDOW_FRAMES = 8192
+LEAD_MID_FOCUS_WINDOW_COUNT = 9
 ENVELOPE_FRAME_SECONDS = 0.025
 ENVELOPE_HOP_SECONDS = 0.0125
 ENVELOPE_ACTIVE_RANGE_DB = 24.0
@@ -252,23 +254,23 @@ def _energy_db(energy: float) -> float:
 
 def _window_high_end_metrics(window: list[float], sample_rate: int) -> dict[str, Any]:
     low_mid = max(SPECTRAL_FLOOR, _band_energy(window, sample_rate, 160.0, 1250.0))
-    vocal = max(SPECTRAL_FLOOR, _band_energy(window, sample_rate, 1250.0, 2500.0))
+    lead_mid = max(SPECTRAL_FLOOR, _band_energy(window, sample_rate, 1250.0, 2500.0))
     presence = max(SPECTRAL_FLOOR, _band_energy(window, sample_rate, 2500.0, 5000.0))
     fizz = max(SPECTRAL_FLOOR, _band_energy(window, sample_rate, 5000.0, 8000.0))
     air = max(SPECTRAL_FLOOR, _band_energy(window, sample_rate, 8000.0, 12000.0))
     return {
         "rmsDbfs": _rms_dbfs(window),
         "lowMidEnergyDb": _energy_db(low_mid),
-        "vocalEnergyDb": _energy_db(vocal),
+        "leadMidEnergyDb": _energy_db(lead_mid),
         "presenceEnergyDb": _energy_db(presence),
         "fizzEnergyDb": _energy_db(fizz),
         "airEnergyDb": _energy_db(air),
-        "presenceToVocalDb": _ratio_db(presence, vocal),
+        "presenceToLeadMidDb": _ratio_db(presence, lead_mid),
         "fizzToPresenceDb": _ratio_db(fizz, presence),
-        "fizzToVocalDb": _ratio_db(fizz, vocal),
-        "airToVocalDb": _ratio_db(air, vocal),
+        "fizzToLeadMidDb": _ratio_db(fizz, lead_mid),
+        "airToLeadMidDb": _ratio_db(air, lead_mid),
         "airToPresenceDb": _ratio_db(air, presence),
-        "lowMidToVocalDb": _ratio_db(low_mid, vocal),
+        "lowMidToLeadMidDb": _ratio_db(low_mid, lead_mid),
     }
 
 
@@ -316,9 +318,9 @@ def low_body_profile(
     body = max(SPECTRAL_FLOOR, _band_energy(active, sample_rate, 160.0, 320.0))
     low_mid = max(SPECTRAL_FLOOR, _band_energy(active, sample_rate, 320.0, 640.0))
     mid = max(SPECTRAL_FLOOR, _band_energy(active, sample_rate, 640.0, 1250.0))
-    vocal = max(SPECTRAL_FLOOR, _band_energy(active, sample_rate, 1250.0, 2500.0))
+    lead_mid = max(SPECTRAL_FLOOR, _band_energy(active, sample_rate, 1250.0, 2500.0))
     body_low_mid = max(SPECTRAL_FLOOR, body + low_mid)
-    mid_vocal = max(SPECTRAL_FLOOR, mid + vocal)
+    mid_lead = max(SPECTRAL_FLOOR, mid + lead_mid)
     return {
         "available": True,
         "windowFrames": LOW_BODY_WINDOW_FRAMES,
@@ -330,17 +332,88 @@ def low_body_profile(
         "lowMidEnergyDb": _energy_db(low_mid),
         "bodyLowMidEnergyDb": _energy_db(body_low_mid),
         "midEnergyDb": _energy_db(mid),
-        "vocalEnergyDb": _energy_db(vocal),
-        "midVocalEnergyDb": _energy_db(mid_vocal),
+        "leadMidEnergyDb": _energy_db(lead_mid),
+        "midLeadEnergyDb": _energy_db(mid_lead),
         "subToBodyDb": _ratio_db(sub, body),
         "subToBodyLowMidDb": _ratio_db(sub, body_low_mid),
         "bodyToLowMidDb": _ratio_db(body, low_mid),
-        "bodyToVocalDb": _ratio_db(body, vocal),
-        "lowMidToVocalDb": _ratio_db(low_mid, vocal),
-        "bodyLowMidToMidVocalDb": _ratio_db(body_low_mid, mid_vocal),
-        "subToMidVocalDb": _ratio_db(sub, mid_vocal),
-        "bodyToMidVocalDb": _ratio_db(body, mid_vocal),
+        "bodyToLeadMidDb": _ratio_db(body, lead_mid),
+        "lowMidToLeadMidDb": _ratio_db(low_mid, lead_mid),
+        "bodyLowMidToMidLeadDb": _ratio_db(body_low_mid, mid_lead),
+        "subToMidLeadDb": _ratio_db(sub, mid_lead),
+        "bodyToMidLeadDb": _ratio_db(body, mid_lead),
         "note": "Low-end body descriptors from active windows; body is 160-320 Hz, flub risk is excess 80-160 Hz relative to body/mids.",
+    }
+
+
+def _window_lead_mid_metrics(window: list[float], sample_rate: int) -> dict[str, Any]:
+    low_mid = max(SPECTRAL_FLOOR, _band_energy(window, sample_rate, 320.0, 640.0))
+    upper_low_mid = max(SPECTRAL_FLOOR, _band_energy(window, sample_rate, 640.0, 1250.0))
+    lead_mid = max(SPECTRAL_FLOOR, _band_energy(window, sample_rate, 1250.0, 2500.0))
+    presence = max(SPECTRAL_FLOOR, _band_energy(window, sample_rate, 2500.0, 5000.0))
+    fizz = max(SPECTRAL_FLOOR, _band_energy(window, sample_rate, 5000.0, 8000.0))
+    low_mid_region = max(SPECTRAL_FLOOR, (low_mid + upper_low_mid) * 0.5)
+    surrounding = max(SPECTRAL_FLOOR, (low_mid + upper_low_mid + presence + fizz) * 0.25)
+    return {
+        "rmsDbfs": _rms_dbfs(window),
+        "leadMidEnergyDb": _energy_db(lead_mid),
+        "lowMidEnergyDb": _energy_db(low_mid),
+        "upperLowMidEnergyDb": _energy_db(upper_low_mid),
+        "presenceEnergyDb": _energy_db(presence),
+        "fizzEnergyDb": _energy_db(fizz),
+        "leadMidToLowMidDb": _ratio_db(lead_mid, low_mid_region),
+        "leadMidToUpperLowMidDb": _ratio_db(lead_mid, upper_low_mid),
+        "leadMidToPresenceDb": _ratio_db(lead_mid, presence),
+        "leadMidToFizzDb": _ratio_db(lead_mid, fizz),
+        "leadFocusIndexDb": _ratio_db(lead_mid, surrounding),
+    }
+
+
+def lead_mid_profile(
+    per_channel: list[list[float]],
+    channels: int,
+    *,
+    sample_rate: int,
+) -> dict[str, Any]:
+    mono = _mono_samples(per_channel, channels)
+    windows = _analysis_windows(mono, window_frames=LEAD_MID_FOCUS_WINDOW_FRAMES, count=LEAD_MID_FOCUS_WINDOW_COUNT)
+    if not windows:
+        return {"available": False, "reason": "no analysis windows"}
+    all_rows = [_window_lead_mid_metrics(window, sample_rate) for window in windows if window]
+    rms_values = _field_values(all_rows, "rmsDbfs")
+    active_floor = _percentile(rms_values, 35.0)
+    rows = [
+        row
+        for row in all_rows
+        if active_floor is None or row.get("rmsDbfs") is not None and float(row["rmsDbfs"]) >= active_floor
+    ]
+    if not rows:
+        rows = all_rows
+    fields = (
+        "leadMidToLowMidDb",
+        "leadMidToUpperLowMidDb",
+        "leadMidToPresenceDb",
+        "leadMidToFizzDb",
+        "leadFocusIndexDb",
+    )
+    summary: dict[str, Any] = {
+        "available": True,
+        "windowFrames": LEAD_MID_FOCUS_WINDOW_FRAMES,
+        "windowCount": len(all_rows),
+        "activeWindowCount": len(rows),
+        "activeWindowFloorDbfs": active_floor,
+        "note": "Lead-mid descriptors from active windows; lead-mid band is 1250-2500 Hz, compared to neighboring low mids, presence, and fizz.",
+    }
+    for energy_field in ("leadMidEnergyDb", "lowMidEnergyDb", "upperLowMidEnergyDb", "presenceEnergyDb", "fizzEnergyDb"):
+        values = _field_values(rows, energy_field)
+        summary[energy_field] = _median(values)
+    for field in fields:
+        values = _field_values(rows, field)
+        summary[field] = _median(values)
+        summary[f"{field}P10"] = _percentile(values, 10.0)
+        summary[f"{field}P90"] = _percentile(values, 90.0)
+    return {
+        **summary,
     }
 
 
@@ -483,12 +556,12 @@ def high_end_profile(
     if not rows:
         rows = all_rows
     fields = (
-        "presenceToVocalDb",
+        "presenceToLeadMidDb",
         "fizzToPresenceDb",
-        "fizzToVocalDb",
-        "airToVocalDb",
+        "fizzToLeadMidDb",
+        "airToLeadMidDb",
         "airToPresenceDb",
-        "lowMidToVocalDb",
+        "lowMidToLeadMidDb",
     )
     summary: dict[str, Any] = {
         "available": True,
@@ -795,6 +868,7 @@ def reference_profile(
         "space": space_profile(per_channel, channels, sample_rate=sample_rate),
         "highEnd": high_end_profile(per_channel, channels, sample_rate=sample_rate),
         "lowBody": low_body_profile(per_channel, channels, sample_rate=sample_rate),
+        "leadMid": lead_mid_profile(per_channel, channels, sample_rate=sample_rate),
         "envelope": envelope_profile(per_channel, channels, sample_rate=sample_rate),
         "spectralCentroidHz": None if total_energy <= 0.0 else weighted_frequency / total_energy,
         "rmsDbfs": rms_dbfs,
@@ -815,6 +889,7 @@ def reference_match_score(
     high_end_weight: float = 0.25,
     low_body_weight: float = 0.25,
     envelope_weight: float = 0.2,
+    lead_mid_weight: float = 0.25,
 ) -> dict[str, Any]:
     ref_bands = reference.get("bands") or []
     candidate_bands = candidate.get("bands") or []
@@ -847,6 +922,7 @@ def reference_match_score(
     high_end_error = _high_end_match_error(reference.get("highEnd"), candidate.get("highEnd"))
     low_body_error = _low_body_match_error(reference.get("lowBody"), candidate.get("lowBody"))
     envelope_error = _envelope_match_error(reference.get("envelope"), candidate.get("envelope"))
+    lead_mid_error = _lead_mid_match_error(reference.get("leadMid"), candidate.get("leadMid"))
     score = (
         band_weight * band_error
         + rms_weight * rms_error
@@ -854,6 +930,7 @@ def reference_match_score(
         + high_end_weight * high_end_error
         + low_body_weight * low_body_error
         + envelope_weight * envelope_error
+        + lead_mid_weight * lead_mid_error
     )
     return {
         "score": score,
@@ -863,6 +940,7 @@ def reference_match_score(
         "highEndError": high_end_error,
         "lowBodyError": low_body_error,
         "envelopeError": envelope_error,
+        "leadMidError": lead_mid_error,
         "rmsDeltaDb": rms_delta,
         "bandWeight": band_weight,
         "rmsWeight": rms_weight,
@@ -870,6 +948,7 @@ def reference_match_score(
         "highEndWeight": high_end_weight,
         "lowBodyWeight": low_body_weight,
         "envelopeWeight": envelope_weight,
+        "leadMidWeight": lead_mid_weight,
         "bandErrors": band_errors,
         "note": "Lower score is closer to the stored reference profile; descriptor errors are low-weight tone-shape terms.",
     }
@@ -913,11 +992,11 @@ def _high_end_match_error(reference_high: Any, candidate_high: Any) -> float:
     if not reference_high.get("available") or not candidate_high.get("available"):
         return 0.0
     weighted_fields = (
-        ("fizzToVocalDb", 1.0, 8.0, 3.0),
-        ("fizzToVocalDbP90", 0.8, 8.0, 3.0),
+        ("fizzToLeadMidDb", 1.0, 8.0, 3.0),
+        ("fizzToLeadMidDbP90", 0.8, 8.0, 3.0),
         ("fizzToPresenceDb", 0.8, 6.0, 2.5),
-        ("airToVocalDb", 0.4, 12.0, 2.0),
-        ("presenceToVocalDb", 0.5, 8.0, 1.5),
+        ("airToLeadMidDb", 0.4, 12.0, 2.0),
+        ("presenceToLeadMidDb", 0.5, 8.0, 1.5),
     )
     error = 0.0
     used = 0.0
@@ -943,9 +1022,9 @@ def _low_body_match_error(reference_low: Any, candidate_low: Any) -> float:
         return 0.0
     weighted_fields = (
         ("subToBodyLowMidDb", 1.0, 5.0, 3.0),
-        ("subToMidVocalDb", 0.8, 6.0, 2.5),
-        ("bodyLowMidToMidVocalDb", 0.9, 4.0, 1.5),
-        ("bodyToMidVocalDb", 0.5, 5.0, 1.5),
+        ("subToMidLeadDb", 0.8, 6.0, 2.5),
+        ("bodyLowMidToMidLeadDb", 0.9, 4.0, 1.5),
+        ("bodyToMidLeadDb", 0.5, 5.0, 1.5),
         ("bodyToLowMidDb", 0.4, 6.0, 1.5),
     )
     error = 0.0
@@ -958,6 +1037,44 @@ def _low_body_match_error(reference_low: Any, candidate_low: Any) -> float:
         # Positive deltas in sub ratios mean more boom/flub than the reference, so they hurt more.
         multiplier = excess_multiplier if field.startswith("subTo") else 1.0
         normalized = (float(candidate_value) - float(ref_value)) / scale
+        error += weight * multiplier * normalized * normalized
+        used += weight
+    return 0.0 if used <= 0.0 else error / used
+
+
+def _lead_mid_match_error(reference_lead: Any, candidate_lead: Any) -> float:
+    if not isinstance(reference_lead, dict) or not isinstance(candidate_lead, dict):
+        return 0.0
+    if not reference_lead.get("available") or not candidate_lead.get("available"):
+        return 0.0
+    weighted_fields = (
+        ("leadFocusIndexDb", 1.0, 4.0, 1.0, 1.0),
+        ("leadFocusIndexDbP10", 0.4, 5.0, 1.5, 1.0),
+        ("leadMidToLowMidDb", 0.9, 4.0, 1.5, 1.0),
+        ("leadMidToUpperLowMidDb", 0.7, 4.0, 1.5, 1.0),
+        ("leadMidToPresenceDb", 0.6, 5.0, 1.0, 1.0),
+        ("leadMidToFizzDb", 0.6, 6.0, 1.5, 1.0),
+    )
+    error = 0.0
+    used = 0.0
+    for field, weight, scale, deficit_multiplier, excess_multiplier in weighted_fields:
+        ref_value = reference_lead.get(field)
+        candidate_value = candidate_lead.get(field)
+        if ref_value is None or candidate_value is None:
+            continue
+        if field == "leadMidToFizzDb":
+            ref_fizz = reference_lead.get("fizzEnergyDb")
+            candidate_fizz = candidate_lead.get("fizzEnergyDb")
+            if (
+                ref_fizz is not None
+                and candidate_fizz is not None
+                and float(ref_fizz) <= _energy_db(SPECTRAL_FLOOR) + 0.5
+                and float(candidate_fizz) <= _energy_db(SPECTRAL_FLOOR) + 0.5
+            ):
+                continue
+        delta = float(candidate_value) - float(ref_value)
+        multiplier = deficit_multiplier if delta < 0.0 else excess_multiplier
+        normalized = delta / scale
         error += weight * multiplier * normalized * normalized
         used += weight
     return 0.0 if used <= 0.0 else error / used

@@ -164,6 +164,33 @@ def _write_envelope_fixture(
     wav_io.write_wav_stereo(path, sample_rate, left, right)
 
 
+def _write_lead_mid_fixture(
+    path: Path,
+    *,
+    lead_mid_boost: float = 0.0,
+    low_mid_boost: float = 0.0,
+    fizz_boost: float = 0.0,
+    amplitude: float = 1.0,
+    sample_rate: int = 44100,
+) -> None:
+    frames = int(1.25 * sample_rate)
+    left: list[float] = []
+    right: list[float] = []
+    for index in range(frames):
+        value = amplitude * (
+            0.10 * math.sin(2.0 * math.pi * 440.0 * index / sample_rate)
+            + 0.08 * math.sin(2.0 * math.pi * 895.0 * index / sample_rate)
+            + 0.08 * math.sin(2.0 * math.pi * 1768.0 * index / sample_rate)
+            + 0.04 * math.sin(2.0 * math.pi * 3150.0 * index / sample_rate)
+            + low_mid_boost * math.sin(2.0 * math.pi * 895.0 * index / sample_rate)
+            + lead_mid_boost * math.sin(2.0 * math.pi * 1768.0 * index / sample_rate)
+            + fizz_boost * math.sin(2.0 * math.pi * 5854.0 * index / sample_rate)
+        )
+        left.append(value)
+        right.append(value)
+    wav_io.write_wav_stereo(path, sample_rate, left, right)
+
+
 class AudioLabTests(unittest.TestCase):
     def test_audio_cli_parser_coverage_markers(self) -> None:
         for line in _AUDIO_CLI_PARSER_COVERAGE.strip().splitlines():
@@ -465,8 +492,8 @@ class AudioLabTests(unittest.TestCase):
                 reference["highEnd"]["fizzToPresenceDb"],
             )
             self.assertGreater(
-                fizz["highEnd"]["fizzToVocalDb"],
-                reference["highEnd"]["fizzToVocalDb"],
+                fizz["highEnd"]["fizzToLeadMidDb"],
+                reference["highEnd"]["fizzToLeadMidDb"],
             )
 
     def test_reference_match_score_penalizes_fizz_more_than_presence(self) -> None:
@@ -506,8 +533,8 @@ class AudioLabTests(unittest.TestCase):
             self.assertTrue(body["available"])
             self.assertTrue(flub["available"])
             self.assertGreater(
-                body["bodyLowMidToMidVocalDb"],
-                thin["bodyLowMidToMidVocalDb"],
+                body["bodyLowMidToMidLeadDb"],
+                thin["bodyLowMidToMidLeadDb"],
             )
             self.assertGreater(
                 flub["subToBodyLowMidDb"],
@@ -553,8 +580,8 @@ class AudioLabTests(unittest.TestCase):
             score = metrics.reference_match_score(quiet, loud)
 
             self.assertAlmostEqual(
-                quiet["lowBody"]["bodyLowMidToMidVocalDb"],
-                loud["lowBody"]["bodyLowMidToMidVocalDb"],
+                quiet["lowBody"]["bodyLowMidToMidLeadDb"],
+                loud["lowBody"]["bodyLowMidToMidLeadDb"],
                 delta=0.2,
             )
             self.assertAlmostEqual(score["lowBodyError"], 0.0, delta=0.001)
@@ -629,6 +656,61 @@ class AudioLabTests(unittest.TestCase):
                 delta=0.2,
             )
             self.assertAlmostEqual(score["envelopeError"], 0.0, delta=0.001)
+
+    def test_reference_profile_lead_mid_distinguishes_focus_from_low_mid_body(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            low_mid_path = directory / "low-mid.wav"
+            lead_mid_path = directory / "lead-mid.wav"
+            _write_lead_mid_fixture(low_mid_path, low_mid_boost=0.10)
+            _write_lead_mid_fixture(lead_mid_path, lead_mid_boost=0.10)
+
+            low_mid = metrics.reference_profile(low_mid_path)["leadMid"]
+            lead_mid = metrics.reference_profile(lead_mid_path)["leadMid"]
+
+            self.assertTrue(low_mid["available"])
+            self.assertTrue(lead_mid["available"])
+            self.assertGreater(lead_mid["leadMidToLowMidDb"], low_mid["leadMidToLowMidDb"])
+            self.assertGreater(lead_mid["leadFocusIndexDb"], low_mid["leadFocusIndexDb"])
+
+    def test_reference_match_score_prefers_lead_mid_focus_over_fizz(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            reference_path = directory / "reference.wav"
+            lead_mid_path = directory / "lead-mid.wav"
+            fizz_path = directory / "fizz.wav"
+            _write_lead_mid_fixture(reference_path, lead_mid_boost=0.10)
+            _write_lead_mid_fixture(lead_mid_path, lead_mid_boost=0.10)
+            _write_lead_mid_fixture(fizz_path, fizz_boost=0.10)
+
+            reference = metrics.reference_profile(reference_path)
+            lead_mid = metrics.reference_profile(lead_mid_path)
+            fizz = metrics.reference_profile(fizz_path)
+            lead_mid_score = metrics.reference_match_score(reference, lead_mid)
+            fizz_score = metrics.reference_match_score(reference, fizz)
+
+            self.assertEqual(lead_mid_score["leadMidError"], 0.0)
+            self.assertGreater(fizz_score["leadMidError"], lead_mid_score["leadMidError"])
+            self.assertLess(lead_mid_score["score"], fizz_score["score"])
+
+    def test_reference_lead_mid_ratios_survive_level_change(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            quiet_path = directory / "quiet.wav"
+            loud_path = directory / "loud.wav"
+            _write_lead_mid_fixture(quiet_path, lead_mid_boost=0.08, amplitude=0.35)
+            _write_lead_mid_fixture(loud_path, lead_mid_boost=0.08, amplitude=0.7)
+
+            quiet = metrics.reference_profile(quiet_path)
+            loud = metrics.reference_profile(loud_path)
+            score = metrics.reference_match_score(quiet, loud)
+
+            self.assertAlmostEqual(
+                quiet["leadMid"]["leadFocusIndexDb"],
+                loud["leadMid"]["leadFocusIndexDb"],
+                delta=0.2,
+            )
+            self.assertAlmostEqual(score["leadMidError"], 0.0, delta=0.001)
 
     def test_reference_plan_emits_valid_bounded_patch_candidates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
