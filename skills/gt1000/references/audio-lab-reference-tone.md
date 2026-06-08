@@ -33,6 +33,7 @@ Use descriptor evidence to order the first candidate moves before falling back t
 - low-body evidence should separate useful body from flub, cutting low end before adding body when sub-bass is high
 - envelope evidence should try sustain or attack-clarity candidates based on active-frame behavior
 - lead-mid evidence should try focused guitar-mid candidates before generic bright/warm moves
+- richer search-space candidates may include validated amp-type and main speaker-simulator moves; speaker-simulator candidates must edit both main L/R channels together
 
 Short synthetic tones are not reliable ambience evidence. Treat the space descriptor as meaningful only when the reference is long enough to contain a real tail or repeat pattern.
 

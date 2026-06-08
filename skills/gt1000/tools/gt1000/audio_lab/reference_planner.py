@@ -19,6 +19,7 @@ class CandidateSpec:
     value: str
     intent: str
     command: str = "patch-set"
+    paired_settings: tuple[tuple[str, str, str], ...] = ()
 
 
 WARMER_CANDIDATES = (
@@ -58,6 +59,51 @@ DRIVE_CANDIDATES = (
     CandidateSpec("dist-bottom-plus", "dist1", "bottom", "65", "Add low-end support in the drive block if active."),
 )
 
+AMP_VOICE_CANDIDATES = (
+    CandidateSpec("preamp-type-natural", "preamp1", "type", "NATURAL", "Try a clearer natural amp voicing."),
+    CandidateSpec("preamp-type-brit-stack", "preamp1", "type", "BRIT STACK", "Try a more focused stack-style amp voicing."),
+    CandidateSpec("preamp-type-x-hi-gain", "preamp1", "type", "X-HI GAIN", "Try a more saturated high-gain amp voicing."),
+)
+
+CAB_VOICE_CANDIDATES = (
+    CandidateSpec(
+        "main-cab-type-1",
+        "mainSpeakerSimulator",
+        "speakerType",
+        "1",
+        "Try main speaker simulator type 1 on both channels.",
+        "compound-set",
+        (("mainSpeakerSimulatorL", "speakerType", "1"), ("mainSpeakerSimulatorR", "speakerType", "1")),
+    ),
+    CandidateSpec(
+        "main-cab-type-2",
+        "mainSpeakerSimulator",
+        "speakerType",
+        "2",
+        "Try main speaker simulator type 2 on both channels.",
+        "compound-set",
+        (("mainSpeakerSimulatorL", "speakerType", "2"), ("mainSpeakerSimulatorR", "speakerType", "2")),
+    ),
+    CandidateSpec(
+        "main-cab-mic-center",
+        "mainSpeakerSimulator",
+        "micPosition",
+        "35",
+        "Move the main speaker simulator mic position toward center on both channels.",
+        "compound-set",
+        (("mainSpeakerSimulatorL", "micPosition", "35"), ("mainSpeakerSimulatorR", "micPosition", "35")),
+    ),
+    CandidateSpec(
+        "main-cab-mic-edge",
+        "mainSpeakerSimulator",
+        "micPosition",
+        "70",
+        "Move the main speaker simulator mic position toward edge on both channels.",
+        "compound-set",
+        (("mainSpeakerSimulatorL", "micPosition", "70"), ("mainSpeakerSimulatorR", "micPosition", "70")),
+    ),
+)
+
 DESCRIPTOR_CANDIDATES: dict[str, tuple[CandidateSpec, ...]] = {
     "space-wet": (
         CandidateSpec("reverb-level-plus", "reverb", "effectLevel", "35", "Add ambience level if reverb is active."),
@@ -80,11 +126,15 @@ DESCRIPTOR_CANDIDATES: dict[str, tuple[CandidateSpec, ...]] = {
         CandidateSpec("eq-high-mid-plus", "eq1", "highMidGain", "72", "Add upper-mid presence."),
         CandidateSpec("preamp-presence-plus", "preamp1", "presence", "60", "Add amp presence and edge."),
         CandidateSpec("preamp-treble-plus", "preamp1", "treble", "60", "Add amp treble bite."),
+        CandidateSpec("preamp-type-natural", "preamp1", "type", "NATURAL", "Try a clearer natural amp voicing."),
+        CAB_VOICE_CANDIDATES[2],
     ),
     "body-support": (
         CandidateSpec("eq-low-mid-plus", "eq1", "lowMidGain", "72", "Add lower-mid body."),
         CandidateSpec("preamp-bass-plus", "preamp1", "bass", "58", "Add amp low-end support."),
         CandidateSpec("eq-low-plus", "eq1", "lowGain", "72", "Add low-end weight."),
+        CandidateSpec("preamp-type-brit-stack", "preamp1", "type", "BRIT STACK", "Try a more focused stack-style amp voicing."),
+        CAB_VOICE_CANDIDATES[1],
     ),
     "flub-control": (
         CandidateSpec("eq-low-minus", "eq1", "lowGain", "56", "Reduce low-end weight."),
@@ -96,11 +146,13 @@ DESCRIPTOR_CANDIDATES: dict[str, tuple[CandidateSpec, ...]] = {
         CandidateSpec("preamp-middle-plus", "preamp1", "middle", "60", "Add amp midrange focus."),
         CandidateSpec("eq-high-mid-plus", "eq1", "highMidGain", "72", "Add upper-mid presence."),
         CandidateSpec("preamp-presence-plus", "preamp1", "presence", "60", "Add amp presence and edge."),
+        CandidateSpec("preamp-type-brit-stack", "preamp1", "type", "BRIT STACK", "Try a more focused stack-style amp voicing."),
     ),
     "sustain": (
         CandidateSpec("comp-sustain-plus", "comp", "sustain", "60", "Add compression sustain if the compressor is active."),
         CandidateSpec("preamp-gain-plus", "preamp1", "gain", "58", "Add preamp saturation and thickness."),
         CandidateSpec("dist-drive-plus", "dist1", "drive", "58", "Add drive saturation if the block is active."),
+        CandidateSpec("preamp-type-x-hi-gain", "preamp1", "type", "X-HI GAIN", "Try a more saturated high-gain amp voicing."),
     ),
     "attack-clarity": (
         CandidateSpec("preamp-gain-minus", "preamp1", "gain", "45", "Reduce saturation for a clearer attack."),
@@ -243,19 +295,22 @@ def _dedupe_specs(specs: list[CandidateSpec]) -> list[CandidateSpec]:
 
 def _ordered_candidate_specs(centroid_hz: float | None) -> list[CandidateSpec]:
     if centroid_hz is None:
-        return list(LOUDNESS_CANDIDATES + BRIGHTER_CANDIDATES + WARMER_CANDIDATES + DRIVE_CANDIDATES[:4] + PREAMP_TONE_CANDIDATES + DRIVE_CANDIDATES[4:])
+        return list(LOUDNESS_CANDIDATES + BRIGHTER_CANDIDATES + WARMER_CANDIDATES + AMP_VOICE_CANDIDATES + CAB_VOICE_CANDIDATES[:2] + DRIVE_CANDIDATES[:4] + PREAMP_TONE_CANDIDATES + DRIVE_CANDIDATES[4:] + CAB_VOICE_CANDIDATES[2:])
     if centroid_hz < 700.0:
-        return list(LOUDNESS_CANDIDATES + BRIGHTER_CANDIDATES + DRIVE_CANDIDATES[:4] + PREAMP_TONE_CANDIDATES + DRIVE_CANDIDATES[4:] + WARMER_CANDIDATES)
+        return list(LOUDNESS_CANDIDATES + BRIGHTER_CANDIDATES + AMP_VOICE_CANDIDATES[:2] + CAB_VOICE_CANDIDATES[2:] + DRIVE_CANDIDATES[:4] + PREAMP_TONE_CANDIDATES + DRIVE_CANDIDATES[4:] + WARMER_CANDIDATES)
     if centroid_hz > 1800.0:
-        return list(LOUDNESS_CANDIDATES + WARMER_CANDIDATES + DRIVE_CANDIDATES[:4] + PREAMP_TONE_CANDIDATES + DRIVE_CANDIDATES[4:] + BRIGHTER_CANDIDATES)
+        return list(LOUDNESS_CANDIDATES + WARMER_CANDIDATES + AMP_VOICE_CANDIDATES[1:] + CAB_VOICE_CANDIDATES[:2] + DRIVE_CANDIDATES[:4] + PREAMP_TONE_CANDIDATES + DRIVE_CANDIDATES[4:] + BRIGHTER_CANDIDATES)
     return list(
         LOUDNESS_CANDIDATES
         + BRIGHTER_CANDIDATES[:2]
         + WARMER_CANDIDATES[:2]
+        + AMP_VOICE_CANDIDATES
+        + CAB_VOICE_CANDIDATES[:2]
         + PREAMP_TONE_CANDIDATES
         + DRIVE_CANDIDATES
         + BRIGHTER_CANDIDATES[2:]
         + WARMER_CANDIDATES[2:]
+        + CAB_VOICE_CANDIDATES[2:]
     )
 
 
@@ -263,9 +318,27 @@ def _candidate_payload(index: int, spec: CandidateSpec, *, session: str) -> dict
     if spec.command == "master-set":
         plan = patch_edit.build_master_set_plan(spec.parameter, spec.value)
         patch_command = ["patch", "master-set", spec.parameter, spec.value, "--live", "--verify"]
+        patch_commands = [patch_command]
+    elif spec.command == "compound-set":
+        plans = [
+            patch_edit.build_parameter_set_plan(area, parameter, value)
+            for area, parameter, value in spec.paired_settings
+        ]
+        writes = [write for plan_item in plans for write in plan_item.writes]
+        plan = patch_edit.PatchPlan(
+            id=f"compound-set:{spec.label}",
+            description=spec.intent,
+            writes=writes,
+        )
+        patch_commands = [
+            ["patch", "set", area, parameter, value, "--live", "--verify"]
+            for area, parameter, value in spec.paired_settings
+        ]
+        patch_command = patch_commands[0]
     else:
         plan = patch_edit.build_parameter_set_plan(spec.area, spec.parameter, spec.value)
         patch_command = ["patch", "set", spec.area, spec.parameter, spec.value, "--live", "--verify"]
+        patch_commands = [patch_command]
     render_label = f"candidate-{index:02d}-{spec.label}"
     return {
         "index": index,
@@ -274,11 +347,16 @@ def _candidate_payload(index: int, spec: CandidateSpec, *, session: str) -> dict
         "intent": spec.intent,
         "patchPlan": plan.id,
         "patchCommand": patch_command,
+        "patchCommands": patch_commands,
         "renderCommand": ["audio", "session", "render", "--session", session, "--label", render_label],
         "command": spec.command,
         "area": spec.area,
         "block": spec.area if spec.command == "patch-set" else None,
         "parameter": spec.parameter,
+        "settings": [
+            {"area": area, "parameter": parameter, "value": value}
+            for area, parameter, value in (spec.paired_settings or ((spec.area, spec.parameter, spec.value),))
+        ],
         "requiresLiveVerification": spec.command != "master-set",
         "verificationPolicy": "live-verified-surface" if spec.command == "master-set" else "verify-before-render",
         "value": spec.value,

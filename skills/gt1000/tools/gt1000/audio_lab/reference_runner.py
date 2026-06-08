@@ -151,6 +151,25 @@ def _candidate_patch_plan(candidate: dict[str, Any]) -> patch_edit.PatchPlan:
             str(candidate["parameter"]),
             str(candidate["value"]),
         )
+    if candidate.get("command") == "compound-set":
+        settings = candidate.get("settings")
+        if not isinstance(settings, list) or not settings:
+            raise AudioLabError(f"compound candidate {candidate.get('label')} has no settings", 64)
+        writes: list[live.PatchWrite] = []
+        for setting in settings:
+            if not isinstance(setting, dict):
+                raise AudioLabError(f"compound candidate {candidate.get('label')} has an invalid setting", 64)
+            plan = patch_edit.build_parameter_set_plan(
+                str(setting["area"]),
+                str(setting["parameter"]),
+                str(setting["value"]),
+            )
+            writes.extend(plan.writes)
+        return patch_edit.PatchPlan(
+            id=f"compound-set:{candidate.get('label')}",
+            description=str(candidate.get("intent") or "Apply compound reference candidate."),
+            writes=writes,
+        )
     return patch_edit.build_parameter_set_plan(
         str(candidate["area"]),
         str(candidate["parameter"]),

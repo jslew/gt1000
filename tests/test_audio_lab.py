@@ -778,7 +778,7 @@ class AudioLabTests(unittest.TestCase):
             _write_composite_tone(reference, frequencies=[220.0, 880.0])
             cmd_reference_analyze(reference, output_path=profile_path)
 
-            plan = cmd_reference_plan(profile_path, session="tone-chase", max_candidates=24)
+            plan = cmd_reference_plan(profile_path, session="tone-chase", max_candidates=30)
 
             labels = {candidate["label"]: candidate for candidate in plan["candidates"]}
             self.assertIn("dist-level-plus", labels)
@@ -856,6 +856,47 @@ class AudioLabTests(unittest.TestCase):
         self.assertLess(labels.index("eq-low-minus"), labels.index("patch-level-plus"))
         self.assertIn("preamp-presence-minus", labels)
         self.assertEqual(len(labels), len(set(labels)))
+
+    def test_reference_plan_includes_validated_amp_and_paired_cab_candidates(self) -> None:
+        profile = {
+            "path": "/tmp/reference.wav",
+            "profileVersion": 1,
+            "spectralCentroidHz": 950.0,
+            "lowBody": {
+                "available": True,
+                "subToBodyLowMidDb": -8.0,
+                "bodyLowMidToMidLeadDb": 5.0,
+            },
+        }
+
+        plan = plan_reference_candidates(profile, session="tone-chase", max_candidates=8)
+        labels = {candidate["label"]: candidate for candidate in plan["candidates"]}
+
+        self.assertIn("preamp-type-brit-stack", labels)
+        self.assertIn("main-cab-type-2", labels)
+        amp = labels["preamp-type-brit-stack"]
+        cab = labels["main-cab-type-2"]
+        self.assertEqual(amp["patchPlan"], "set:preamp1.type")
+        self.assertEqual(amp["writeCount"], 1)
+        self.assertTrue(amp["requiresLiveVerification"])
+        self.assertEqual(cab["command"], "compound-set")
+        self.assertEqual(cab["writeCount"], 2)
+        self.assertEqual(
+            cab["settings"],
+            [
+                {"area": "mainSpeakerSimulatorL", "parameter": "speakerType", "value": "2"},
+                {"area": "mainSpeakerSimulatorR", "parameter": "speakerType", "value": "2"},
+            ],
+        )
+        self.assertEqual(len(cab["patchCommands"]), 2)
+        self.assertTrue(cab["requiresLiveVerification"])
+        self.assertEqual(cab["verificationPolicy"], "verify-before-render")
+
+        from tools.gt1000.audio_lab import reference_runner
+
+        cab_plan = reference_runner._candidate_patch_plan(cab)
+        self.assertEqual(cab_plan.id, "compound-set:main-cab-type-2")
+        self.assertEqual(len(cab_plan.writes), 2)
 
     def test_reference_run_applies_renders_scores_and_restores_candidate(self) -> None:
         from tools.gt1000 import live
