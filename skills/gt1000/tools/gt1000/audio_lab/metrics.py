@@ -25,6 +25,10 @@ HIGH_END_WINDOW_FRAMES = 8192
 HIGH_END_WINDOW_COUNT = 9
 LOW_BODY_WINDOW_FRAMES = 8192
 LOW_BODY_WINDOW_COUNT = 9
+ENVELOPE_FRAME_SECONDS = 0.025
+ENVELOPE_HOP_SECONDS = 0.0125
+ENVELOPE_ACTIVE_RANGE_DB = 24.0
+ENVELOPE_ATTACK_SECONDS = 0.15
 
 
 def _rms_dbfs(samples: list[float]) -> float | None:
@@ -337,6 +341,118 @@ def low_body_profile(
         "subToMidVocalDb": _ratio_db(sub, mid_vocal),
         "bodyToMidVocalDb": _ratio_db(body, mid_vocal),
         "note": "Low-end body descriptors from active windows; body is 160-320 Hz, flub risk is excess 80-160 Hz relative to body/mids.",
+    }
+
+
+def _frame_envelope_metrics(
+    samples: list[float],
+    *,
+    sample_rate: int,
+) -> list[dict[str, Any]]:
+    frame_count = int(round(ENVELOPE_FRAME_SECONDS * sample_rate))
+    hop_count = int(round(ENVELOPE_HOP_SECONDS * sample_rate))
+    if frame_count <= 0 or hop_count <= 0:
+        return []
+    frames: list[dict[str, Any]] = []
+    for start in range(0, len(samples) - frame_count + 1, hop_count):
+        frame = samples[start : start + frame_count]
+        rms = _rms_dbfs(frame)
+        peak = _peak_dbfs(frame)
+        frames.append(
+            {
+                "startSeconds": start / float(sample_rate),
+                "rmsDbfs": rms,
+                "peakDbfs": peak,
+                "crestDb": None if rms is None or peak is None else peak - rms,
+            }
+        )
+    return frames
+
+
+def _linear_slope(values: list[float], *, step_seconds: float) -> float | None:
+    if len(values) < 2:
+        return None
+    count = len(values)
+    x_mean = ((count - 1) * step_seconds) * 0.5
+    y_mean = sum(values) / count
+    denominator = sum(((index * step_seconds) - x_mean) ** 2 for index in range(count))
+    if denominator <= 0.0:
+        return None
+    numerator = sum(((index * step_seconds) - x_mean) * (value - y_mean) for index, value in enumerate(values))
+    return numerator / denominator
+
+
+def envelope_profile(
+    per_channel: list[list[float]],
+    channels: int,
+    *,
+    sample_rate: int,
+) -> dict[str, Any]:
+    mono = _mono_samples(per_channel, channels)
+    frames = _frame_envelope_metrics(mono, sample_rate=sample_rate)
+    rms_values = [float(frame["rmsDbfs"]) for frame in frames if frame.get("rmsDbfs") is not None]
+    if not rms_values:
+        return {"available": False, "reason": "no measurable envelope frames"}
+    peak_rms = _percentile(rms_values, 95.0)
+    active_floor = None if peak_rms is None else peak_rms - ENVELOPE_ACTIVE_RANGE_DB
+    active_frames = [
+        frame
+        for frame in frames
+        if active_floor is not None and frame.get("rmsDbfs") is not None and float(frame["rmsDbfs"]) >= active_floor
+    ]
+    if len(active_frames) < 8:
+        return {"available": False, "reason": "not enough active envelope frames"}
+    active_rms = [float(frame["rmsDbfs"]) for frame in active_frames if frame.get("rmsDbfs") is not None]
+    active_crest = [float(frame["crestDb"]) for frame in active_frames if frame.get("crestDb") is not None]
+    attack_count = max(3, int(round(ENVELOPE_ATTACK_SECONDS / ENVELOPE_HOP_SECONDS)))
+    attack_count = min(attack_count, max(3, int(math.ceil(len(active_frames) * 0.15))))
+    attack_frames = active_frames[:attack_count]
+    sustain_frames = active_frames[attack_count:]
+    if len(sustain_frames) < 4:
+        sustain_frames = active_frames[max(1, len(active_frames) // 3):]
+    sustain_rms = [float(frame["rmsDbfs"]) for frame in sustain_frames if frame.get("rmsDbfs") is not None]
+    attack_rms = [float(frame["rmsDbfs"]) for frame in attack_frames if frame.get("rmsDbfs") is not None]
+    attack_crest = [float(frame["crestDb"]) for frame in attack_frames if frame.get("crestDb") is not None]
+    sustain_p10 = _percentile(sustain_rms, 10.0)
+    sustain_p90 = _percentile(sustain_rms, 90.0)
+    early_sustain = sustain_rms[: max(1, len(sustain_rms) // 3)]
+    late_sustain = sustain_rms[-max(1, len(sustain_rms) // 3):]
+    early_median = _median(early_sustain)
+    late_median = _median(late_sustain)
+    sustain_median = _median(sustain_rms)
+    peak_to_sustain = None
+    attack_peak = _percentile([float(frame["peakDbfs"]) for frame in attack_frames if frame.get("peakDbfs") is not None], 90.0)
+    if attack_peak is not None and sustain_median is not None:
+        peak_to_sustain = attack_peak - sustain_median
+    attack_to_sustain = None
+    attack_rms_p90 = _percentile(attack_rms, 90.0)
+    if attack_rms_p90 is not None and sustain_median is not None:
+        attack_to_sustain = attack_rms_p90 - sustain_median
+    sustain_drop = None if early_median is None or late_median is None else early_median - late_median
+    within_12 = None
+    if peak_rms is not None and sustain_rms:
+        within_12 = sum(1 for value in sustain_rms if value >= peak_rms - 12.0) / len(sustain_rms)
+    return {
+        "available": True,
+        "frameSeconds": ENVELOPE_FRAME_SECONDS,
+        "hopSeconds": ENVELOPE_HOP_SECONDS,
+        "frameCount": len(frames),
+        "activeFrameCount": len(active_frames),
+        "attackFrameCount": len(attack_frames),
+        "sustainFrameCount": len(sustain_frames),
+        "peakRmsDbfs": peak_rms,
+        "activeFrameFloorDbfs": active_floor,
+        "activeDurationSeconds": len(active_frames) * ENVELOPE_HOP_SECONDS,
+        "activeRmsMedianDbfs": _median(active_rms),
+        "activeCrestMedianDb": _median(active_crest),
+        "attackToSustainDb": attack_to_sustain,
+        "peakToSustainDb": peak_to_sustain,
+        "attackCrestP90Db": _percentile(attack_crest, 90.0),
+        "sustainDropDb": sustain_drop,
+        "sustainSlopeDbPerSecond": _linear_slope(sustain_rms, step_seconds=ENVELOPE_HOP_SECONDS),
+        "sustainRangeDb": None if sustain_p10 is None or sustain_p90 is None else sustain_p90 - sustain_p10,
+        "sustainFractionWithin12Db": within_12,
+        "note": "Frame-level attack/sustain descriptors; lower attack/crest/drop and higher within-12dB fraction indicate smoother sustain.",
     }
 
 
@@ -679,6 +795,7 @@ def reference_profile(
         "space": space_profile(per_channel, channels, sample_rate=sample_rate),
         "highEnd": high_end_profile(per_channel, channels, sample_rate=sample_rate),
         "lowBody": low_body_profile(per_channel, channels, sample_rate=sample_rate),
+        "envelope": envelope_profile(per_channel, channels, sample_rate=sample_rate),
         "spectralCentroidHz": None if total_energy <= 0.0 else weighted_frequency / total_energy,
         "rmsDbfs": rms_dbfs,
         "peakDbfs": peak_dbfs,
@@ -697,6 +814,7 @@ def reference_match_score(
     space_weight: float = 0.15,
     high_end_weight: float = 0.25,
     low_body_weight: float = 0.25,
+    envelope_weight: float = 0.2,
 ) -> dict[str, Any]:
     ref_bands = reference.get("bands") or []
     candidate_bands = candidate.get("bands") or []
@@ -728,12 +846,14 @@ def reference_match_score(
     space_error = _space_match_error(reference.get("space"), candidate.get("space"))
     high_end_error = _high_end_match_error(reference.get("highEnd"), candidate.get("highEnd"))
     low_body_error = _low_body_match_error(reference.get("lowBody"), candidate.get("lowBody"))
+    envelope_error = _envelope_match_error(reference.get("envelope"), candidate.get("envelope"))
     score = (
         band_weight * band_error
         + rms_weight * rms_error
         + space_weight * space_error
         + high_end_weight * high_end_error
         + low_body_weight * low_body_error
+        + envelope_weight * envelope_error
     )
     return {
         "score": score,
@@ -742,14 +862,16 @@ def reference_match_score(
         "spaceError": space_error,
         "highEndError": high_end_error,
         "lowBodyError": low_body_error,
+        "envelopeError": envelope_error,
         "rmsDeltaDb": rms_delta,
         "bandWeight": band_weight,
         "rmsWeight": rms_weight,
         "spaceWeight": space_weight,
         "highEndWeight": high_end_weight,
         "lowBodyWeight": low_body_weight,
+        "envelopeWeight": envelope_weight,
         "bandErrors": band_errors,
-        "note": "Lower score is closer to the stored reference profile; spaceError, highEndError, and lowBodyError are low-weight descriptors.",
+        "note": "Lower score is closer to the stored reference profile; descriptor errors are low-weight tone-shape terms.",
     }
 
 
@@ -838,6 +960,52 @@ def _low_body_match_error(reference_low: Any, candidate_low: Any) -> float:
         normalized = (float(candidate_value) - float(ref_value)) / scale
         error += weight * multiplier * normalized * normalized
         used += weight
+    return 0.0 if used <= 0.0 else error / used
+
+
+def _envelope_match_error(reference_envelope: Any, candidate_envelope: Any) -> float:
+    if not isinstance(reference_envelope, dict) or not isinstance(candidate_envelope, dict):
+        return 0.0
+    if not reference_envelope.get("available") or not candidate_envelope.get("available"):
+        return 0.0
+    weighted_fields = (
+        ("attackToSustainDb", 0.9, 6.0, 2.0),
+        ("peakToSustainDb", 0.9, 8.0, 2.0),
+        ("attackCrestP90Db", 0.6, 5.0, 1.5),
+        ("sustainDropDb", 1.0, 6.0, 2.5),
+        ("sustainSlopeDbPerSecond", 0.8, 8.0, 2.0),
+        ("sustainRangeDb", 0.6, 6.0, 1.5),
+    )
+    error = 0.0
+    used = 0.0
+    for field, weight, scale, excess_multiplier in weighted_fields:
+        ref_value = reference_envelope.get(field)
+        candidate_value = candidate_envelope.get(field)
+        if ref_value is None or candidate_value is None:
+            continue
+        ref_float = float(ref_value)
+        candidate_float = float(candidate_value)
+        if field == "sustainSlopeDbPerSecond":
+            delta = candidate_float - ref_float
+            multiplier = excess_multiplier if delta < 0.0 else 1.0
+            normalized = delta / scale
+            error += weight * multiplier * normalized * normalized
+        else:
+            error += weight * _asymmetric_db_error(
+                candidate_float,
+                ref_float,
+                scale=scale,
+                excess_multiplier=excess_multiplier,
+            )
+        used += weight
+    ref_fraction = reference_envelope.get("sustainFractionWithin12Db")
+    candidate_fraction = candidate_envelope.get("sustainFractionWithin12Db")
+    if ref_fraction is not None and candidate_fraction is not None:
+        delta = float(candidate_fraction) - float(ref_fraction)
+        normalized = delta / 0.25
+        multiplier = 2.0 if delta < 0.0 else 1.0
+        error += 0.8 * multiplier * normalized * normalized
+        used += 0.8
     return 0.0 if used <= 0.0 else error / used
 
 

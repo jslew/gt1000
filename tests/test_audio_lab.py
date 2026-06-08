@@ -136,6 +136,34 @@ def _write_low_body_fixture(
     wav_io.write_wav_stereo(path, sample_rate, left, right)
 
 
+def _write_envelope_fixture(
+    path: Path,
+    *,
+    attack_spike: bool = False,
+    fast_decay: bool = False,
+    amplitude: float = 1.0,
+    sample_rate: int = 44100,
+) -> None:
+    frames = int(1.5 * sample_rate)
+    left: list[float] = []
+    right: list[float] = []
+    for index in range(frames):
+        seconds = index / sample_rate
+        if fast_decay:
+            envelope = 0.28 * math.exp(-2.4 * seconds) + 0.035
+        else:
+            envelope = 0.22
+        if attack_spike and seconds < 0.04:
+            envelope += 0.38 * (1.0 - seconds / 0.04)
+        value = amplitude * envelope * (
+            0.7 * math.sin(2.0 * math.pi * 440.0 * index / sample_rate)
+            + 0.3 * math.sin(2.0 * math.pi * 880.0 * index / sample_rate)
+        )
+        left.append(value)
+        right.append(value)
+    wav_io.write_wav_stereo(path, sample_rate, left, right)
+
+
 class AudioLabTests(unittest.TestCase):
     def test_audio_cli_parser_coverage_markers(self) -> None:
         for line in _AUDIO_CLI_PARSER_COVERAGE.strip().splitlines():
@@ -530,6 +558,77 @@ class AudioLabTests(unittest.TestCase):
                 delta=0.2,
             )
             self.assertAlmostEqual(score["lowBodyError"], 0.0, delta=0.001)
+
+    def test_reference_profile_envelope_detects_attack_spike(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            smooth_path = directory / "smooth.wav"
+            spiky_path = directory / "spiky.wav"
+            _write_envelope_fixture(smooth_path)
+            _write_envelope_fixture(spiky_path, attack_spike=True)
+
+            smooth = metrics.reference_profile(smooth_path)["envelope"]
+            spiky = metrics.reference_profile(spiky_path)["envelope"]
+
+            self.assertTrue(smooth["available"])
+            self.assertTrue(spiky["available"])
+            self.assertGreater(spiky["attackToSustainDb"], smooth["attackToSustainDb"])
+            self.assertGreater(spiky["peakToSustainDb"], smooth["peakToSustainDb"])
+            self.assertGreater(spiky["attackCrestP90Db"], smooth["attackCrestP90Db"])
+
+    def test_reference_profile_envelope_detects_fast_decay(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            smooth_path = directory / "smooth.wav"
+            decay_path = directory / "decay.wav"
+            _write_envelope_fixture(smooth_path)
+            _write_envelope_fixture(decay_path, fast_decay=True)
+
+            smooth = metrics.reference_profile(smooth_path)["envelope"]
+            decay = metrics.reference_profile(decay_path)["envelope"]
+
+            self.assertTrue(smooth["available"])
+            self.assertTrue(decay["available"])
+            self.assertGreater(decay["sustainDropDb"], smooth["sustainDropDb"])
+            self.assertLess(decay["sustainSlopeDbPerSecond"], smooth["sustainSlopeDbPerSecond"])
+            self.assertLess(decay["sustainFractionWithin12Db"], smooth["sustainFractionWithin12Db"])
+
+    def test_reference_match_score_prefers_matching_envelope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            smooth_path = directory / "smooth.wav"
+            decay_path = directory / "decay.wav"
+            _write_envelope_fixture(smooth_path)
+            _write_envelope_fixture(decay_path, fast_decay=True)
+
+            reference = metrics.reference_profile(smooth_path)
+            smooth = metrics.reference_profile(smooth_path)
+            decay = metrics.reference_profile(decay_path)
+            smooth_score = metrics.reference_match_score(reference, smooth)
+            decay_score = metrics.reference_match_score(reference, decay)
+
+            self.assertEqual(smooth_score["envelopeError"], 0.0)
+            self.assertGreater(decay_score["envelopeError"], smooth_score["envelopeError"])
+            self.assertLess(smooth_score["score"], decay_score["score"])
+
+    def test_reference_envelope_ratios_survive_level_change(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            quiet_path = directory / "quiet.wav"
+            loud_path = directory / "loud.wav"
+            _write_envelope_fixture(quiet_path, amplitude=0.5)
+            _write_envelope_fixture(loud_path, amplitude=1.0)
+
+            quiet = metrics.reference_profile(quiet_path)
+            loud = metrics.reference_profile(loud_path)
+            score = metrics.reference_match_score(quiet, loud)
+
+            self.assertAlmostEqual(
+                quiet["envelope"]["attackToSustainDb"],
+                loud["envelope"]["attackToSustainDb"],
+                delta=0.2,
+            )
+            self.assertAlmostEqual(score["envelopeError"], 0.0, delta=0.001)
 
     def test_reference_plan_emits_valid_bounded_patch_candidates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

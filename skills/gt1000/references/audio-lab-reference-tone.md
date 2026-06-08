@@ -90,3 +90,16 @@ The reference profile includes a `lowBody` section for body-versus-boom matching
 - asymmetric flub guard for excess sub-bass
 
 Use this to prefer candidates with guitar body and sustain without rewarding boomy lows. Excess `80-160 Hz` hurts more than a slight deficit, because flub is usually more damaging to this target than being a little lean.
+
+### Attack / Sustain Envelope
+
+The reference profile includes an `envelope` section for dynamics matching:
+
+- attack level relative to sustain
+- peak-to-sustain level
+- attack crest
+- sustain drop and sustain slope
+- sustain range
+- fraction of sustain frames that remain within 12 dB of peak
+
+Use this to distinguish singing sustain from spiky attack or fast decay. This descriptor is most meaningful when comparing renders from the same dry take or otherwise similar phrases. Reverb and delay tails belong primarily to `space`; `envelope` focuses on active/post-attack frames.
