@@ -55,6 +55,8 @@ Offer to re-apply a winning candidate temporarily for listening, or save it to a
 
 Attack targets one at a time and keep the evidence separate.
 
+Use real reference tracks as calibration examples, not as fixed recipes. Extract general matching strategy from each experiment: normalized ratios, active-window gating, asymmetric penalties for musically bad excess, and known analyzer limits. Do not encode artist- or song-specific thresholds unless the user explicitly asks to chase that one reference.
+
 ### Space / Reverb
 
 The reference profile includes a `space` section for ambience matching:
@@ -77,3 +79,14 @@ The reference profile includes a `highEnd` section for upper-end matching:
 - median and high-percentile ratios across active windows
 
 Use this to avoid candidates with excess high-end hash even when the broad spectral score improves. Excess fizz is penalized asymmetrically: being too fizzy hurts more than being slightly too dark. The metric uses lightweight probe frequencies, so narrow synthetic tones can fall between probes; treat `highEnd` as a robust direction signal, not a laboratory spectrum.
+
+### Low-Mid Body / Flub Guard
+
+The reference profile includes a `lowBody` section for body-versus-boom matching:
+
+- sub-bass (`80-160 Hz`) relative to body and mids
+- body (`160-320 Hz`) relative to low mids and vocal mids
+- combined body/low-mid (`160-640 Hz`) relative to `640-2500 Hz`
+- asymmetric flub guard for excess sub-bass
+
+Use this to prefer candidates with guitar body and sustain without rewarding boomy lows. Excess `80-160 Hz` hurts more than a slight deficit, because flub is usually more damaging to this target than being a little lean.

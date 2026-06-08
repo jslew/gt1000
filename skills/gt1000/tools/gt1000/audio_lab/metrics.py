@@ -23,6 +23,8 @@ SPACE_FRAME_SECONDS = 0.05
 SPACE_HOP_SECONDS = 0.025
 HIGH_END_WINDOW_FRAMES = 8192
 HIGH_END_WINDOW_COUNT = 9
+LOW_BODY_WINDOW_FRAMES = 8192
+LOW_BODY_WINDOW_COUNT = 9
 
 
 def _rms_dbfs(samples: list[float]) -> float | None:
@@ -268,6 +270,74 @@ def _window_high_end_metrics(window: list[float], sample_rate: int) -> dict[str,
 
 def _field_values(rows: list[dict[str, Any]], field: str) -> list[float]:
     return [float(row[field]) for row in rows if row.get(field) is not None]
+
+
+def _active_windows(samples: list[float], *, window_frames: int, count: int) -> tuple[list[list[float]], int, float | None]:
+    windows = _analysis_windows(samples, window_frames=window_frames, count=count)
+    if not windows:
+        return [], 0, None
+    rows = [(rms, window) for window in windows if (rms := _rms_dbfs(window)) is not None]
+    if not rows:
+        return windows, len(windows), None
+    floor = _percentile([rms for rms, _window in rows], 35.0)
+    active = [window for rms, window in rows if floor is None or rms >= floor]
+    return active or [window for _rms, window in rows], len(windows), floor
+
+
+def _concat_windows(windows: list[list[float]], *, max_frames: int) -> list[float]:
+    samples: list[float] = []
+    for window in windows:
+        samples.extend(window)
+    return _window_samples(samples, max_frames=max_frames)
+
+
+def low_body_profile(
+    per_channel: list[list[float]],
+    channels: int,
+    *,
+    sample_rate: int,
+) -> dict[str, Any]:
+    mono = _mono_samples(per_channel, channels)
+    active_windows, window_count, active_floor = _active_windows(
+        mono,
+        window_frames=LOW_BODY_WINDOW_FRAMES,
+        count=LOW_BODY_WINDOW_COUNT,
+    )
+    if not active_windows:
+        return {"available": False, "reason": "no active analysis windows"}
+    active = _concat_windows(active_windows, max_frames=32768)
+    if not active:
+        return {"available": False, "reason": "no active samples"}
+    sub = max(SPECTRAL_FLOOR, _band_energy(active, sample_rate, 80.0, 160.0))
+    body = max(SPECTRAL_FLOOR, _band_energy(active, sample_rate, 160.0, 320.0))
+    low_mid = max(SPECTRAL_FLOOR, _band_energy(active, sample_rate, 320.0, 640.0))
+    mid = max(SPECTRAL_FLOOR, _band_energy(active, sample_rate, 640.0, 1250.0))
+    vocal = max(SPECTRAL_FLOOR, _band_energy(active, sample_rate, 1250.0, 2500.0))
+    body_low_mid = max(SPECTRAL_FLOOR, body + low_mid)
+    mid_vocal = max(SPECTRAL_FLOOR, mid + vocal)
+    return {
+        "available": True,
+        "windowFrames": LOW_BODY_WINDOW_FRAMES,
+        "windowCount": window_count,
+        "activeWindowCount": len(active_windows),
+        "activeWindowFloorDbfs": active_floor,
+        "subEnergyDb": _energy_db(sub),
+        "bodyEnergyDb": _energy_db(body),
+        "lowMidEnergyDb": _energy_db(low_mid),
+        "bodyLowMidEnergyDb": _energy_db(body_low_mid),
+        "midEnergyDb": _energy_db(mid),
+        "vocalEnergyDb": _energy_db(vocal),
+        "midVocalEnergyDb": _energy_db(mid_vocal),
+        "subToBodyDb": _ratio_db(sub, body),
+        "subToBodyLowMidDb": _ratio_db(sub, body_low_mid),
+        "bodyToLowMidDb": _ratio_db(body, low_mid),
+        "bodyToVocalDb": _ratio_db(body, vocal),
+        "lowMidToVocalDb": _ratio_db(low_mid, vocal),
+        "bodyLowMidToMidVocalDb": _ratio_db(body_low_mid, mid_vocal),
+        "subToMidVocalDb": _ratio_db(sub, mid_vocal),
+        "bodyToMidVocalDb": _ratio_db(body, mid_vocal),
+        "note": "Low-end body descriptors from active windows; body is 160-320 Hz, flub risk is excess 80-160 Hz relative to body/mids.",
+    }
 
 
 def high_end_profile(
@@ -608,6 +678,7 @@ def reference_profile(
         "bands": bands,
         "space": space_profile(per_channel, channels, sample_rate=sample_rate),
         "highEnd": high_end_profile(per_channel, channels, sample_rate=sample_rate),
+        "lowBody": low_body_profile(per_channel, channels, sample_rate=sample_rate),
         "spectralCentroidHz": None if total_energy <= 0.0 else weighted_frequency / total_energy,
         "rmsDbfs": rms_dbfs,
         "peakDbfs": peak_dbfs,
@@ -625,6 +696,7 @@ def reference_match_score(
     rms_weight: float = 0.05,
     space_weight: float = 0.15,
     high_end_weight: float = 0.25,
+    low_body_weight: float = 0.25,
 ) -> dict[str, Any]:
     ref_bands = reference.get("bands") or []
     candidate_bands = candidate.get("bands") or []
@@ -655,20 +727,29 @@ def reference_match_score(
         rms_error = rms_delta * rms_delta
     space_error = _space_match_error(reference.get("space"), candidate.get("space"))
     high_end_error = _high_end_match_error(reference.get("highEnd"), candidate.get("highEnd"))
-    score = band_weight * band_error + rms_weight * rms_error + space_weight * space_error + high_end_weight * high_end_error
+    low_body_error = _low_body_match_error(reference.get("lowBody"), candidate.get("lowBody"))
+    score = (
+        band_weight * band_error
+        + rms_weight * rms_error
+        + space_weight * space_error
+        + high_end_weight * high_end_error
+        + low_body_weight * low_body_error
+    )
     return {
         "score": score,
         "bandError": band_error,
         "rmsError": rms_error,
         "spaceError": space_error,
         "highEndError": high_end_error,
+        "lowBodyError": low_body_error,
         "rmsDeltaDb": rms_delta,
         "bandWeight": band_weight,
         "rmsWeight": rms_weight,
         "spaceWeight": space_weight,
         "highEndWeight": high_end_weight,
+        "lowBodyWeight": low_body_weight,
         "bandErrors": band_errors,
-        "note": "Lower score is closer to the stored reference profile; spaceError and highEndError are low-weight descriptors.",
+        "note": "Lower score is closer to the stored reference profile; spaceError, highEndError, and lowBodyError are low-weight descriptors.",
     }
 
 
@@ -729,6 +810,33 @@ def _high_end_match_error(reference_high: Any, candidate_high: Any) -> float:
             scale=scale,
             excess_multiplier=excess_multiplier,
         )
+        used += weight
+    return 0.0 if used <= 0.0 else error / used
+
+
+def _low_body_match_error(reference_low: Any, candidate_low: Any) -> float:
+    if not isinstance(reference_low, dict) or not isinstance(candidate_low, dict):
+        return 0.0
+    if not reference_low.get("available") or not candidate_low.get("available"):
+        return 0.0
+    weighted_fields = (
+        ("subToBodyLowMidDb", 1.0, 5.0, 3.0),
+        ("subToMidVocalDb", 0.8, 6.0, 2.5),
+        ("bodyLowMidToMidVocalDb", 0.9, 4.0, 1.5),
+        ("bodyToMidVocalDb", 0.5, 5.0, 1.5),
+        ("bodyToLowMidDb", 0.4, 6.0, 1.5),
+    )
+    error = 0.0
+    used = 0.0
+    for field, weight, scale, excess_multiplier in weighted_fields:
+        ref_value = reference_low.get(field)
+        candidate_value = candidate_low.get(field)
+        if ref_value is None or candidate_value is None:
+            continue
+        # Positive deltas in sub ratios mean more boom/flub than the reference, so they hurt more.
+        multiplier = excess_multiplier if field.startswith("subTo") else 1.0
+        normalized = (float(candidate_value) - float(ref_value)) / scale
+        error += weight * multiplier * normalized * normalized
         used += weight
     return 0.0 if used <= 0.0 else error / used
 

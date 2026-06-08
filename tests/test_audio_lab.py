@@ -111,6 +111,31 @@ def _write_high_end_fixture(
     wav_io.write_wav_stereo(path, sample_rate, left, right)
 
 
+def _write_low_body_fixture(
+    path: Path,
+    *,
+    body_boost: float = 0.0,
+    sub_boost: float = 0.0,
+    amplitude: float = 1.0,
+    sample_rate: int = 44100,
+) -> None:
+    frames = int(1.25 * sample_rate)
+    left: list[float] = []
+    right: list[float] = []
+    for index in range(frames):
+        value = amplitude * (
+            0.12 * math.sin(2.0 * math.pi * 220.0 * index / sample_rate)
+            + 0.08 * math.sin(2.0 * math.pi * 440.0 * index / sample_rate)
+            + 0.10 * math.sin(2.0 * math.pi * 1000.0 * index / sample_rate)
+            + body_boost * math.sin(2.0 * math.pi * 240.0 * index / sample_rate)
+            + (body_boost * 0.6) * math.sin(2.0 * math.pi * 500.0 * index / sample_rate)
+            + sub_boost * math.sin(2.0 * math.pi * 110.0 * index / sample_rate)
+        )
+        left.append(value)
+        right.append(value)
+    wav_io.write_wav_stereo(path, sample_rate, left, right)
+
+
 class AudioLabTests(unittest.TestCase):
     def test_audio_cli_parser_coverage_markers(self) -> None:
         for line in _AUDIO_CLI_PARSER_COVERAGE.strip().splitlines():
@@ -434,6 +459,77 @@ class AudioLabTests(unittest.TestCase):
 
             self.assertGreater(fizz_score["highEndError"], presence_score["highEndError"])
             self.assertGreater(fizz_score["score"], presence_score["score"])
+
+    def test_reference_profile_low_body_distinguishes_body_from_flub(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            thin_path = directory / "thin.wav"
+            body_path = directory / "body.wav"
+            flub_path = directory / "flub.wav"
+            _write_low_body_fixture(thin_path, body_boost=0.0, sub_boost=0.0)
+            _write_low_body_fixture(body_path, body_boost=0.08, sub_boost=0.0)
+            _write_low_body_fixture(flub_path, body_boost=0.08, sub_boost=0.12)
+
+            thin = metrics.reference_profile(thin_path)["lowBody"]
+            body = metrics.reference_profile(body_path)["lowBody"]
+            flub = metrics.reference_profile(flub_path)["lowBody"]
+
+            self.assertTrue(thin["available"])
+            self.assertTrue(body["available"])
+            self.assertTrue(flub["available"])
+            self.assertGreater(
+                body["bodyLowMidToMidVocalDb"],
+                thin["bodyLowMidToMidVocalDb"],
+            )
+            self.assertGreater(
+                flub["subToBodyLowMidDb"],
+                body["subToBodyLowMidDb"],
+            )
+
+    def test_reference_match_score_prefers_body_over_flub(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            reference_path = directory / "reference.wav"
+            thin_path = directory / "thin.wav"
+            body_path = directory / "body.wav"
+            flub_path = directory / "flub.wav"
+            _write_low_body_fixture(reference_path, body_boost=0.08, sub_boost=0.0)
+            _write_low_body_fixture(thin_path, body_boost=0.0, sub_boost=0.0)
+            _write_low_body_fixture(body_path, body_boost=0.08, sub_boost=0.0)
+            _write_low_body_fixture(flub_path, body_boost=0.08, sub_boost=0.12)
+
+            reference = metrics.reference_profile(reference_path)
+            thin = metrics.reference_profile(thin_path)
+            body = metrics.reference_profile(body_path)
+            flub = metrics.reference_profile(flub_path)
+            thin_score = metrics.reference_match_score(reference, thin)
+            body_score = metrics.reference_match_score(reference, body)
+            flub_score = metrics.reference_match_score(reference, flub)
+
+            self.assertEqual(body_score["lowBodyError"], 0.0)
+            self.assertGreater(thin_score["lowBodyError"], body_score["lowBodyError"])
+            self.assertGreater(flub_score["lowBodyError"], body_score["lowBodyError"])
+            self.assertLess(body_score["score"], thin_score["score"])
+            self.assertLess(body_score["score"], flub_score["score"])
+
+    def test_reference_low_body_ratios_survive_level_change(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            quiet_path = directory / "quiet.wav"
+            loud_path = directory / "loud.wav"
+            _write_low_body_fixture(quiet_path, body_boost=0.06, sub_boost=0.02, amplitude=0.5)
+            _write_low_body_fixture(loud_path, body_boost=0.06, sub_boost=0.02, amplitude=1.0)
+
+            quiet = metrics.reference_profile(quiet_path)
+            loud = metrics.reference_profile(loud_path)
+            score = metrics.reference_match_score(quiet, loud)
+
+            self.assertAlmostEqual(
+                quiet["lowBody"]["bodyLowMidToMidVocalDb"],
+                loud["lowBody"]["bodyLowMidToMidVocalDb"],
+                delta=0.2,
+            )
+            self.assertAlmostEqual(score["lowBodyError"], 0.0, delta=0.001)
 
     def test_reference_plan_emits_valid_bounded_patch_candidates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
