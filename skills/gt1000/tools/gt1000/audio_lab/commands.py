@@ -355,7 +355,7 @@ def cmd_reference_run(
     profile_path: Path,
     *,
     session: str,
-    max_candidates: int = 4,
+    max_candidates: int = 12,
     midi_timeout: float = 20.0,
     settle_seconds: float = 0.25,
     prepare_usb: bool = True,

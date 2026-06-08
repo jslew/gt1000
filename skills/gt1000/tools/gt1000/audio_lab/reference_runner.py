@@ -24,7 +24,7 @@ def run_reference_candidates(
     profile_path: Path,
     *,
     session: str,
-    max_candidates: int = 4,
+    max_candidates: int = 12,
     midi_timeout: float = 20.0,
     settle_seconds: float = 0.25,
     prepare_usb: bool = True,
@@ -101,6 +101,8 @@ def run_reference_candidates(
 
     ranked = sorted(scored_renders, key=lambda item: item["score"])
     improvement = _baseline_improvement_summary(baseline, ranked[0])
+    audition_shortlist = _audition_shortlist(ranked)
+    recommendation = _recommendation_summary(improvement, audition_shortlist)
     result = {
         "id": "audioReferenceRun",
         "session": session,
@@ -114,6 +116,8 @@ def run_reference_candidates(
         "best": ranked[0],
         "baseline": baseline,
         "improvement": improvement,
+        "auditionShortlist": audition_shortlist,
+        "recommendation": recommendation,
         "notes": [
             "Temporary-patch candidate writes were restored after each render.",
             "Candidates that do not pass live write/read-back verification are skipped before rendering.",
@@ -134,6 +138,8 @@ def run_reference_candidates(
                 "wetPath": result["best"]["wetPath"],
             },
             "improvement": improvement,
+            "auditionShortlist": audition_shortlist,
+            "recommendation": recommendation,
         },
     )
     return result
@@ -246,6 +252,58 @@ def _baseline_improvement_summary(baseline: dict[str, Any], best: dict[str, Any]
         "bandErrorImprovementPercent": band_improvement,
         "meetsThirtyPercentBandTarget": band_target_met,
         "plainSummary": summary,
+    }
+
+
+def _audition_shortlist(ranked: list[dict[str, Any]], *, limit: int = 3) -> list[dict[str, Any]]:
+    shortlist: list[dict[str, Any]] = []
+    for rank, item in enumerate(ranked[:limit], start=1):
+        candidate = item.get("candidate")
+        candidate_payload = candidate if isinstance(candidate, dict) else None
+        report = item.get("report") if isinstance(item.get("report"), dict) else {}
+        shortlist.append(
+            {
+                "rank": rank,
+                "label": item.get("label"),
+                "renderLabel": item.get("renderLabel"),
+                "wetPath": item.get("wetPath"),
+                "score": item.get("score"),
+                "bandError": item.get("bandError"),
+                "rmsDeltaDb": item.get("rmsDeltaDb"),
+                "candidateIntent": None if candidate_payload is None else candidate_payload.get("intent"),
+                "candidateArea": None if candidate_payload is None else candidate_payload.get("area"),
+                "candidateParameter": None if candidate_payload is None else candidate_payload.get("parameter"),
+                "candidateValue": None if candidate_payload is None else candidate_payload.get("value"),
+                "summary": report.get("plainSummary"),
+            }
+        )
+    return shortlist
+
+
+def _recommendation_summary(
+    improvement: dict[str, Any],
+    audition_shortlist: list[dict[str, Any]],
+) -> dict[str, Any]:
+    status = improvement.get("status")
+    top = audition_shortlist[0] if audition_shortlist else {}
+    if status == "baseline-best":
+        action = "audition-baseline"
+        summary = "Keep the baseline as the reference point; none of the rendered candidates improved the score."
+    elif status == "target-met":
+        action = "audition-best-candidate"
+        summary = "Audition the top candidate first; it met the 30% broad-band improvement target."
+    elif status == "improved":
+        action = "audition-best-candidate"
+        summary = "Audition the top candidate first, but treat it as partial progress because it missed the 30% broad-band target."
+    else:
+        action = "expand-or-rethink-candidates"
+        summary = "Do not treat the top candidate as a win; expand or rethink the candidate set before recommending a sound."
+    return {
+        "action": action,
+        "topLabel": top.get("label"),
+        "topWetPath": top.get("wetPath"),
+        "plainSummary": summary,
+        "auditionCount": len(audition_shortlist),
     }
 
 

@@ -188,7 +188,7 @@ def register_audio_commands(subcommands: argparse._SubParsersAction) -> None:
     )
     reference_run.add_argument("profile", type=Path, help="Reference profile JSON from audio reference analyze.")
     reference_run.add_argument("--session", required=True, help="Audio lab session name with dry.wav.")
-    reference_run.add_argument("--max-candidates", type=int, default=4, help="Candidate budget, default 4.")
+    reference_run.add_argument("--max-candidates", type=int, default=12, help="Candidate budget, default 12.")
     reference_run.add_argument("--midi-timeout", type=float, default=20.0)
     reference_run.add_argument("--settle-seconds", type=float, default=0.25)
     reference_run.add_argument("--no-prepare-usb", action="store_true")

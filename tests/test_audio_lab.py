@@ -762,6 +762,14 @@ class AudioLabTests(unittest.TestCase):
                 self.assertEqual(candidate["writeCount"], 1)
                 self.assertEqual(candidate["renderCommand"][:4], ["audio", "session", "render", "--session"])
 
+    def test_reference_run_cli_default_candidate_budget_is_twelve(self) -> None:
+        from tools.gt1000 import agent_cli
+
+        parser = agent_cli.build_parser()
+        args = parser.parse_args(["audio", "reference", "run", "profile.json", "--session", "tone-chase"])
+
+        self.assertEqual(args.max_candidates, 12)
+
     def test_reference_plan_expands_to_verification_gated_drive_candidates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
@@ -918,6 +926,10 @@ class AudioLabTests(unittest.TestCase):
             self.assertEqual(result["baseline"]["label"], "baseline")
             self.assertIn(result["improvement"]["status"], {"improved", "target-met"})
             self.assertGreater(result["improvement"]["scoreImprovementPercent"], 0.0)
+            self.assertEqual(result["auditionShortlist"][0]["label"], result["best"]["label"])
+            self.assertEqual(result["auditionShortlist"][0]["wetPath"], result["best"]["wetPath"])
+            self.assertEqual(result["recommendation"]["action"], "audition-best-candidate")
+            self.assertEqual(result["recommendation"]["topWetPath"], result["best"]["wetPath"])
             self.assertEqual(apply_mock.call_count, 2)
             self.assertTrue(result["renders"][1]["restoreResult"]["verified"])
             self.assertIn("plainSummary", result["best"]["report"])
@@ -991,6 +1003,8 @@ class AudioLabTests(unittest.TestCase):
             self.assertEqual(result["best"]["label"], "baseline")
             self.assertEqual(result["improvement"]["status"], "baseline-best")
             self.assertFalse(result["improvement"]["meetsThirtyPercentBandTarget"])
+            self.assertEqual(result["auditionShortlist"][0]["label"], "baseline")
+            self.assertEqual(result["recommendation"]["action"], "audition-baseline")
             self.assertIn("Baseline remained the best render", result["improvement"]["plainSummary"])
 
     def test_reference_run_skips_unverified_candidate_before_render(self) -> None:
