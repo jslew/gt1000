@@ -915,6 +915,9 @@ class AudioLabTests(unittest.TestCase):
             self.assertEqual(result["candidateCount"], 1)
             self.assertEqual(len(result["renders"]), 2)
             self.assertNotEqual(result["best"]["label"], "baseline")
+            self.assertEqual(result["baseline"]["label"], "baseline")
+            self.assertIn(result["improvement"]["status"], {"improved", "target-met"})
+            self.assertGreater(result["improvement"]["scoreImprovementPercent"], 0.0)
             self.assertEqual(apply_mock.call_count, 2)
             self.assertTrue(result["renders"][1]["restoreResult"]["verified"])
             self.assertIn("plainSummary", result["best"]["report"])
@@ -923,6 +926,72 @@ class AudioLabTests(unittest.TestCase):
                 "Scores are an audition/ranking aid, not a guarantee of a perceptual tone match.",
                 result["notes"],
             )
+
+    def test_reference_run_reports_baseline_when_candidates_do_not_improve(self) -> None:
+        from tools.gt1000 import live
+        from tools.gt1000.audio_lab import reference_runner
+
+        def fake_original_reads(*, timeout: float, requests: list[live.PatchReadRequest]) -> dict[str, list[int]]:
+            return {
+                live.address_key(request.address): [64] * live.seven_bit_address_value(request.size)
+                for request in requests
+            }
+
+        def fake_render(
+            session_name: str,
+            label: str,
+            *,
+            prepare_usb: bool,
+            midi_timeout: float,
+            settle_seconds: float,
+            snapshot_patch: bool,
+        ) -> dict:
+            session_dir = Path(tmp) / session_name
+            wet_path = session_dir / "renders" / f"{label}-wet.wav"
+            if "candidate" in label:
+                _write_composite_tone(wet_path, frequencies=[3000.0, 6000.0])
+            else:
+                _write_composite_tone(wet_path, frequencies=[220.0, 440.0])
+            return {
+                "id": "audioSessionRender",
+                "session": session_name,
+                "label": label,
+                "wetPath": str(wet_path),
+                "dryPath": str(session_dir / "dry.wav"),
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            with mock.patch.object(session, "session_root", return_value=directory):
+                cmd_generate_tone("no-improve-test", duration=0.2, frequency=440.0, amplitude=0.2, sample_rate=44100)
+                reference = directory / "reference.wav"
+                profile_path = directory / "reference-profile.json"
+                _write_composite_tone(reference, frequencies=[220.0, 440.0])
+                cmd_reference_analyze(reference, output_path=profile_path)
+                with mock.patch.object(
+                    reference_runner.live,
+                    "read_data_sets",
+                    side_effect=fake_original_reads,
+                ), mock.patch.object(
+                    reference_runner,
+                    "apply_plan_after_audio",
+                    return_value={"verified": True},
+                ), mock.patch.object(
+                    reference_runner,
+                    "render_labeled_wet",
+                    side_effect=fake_render,
+                ):
+                    result = cmd_reference_run(
+                        profile_path,
+                        session="no-improve-test",
+                        max_candidates=1,
+                        verify_writes=True,
+                    )
+
+            self.assertEqual(result["best"]["label"], "baseline")
+            self.assertEqual(result["improvement"]["status"], "baseline-best")
+            self.assertFalse(result["improvement"]["meetsThirtyPercentBandTarget"])
+            self.assertIn("Baseline remained the best render", result["improvement"]["plainSummary"])
 
     def test_reference_run_skips_unverified_candidate_before_render(self) -> None:
         from tools.gt1000 import live, patch_edit

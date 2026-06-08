@@ -44,6 +44,7 @@ Report:
 - dry take/session used
 - baseline rank/score
 - top candidate renders available for audition
+- whether the best candidate improved over baseline, including the 30% broad-band improvement target when available
 - what changed musically
 - why each top candidate ranked well or poorly: score pressure, largest band differences, and descriptor deltas
 - any skipped candidates and why

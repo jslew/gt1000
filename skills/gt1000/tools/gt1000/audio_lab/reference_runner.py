@@ -100,6 +100,7 @@ def run_reference_candidates(
                 skipped_candidates[-1]["restoreResult"] = restore_result
 
     ranked = sorted(scored_renders, key=lambda item: item["score"])
+    improvement = _baseline_improvement_summary(baseline, ranked[0])
     result = {
         "id": "audioReferenceRun",
         "session": session,
@@ -111,6 +112,8 @@ def run_reference_candidates(
         "skippedCandidates": skipped_candidates,
         "ranked": ranked,
         "best": ranked[0],
+        "baseline": baseline,
+        "improvement": improvement,
         "notes": [
             "Temporary-patch candidate writes were restored after each render.",
             "Candidates that do not pass live write/read-back verification are skipped before rendering.",
@@ -130,6 +133,7 @@ def run_reference_candidates(
                 "score": result["best"]["score"],
                 "wetPath": result["best"]["wetPath"],
             },
+            "improvement": improvement,
         },
     )
     return result
@@ -206,6 +210,65 @@ def _apply_restore_after_audio(
             f"{message}"
         )
         return fallback
+
+
+def _baseline_improvement_summary(baseline: dict[str, Any], best: dict[str, Any]) -> dict[str, Any]:
+    score_delta = _numeric_delta(baseline.get("score"), best.get("score"))
+    band_delta = _numeric_delta(baseline.get("bandError"), best.get("bandError"))
+    score_improvement = _improvement_percent(baseline.get("score"), best.get("score"))
+    band_improvement = _improvement_percent(baseline.get("bandError"), best.get("bandError"))
+    best_label = str(best.get("label"))
+    improved = bool(score_delta is not None and score_delta < 0.0 and best_label != "baseline")
+    band_target_met = bool(band_improvement is not None and band_improvement >= 30.0 and best_label != "baseline")
+    if best_label == "baseline":
+        status = "baseline-best"
+        summary = "Baseline remained the best render; candidate changes did not improve the objective score."
+    elif band_target_met:
+        status = "target-met"
+        summary = "Best candidate improved broad-band error by at least 30% versus baseline."
+    elif improved:
+        status = "improved"
+        summary = "Best candidate improved the objective score, but did not meet the 30% broad-band improvement target."
+    else:
+        status = "not-improved"
+        summary = "Best candidate did not improve the objective score versus baseline."
+    return {
+        "status": status,
+        "baselineLabel": baseline.get("label"),
+        "bestLabel": best.get("label"),
+        "baselineScore": baseline.get("score"),
+        "bestScore": best.get("score"),
+        "scoreDelta": score_delta,
+        "scoreImprovementPercent": score_improvement,
+        "baselineBandError": baseline.get("bandError"),
+        "bestBandError": best.get("bandError"),
+        "bandErrorDelta": band_delta,
+        "bandErrorImprovementPercent": band_improvement,
+        "meetsThirtyPercentBandTarget": band_target_met,
+        "plainSummary": summary,
+    }
+
+
+def _numeric_delta(before: Any, after: Any) -> float | None:
+    if before is None or after is None:
+        return None
+    try:
+        return float(after) - float(before)
+    except (TypeError, ValueError):
+        return None
+
+
+def _improvement_percent(before: Any, after: Any) -> float | None:
+    if before is None or after is None:
+        return None
+    try:
+        before_float = float(before)
+        after_float = float(after)
+    except (TypeError, ValueError):
+        return None
+    if before_float <= 0.0:
+        return None
+    return ((before_float - after_float) / before_float) * 100.0
 
 
 def _render_and_score(
