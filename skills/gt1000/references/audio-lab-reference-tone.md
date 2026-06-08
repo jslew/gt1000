@@ -47,6 +47,22 @@ Offer to re-apply a winning candidate temporarily for listening, or save it to a
 ## MVP Boundaries
 
 - Candidate search is intentionally bounded and conservative.
-- The runner ranks rendered WAVs by approximate spectral/loudness metrics.
+- The runner ranks rendered WAVs by approximate spectral/loudness metrics plus a low-weight space/reverb descriptor.
 - Probes and candidate renders are temporary by default.
 - The workflow should end with auditionable renders and a clear recommendation, not an automatic save.
+
+## Target Dimensions
+
+Attack targets one at a time and keep the evidence separate.
+
+### Space / Reverb
+
+The reference profile includes a `space` section for ambience matching:
+
+- tail level relative to active frames
+- tail brightness
+- stereo correlation and side-vs-mid width
+- tail envelope modulation
+- repeat lag/strength as a hint only
+
+Use this to distinguish dry, mono, wide, diffuse, and echo-like candidates. Do not treat repeat lag as confirmed delay time without an audition or a dedicated delay experiment.

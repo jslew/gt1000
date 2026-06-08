@@ -56,6 +56,38 @@ def _write_composite_tone(path: Path, *, frequencies: list[float], duration: flo
     wav_io.write_wav_stereo(path, sample_rate, left, right)
 
 
+def _write_tail_fixture(
+    path: Path,
+    *,
+    wide_tail: bool = False,
+    pulsed_tail: bool = False,
+    sample_rate: int = 44100,
+) -> None:
+    body_frames = int(1.0 * sample_rate)
+    tail_frames = int(1.0 * sample_rate)
+    left: list[float] = []
+    right: list[float] = []
+    for index in range(body_frames):
+        value = 0.25 * math.sin(2.0 * math.pi * 440.0 * index / sample_rate)
+        left.append(value)
+        right.append(value)
+    for index in range(tail_frames):
+        seconds = index / sample_rate
+        envelope = 0.18 * math.exp(-3.0 * seconds)
+        if pulsed_tail:
+            pulse_phase = seconds % 0.2
+            envelope *= 1.0 if pulse_phase < 0.055 else 0.15
+        left_value = envelope * math.sin(2.0 * math.pi * 660.0 * index / sample_rate)
+        if wide_tail:
+            right_index = max(0, index - int(0.012 * sample_rate))
+            right_value = -envelope * math.sin(2.0 * math.pi * 660.0 * right_index / sample_rate)
+        else:
+            right_value = left_value
+        left.append(left_value)
+        right.append(right_value)
+    wav_io.write_wav_stereo(path, sample_rate, left, right)
+
+
 class AudioLabTests(unittest.TestCase):
     def test_audio_cli_parser_coverage_markers(self) -> None:
         for line in _AUDIO_CLI_PARSER_COVERAGE.strip().splitlines():
@@ -266,6 +298,7 @@ class AudioLabTests(unittest.TestCase):
             self.assertTrue(profile_path.is_file())
             self.assertGreater(len(profile_payload["profile"]["bands"]), 1)
             self.assertIsNotNone(profile_payload["profile"]["crestDb"])
+            self.assertTrue(profile_payload["profile"]["space"]["available"])
 
             match_payload = cmd_match_reference(profile_path, [far, close])
             self.assertEqual(match_payload["id"], "audioMatchReference")
@@ -274,6 +307,69 @@ class AudioLabTests(unittest.TestCase):
                 match_payload["ranked"][0]["score"],
                 match_payload["ranked"][1]["score"],
             )
+
+    def test_reference_profile_space_metrics_detect_wide_tail(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            mono_tail = directory / "mono-tail.wav"
+            wide_tail = directory / "wide-tail.wav"
+            _write_tail_fixture(mono_tail, wide_tail=False)
+            _write_tail_fixture(wide_tail, wide_tail=True)
+
+            mono_profile = metrics.reference_profile(mono_tail)
+            wide_profile = metrics.reference_profile(wide_tail)
+            mono_space = mono_profile["space"]
+            wide_space = wide_profile["space"]
+
+            self.assertTrue(mono_space["available"])
+            self.assertTrue(wide_space["available"])
+            self.assertIsNotNone(mono_space["tailStereoCorrelationMedian"])
+            self.assertIsNotNone(wide_space["tailStereoCorrelationMedian"])
+            self.assertGreater(mono_space["tailStereoCorrelationMedian"], 0.95)
+            self.assertLess(wide_space["tailStereoCorrelationMedian"], 0.2)
+            self.assertGreater(
+                wide_space["tailSideToMidDbMedian"],
+                mono_space["tailSideToMidDbMedian"],
+            )
+
+    def test_reference_profile_space_metrics_detect_repeated_tail(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            smooth_tail = directory / "smooth-tail.wav"
+            pulsed_tail = directory / "pulsed-tail.wav"
+            _write_tail_fixture(smooth_tail, pulsed_tail=False)
+            _write_tail_fixture(pulsed_tail, pulsed_tail=True)
+
+            smooth_space = metrics.reference_profile(smooth_tail)["space"]
+            pulsed_space = metrics.reference_profile(pulsed_tail)["space"]
+
+            self.assertTrue(smooth_space["available"])
+            self.assertTrue(pulsed_space["available"])
+            self.assertIsNotNone(smooth_space["repeatPeakStrength"])
+            self.assertIsNotNone(pulsed_space["repeatPeakStrength"])
+            self.assertGreater(
+                pulsed_space["tailEnvelopeModulationDb"],
+                smooth_space["tailEnvelopeModulationDb"],
+            )
+
+    def test_reference_match_score_prefers_matching_space_when_bands_match(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            mono_tail = directory / "mono-tail.wav"
+            wide_tail = directory / "wide-tail.wav"
+            _write_tail_fixture(mono_tail, wide_tail=False)
+            _write_tail_fixture(wide_tail, wide_tail=True)
+
+            reference = metrics.reference_profile(wide_tail)
+            matching = metrics.reference_profile(wide_tail)
+            mismatched = metrics.reference_profile(mono_tail)
+
+            matching_score = metrics.reference_match_score(reference, matching)
+            mismatched_score = metrics.reference_match_score(reference, mismatched)
+
+            self.assertEqual(matching_score["spaceError"], 0.0)
+            self.assertGreater(mismatched_score["spaceError"], matching_score["spaceError"])
+            self.assertLess(matching_score["score"], mismatched_score["score"])
 
     def test_reference_plan_emits_valid_bounded_patch_candidates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

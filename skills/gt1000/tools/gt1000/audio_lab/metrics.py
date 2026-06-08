@@ -19,6 +19,8 @@ DEFAULT_REFERENCE_BANDS: tuple[tuple[float, float], ...] = (
     (5000.0, 8000.0),
 )
 SPECTRAL_FLOOR = 1.0e-12
+SPACE_FRAME_SECONDS = 0.05
+SPACE_HOP_SECONDS = 0.025
 
 
 def _rms_dbfs(samples: list[float]) -> float | None:
@@ -37,6 +39,30 @@ def _peak_dbfs(samples: list[float]) -> float | None:
     if peak <= 0.0:
         return None
     return 20.0 * math.log10(peak)
+
+
+def _median(values: list[float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) * 0.5
+
+
+def _percentile(values: list[float], percentile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = int(round((max(0.0, min(100.0, percentile)) / 100.0) * (len(ordered) - 1)))
+    return ordered[index]
+
+
+def _ratio_db(numerator: float, denominator: float) -> float | None:
+    if numerator <= 0.0 or denominator <= 0.0:
+        return None
+    return 10.0 * math.log10(numerator / denominator)
 
 
 def _mono_samples(per_channel: list[list[float]], channels: int) -> list[float]:
@@ -101,6 +127,194 @@ def _stereo_metrics(left: list[float], right: list[float]) -> dict[str, Any]:
         "stereoDeltaDb": None if left_rms is None or right_rms is None else left_rms - right_rms,
         "frameCount": len(left),
         "note": "rmsDbfs is broadband RMS in dBFS; not broadcast LUFS.",
+    }
+
+
+def _stereo_correlation(left: list[float], right: list[float]) -> float | None:
+    if not left or not right:
+        return None
+    left_mean = sum(left) / len(left)
+    right_mean = sum(right) / len(right)
+    numerator = sum((l_sample - left_mean) * (r_sample - right_mean) for l_sample, r_sample in zip(left, right))
+    left_power = math.sqrt(sum((sample - left_mean) * (sample - left_mean) for sample in left))
+    right_power = math.sqrt(sum((sample - right_mean) * (sample - right_mean) for sample in right))
+    if left_power <= 0.0 or right_power <= 0.0:
+        return None
+    return numerator / (left_power * right_power)
+
+
+def _side_to_mid_db(left: list[float], right: list[float]) -> float | None:
+    if not left or not right:
+        return None
+    mid = [(l_sample + r_sample) * 0.5 for l_sample, r_sample in zip(left, right)]
+    side = [(l_sample - r_sample) * 0.5 for l_sample, r_sample in zip(left, right)]
+    mid_energy = sum(sample * sample for sample in mid) / len(mid)
+    side_energy = sum(sample * sample for sample in side) / len(side)
+    if mid_energy <= 0.0:
+        return None
+    if side_energy <= 0.0:
+        return SIGNAL_RMS_FLOOR_DBFS
+    return _ratio_db(side_energy, mid_energy)
+
+
+def _frame_space_metrics(
+    left: list[float],
+    right: list[float],
+    *,
+    sample_rate: int,
+) -> list[dict[str, Any]]:
+    frame_count = int(round(SPACE_FRAME_SECONDS * sample_rate))
+    hop_count = int(round(SPACE_HOP_SECONDS * sample_rate))
+    if frame_count <= 0 or hop_count <= 0:
+        return []
+    mono = [(l_sample + r_sample) * 0.5 for l_sample, r_sample in zip(left, right)]
+    frames: list[dict[str, Any]] = []
+    for start in range(0, len(mono) - frame_count + 1, hop_count):
+        end = start + frame_count
+        mono_frame = mono[start:end]
+        left_frame = left[start:end]
+        right_frame = right[start:end]
+        frames.append(
+            {
+                "startSeconds": start / float(sample_rate),
+                "rmsDbfs": _rms_dbfs(mono_frame),
+                "stereoCorrelation": _stereo_correlation(left_frame, right_frame),
+                "sideToMidDb": _side_to_mid_db(left_frame, right_frame),
+                "left": left_frame,
+                "right": right_frame,
+                "mono": mono_frame,
+            }
+        )
+    return frames
+
+
+def _median_field(frames: list[dict[str, Any]], field: str) -> float | None:
+    return _median([float(frame[field]) for frame in frames if frame.get(field) is not None])
+
+
+def _frames_between_rms(
+    frames: list[dict[str, Any]],
+    *,
+    low_dbfs: float,
+    high_dbfs: float,
+) -> list[dict[str, Any]]:
+    return [
+        frame
+        for frame in frames
+        if frame.get("rmsDbfs") is not None and low_dbfs <= float(frame["rmsDbfs"]) <= high_dbfs
+    ]
+
+
+def _concat_mono_frames(frames: list[dict[str, Any]], *, max_frames: int = 160) -> list[float]:
+    samples: list[float] = []
+    for frame in frames[:max_frames]:
+        samples.extend(frame["mono"])
+    return samples
+
+
+def _brightness_db(samples: list[float], sample_rate: int) -> float | None:
+    windowed = _window_samples(samples, max_frames=8192)
+    if not windowed:
+        return None
+    body = _band_energy(windowed, sample_rate, 160.0, 2500.0)
+    high = _band_energy(windowed, sample_rate, 2500.0, 8000.0)
+    return _ratio_db(high, body)
+
+
+def _repeat_hint(frames: list[dict[str, Any]]) -> dict[str, Any]:
+    envelope_db = [
+        float(frame["rmsDbfs"])
+        for frame in frames
+        if frame.get("rmsDbfs") is not None
+    ]
+    if len(envelope_db) < 16:
+        return {"tailEnvelopeModulationDb": None, "repeatPeakLagMs": None, "repeatPeakStrength": None}
+    modulation = None
+    p10 = _percentile(envelope_db, 10.0)
+    p90 = _percentile(envelope_db, 90.0)
+    if p10 is not None and p90 is not None:
+        modulation = p90 - p10
+    count = len(envelope_db)
+    x_mean = (count - 1) * 0.5
+    y_mean = sum(envelope_db) / count
+    denominator = sum((index - x_mean) * (index - x_mean) for index in range(count))
+    slope = 0.0 if denominator <= 0.0 else sum((index - x_mean) * (value - y_mean) for index, value in enumerate(envelope_db)) / denominator
+    intercept = y_mean - slope * x_mean
+    centered_envelope = [value - (intercept + slope * index) for index, value in enumerate(envelope_db)]
+    centered = [
+        centered_envelope[index + 1] - centered_envelope[index]
+        for index in range(len(centered_envelope) - 1)
+    ]
+    energy = sum(value * value for value in centered)
+    if energy <= 0.0:
+        return {"tailEnvelopeModulationDb": modulation, "repeatPeakLagMs": None, "repeatPeakStrength": None}
+    min_lag = max(1, int(round(0.08 / SPACE_HOP_SECONDS)))
+    max_lag = min(len(centered) - 1, int(round(0.9 / SPACE_HOP_SECONDS)))
+    best_lag = None
+    best_strength = None
+    for lag in range(min_lag, max_lag + 1):
+        correlation = sum(centered[index] * centered[index + lag] for index in range(len(centered) - lag))
+        strength = correlation / energy
+        if best_strength is None or strength > best_strength:
+            best_strength = strength
+            best_lag = lag
+    return {
+        "tailEnvelopeModulationDb": modulation,
+        "repeatPeakLagMs": None if best_lag is None else best_lag * SPACE_HOP_SECONDS * 1000.0,
+        "repeatPeakStrength": best_strength,
+    }
+
+
+def space_profile(
+    per_channel: list[list[float]],
+    channels: int,
+    *,
+    sample_rate: int,
+) -> dict[str, Any]:
+    if channels == 1:
+        left = per_channel[0]
+        right = per_channel[0]
+    elif channels >= 2:
+        left = per_channel[0]
+        right = per_channel[1]
+    else:
+        return {"available": False, "reason": "no audio channels"}
+    frames = _frame_space_metrics(left, right, sample_rate=sample_rate)
+    rms_values = [float(frame["rmsDbfs"]) for frame in frames if frame.get("rmsDbfs") is not None]
+    if not rms_values:
+        return {"available": False, "reason": "no measurable audio frames"}
+    tail_low = _percentile(rms_values, 10.0)
+    tail_high = _percentile(rms_values, 35.0)
+    active_low = _percentile(rms_values, 60.0)
+    active_high = _percentile(rms_values, 95.0)
+    tail_frames = [] if tail_low is None or tail_high is None else _frames_between_rms(frames, low_dbfs=tail_low, high_dbfs=tail_high)
+    active_frames = [] if active_low is None or active_high is None else _frames_between_rms(frames, low_dbfs=active_low, high_dbfs=active_high)
+    tail_rms = _median_field(tail_frames, "rmsDbfs")
+    active_rms = _median_field(active_frames, "rmsDbfs")
+    return {
+        "available": True,
+        "frameSeconds": SPACE_FRAME_SECONDS,
+        "hopSeconds": SPACE_HOP_SECONDS,
+        "frameCount": len(frames),
+        "rmsPercentilesDbfs": {
+            "p10": tail_low,
+            "p35": tail_high,
+            "p60": active_low,
+            "p95": active_high,
+        },
+        "tailRmsDbfs": tail_rms,
+        "activeRmsDbfs": active_rms,
+        "tailToActiveDeltaDb": None if tail_rms is None or active_rms is None else tail_rms - active_rms,
+        "stereoCorrelationMedian": _median_field(frames, "stereoCorrelation"),
+        "sideToMidDbMedian": _median_field(frames, "sideToMidDb"),
+        "tailStereoCorrelationMedian": _median_field(tail_frames, "stereoCorrelation"),
+        "tailSideToMidDbMedian": _median_field(tail_frames, "sideToMidDb"),
+        "activeStereoCorrelationMedian": _median_field(active_frames, "stereoCorrelation"),
+        "activeSideToMidDbMedian": _median_field(active_frames, "sideToMidDb"),
+        "tailBrightnessDb": _brightness_db(_concat_mono_frames(tail_frames), sample_rate),
+        "activeBrightnessDb": _brightness_db(_concat_mono_frames(active_frames), sample_rate),
+        **_repeat_hint(tail_frames),
+        "note": "Low-level frame and stereo-width descriptors for ambience/reverb matching; descriptive only in the MVP score.",
     }
 
 
@@ -294,6 +508,7 @@ def reference_profile(
         "channels": channels,
         "profileVersion": 1,
         "bands": bands,
+        "space": space_profile(per_channel, channels, sample_rate=sample_rate),
         "spectralCentroidHz": None if total_energy <= 0.0 else weighted_frequency / total_energy,
         "rmsDbfs": rms_dbfs,
         "peakDbfs": peak_dbfs,
@@ -309,6 +524,7 @@ def reference_match_score(
     *,
     band_weight: float = 1.0,
     rms_weight: float = 0.05,
+    space_weight: float = 0.15,
 ) -> dict[str, Any]:
     ref_bands = reference.get("bands") or []
     candidate_bands = candidate.get("bands") or []
@@ -337,17 +553,45 @@ def reference_match_score(
     if ref_rms is not None and candidate_rms is not None:
         rms_delta = float(candidate_rms) - float(ref_rms)
         rms_error = rms_delta * rms_delta
-    score = band_weight * band_error + rms_weight * rms_error
+    space_error = _space_match_error(reference.get("space"), candidate.get("space"))
+    score = band_weight * band_error + rms_weight * rms_error + space_weight * space_error
     return {
         "score": score,
         "bandError": band_error,
         "rmsError": rms_error,
+        "spaceError": space_error,
         "rmsDeltaDb": rms_delta,
         "bandWeight": band_weight,
         "rmsWeight": rms_weight,
+        "spaceWeight": space_weight,
         "bandErrors": band_errors,
-        "note": "Lower score is closer to the stored reference profile.",
+        "note": "Lower score is closer to the stored reference profile; spaceError is a low-weight ambience/reverb descriptor.",
     }
+
+
+def _space_match_error(reference_space: Any, candidate_space: Any) -> float:
+    if not isinstance(reference_space, dict) or not isinstance(candidate_space, dict):
+        return 0.0
+    if not reference_space.get("available") or not candidate_space.get("available"):
+        return 0.0
+    weighted_fields = (
+        ("tailToActiveDeltaDb", 1.0, 6.0),
+        ("tailSideToMidDbMedian", 0.8, 6.0),
+        ("tailBrightnessDb", 0.7, 12.0),
+        ("tailEnvelopeModulationDb", 0.4, 8.0),
+        ("stereoCorrelationMedian", 0.5, 0.5),
+    )
+    error = 0.0
+    used = 0.0
+    for field, weight, scale in weighted_fields:
+        ref_value = reference_space.get(field)
+        candidate_value = candidate_space.get(field)
+        if ref_value is None or candidate_value is None:
+            continue
+        normalized = (float(candidate_value) - float(ref_value)) / scale
+        error += weight * normalized * normalized
+        used += weight
+    return 0.0 if used <= 0.0 else error / used
 
 
 def rms_delta_db(metrics_a: dict[str, Any], metrics_b: dict[str, Any]) -> float | None:
