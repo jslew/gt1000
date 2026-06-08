@@ -2,7 +2,7 @@
 
 Implementation plan for USB dry capture, GT-1000 re-amping, DSP comparison, and (later) reference-tone matching. This extends the existing SysEx/patch CLI; it does not replace it.
 
-**Status:** Phases 1-3 complete; Phase 4 tone chase started with offline reference profiling/scoring.
+**Status:** Phases 1-3 complete; Phase 4 tone chase has an MVP end-to-end runner for bounded temp-patch candidates.
 **Related:** [musician-cli-backlog.md](musician-cli-backlog.md), [AGENTS.md](../AGENTS.md), [audio-lab-reamp-protocol.md](audio-lab-reamp-protocol.md), [midi-reference/address-map.md](../skills/gt1000/references/midi-reference/address-map.md)
 
 ## Vision
@@ -210,7 +210,7 @@ scripts/gt1000-agent --pretty audio session render --label baseline
 |------|-------------|
 | `audio reference analyze` | Band energy curve, spectral centroid, crest; store `reference-profile.json`. Done for approximate stdlib-only band profile via `audio reference analyze`. |
 | `audio match-reference` | Score wet render vs profile (weighted band error + loudness penalty). Done for offline candidate WAV ranking via `audio match-reference`. |
-| Search planner | Limited cartesian/grid over **typed** knobs: amp type, gain, EQ bands, cab sim, key drive block level — not full patch space. Started with offline bounded `audio reference plan`; live apply/render loop remains. |
+| Search planner | Limited cartesian/grid over **typed** knobs: amp type, gain, EQ bands, cab sim, key drive block level — not full patch space. Started with offline bounded `audio reference plan` and one-command temp-patch runner via `audio reference run`. |
 | Candidate budget | Default max 12 renders per session; human can approve expansion. |
 | Skill guidance | Tone chasing is iterative and approximate; cite limits (DI vs mic, playing dynamics). |
 
@@ -231,8 +231,8 @@ Optional: user weights “more mids” via band weight overrides.
 
 ### Exit criteria
 
-- [ ] End-to-end: reference WAV + dry take → ranked candidates with snapshots for audition.
-- [ ] No non-validated SysEx; all writes go through existing patch edit paths.
+- [x] End-to-end MVP: reference WAV + dry take → baseline + bounded temp-patch candidates rendered and ranked for audition (`audio reference run`).
+- [x] No non-validated SysEx; all MVP candidate writes go through existing patch edit paths.
 - [ ] Clear “not a match guarantee” in musician-facing output.
 
 ---
@@ -270,7 +270,7 @@ Optional: user weights “more mids” via band weight overrides.
 | A | 1 | `audio_lab` package, `record-dry`, `reamp`, `analyze`, unit tests — **done** |
 | B | 2 | Session dirs, `session render`, `system inout` writes, orchestrator — **done** |
 | C | 3 | Investigation primitives + compare-branches; agent-led DIV1 proof — **done** |
-| D | 4 | Reference profile, offline scoring, and bounded candidate planning started; live ranked candidates remain |
+| D | 4 | Reference profile, offline scoring, bounded planning, and temp-patch render/rank MVP implemented; richer search space and musician-facing guidance remain |
 
 ## Agent / skill integration (after Phase 2)
 

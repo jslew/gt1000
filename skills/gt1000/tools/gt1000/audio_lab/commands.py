@@ -23,6 +23,7 @@ from .branch_lab import branch_context, compare_branches, probe_branch, probe_pa
 from .device_snapshot import capture_live_snapshots, write_device_snapshots
 from .orchestrator import render_labeled_wet
 from .reference_planner import plan_reference_candidates
+from .reference_runner import run_reference_candidates
 from .session import append_session_event, default_dry_path, resolve_session_dir, write_session_meta
 from .wav_io import extract_channels, generate_sine_tone
 
@@ -346,6 +347,30 @@ def cmd_reference_plan(
         **plan,
         "referenceProfilePath": str(profile_path),
     }
+
+
+def cmd_reference_run(
+    profile_path: Path,
+    *,
+    session: str,
+    max_candidates: int = 4,
+    midi_timeout: float = 20.0,
+    settle_seconds: float = 0.25,
+    prepare_usb: bool = True,
+    verify_writes: bool = True,
+) -> dict[str, Any]:
+    try:
+        return run_reference_candidates(
+            profile_path,
+            session=session,
+            max_candidates=max_candidates,
+            midi_timeout=midi_timeout,
+            settle_seconds=settle_seconds,
+            prepare_usb=prepare_usb,
+            verify_writes=verify_writes,
+        )
+    except ValueError as error:
+        raise AudioLabError(str(error), 64) from error
 
 
 def cmd_session_init(

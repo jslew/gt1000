@@ -195,6 +195,25 @@ class LiveAudioLabTests(unittest.TestCase):
             )
             self.assertEqual(plan["id"], "audioReferencePlan")
             self.assertEqual(plan["candidateCount"], 2)
+            reference_run = parse_json_stdout(
+                run_cli(
+                    "audio",
+                    "reference",
+                    "run",
+                    str(profile_path),
+                    "--session",
+                    session,
+                    "--max-candidates",
+                    "1",
+                    "--midi-timeout",
+                    "20",
+                    env=env,
+                )
+            )
+            self.assertEqual(reference_run["id"], "audioReferenceRun")
+            self.assertEqual(reference_run["candidateCount"], 1)
+            self.assertEqual(len(reference_run["ranked"]), 2)
+            self.assertIn("restoreResult", reference_run["renders"][1])
             match = parse_json_stdout(run_cli("audio", "match-reference", str(profile_path), str(dry_path), env=env))
             self.assertEqual(match["id"], "audioMatchReference")
             self.assertEqual(match["best"]["path"], str(dry_path))

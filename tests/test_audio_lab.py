@@ -11,7 +11,7 @@ from pathlib import Path
 from tools.gt1000.audio_lab import audio_io, coreaudio_io, devices, metrics, session, wav_io
 from tools.gt1000.audio_lab.errors import AudioLabError
 from tools.gt1000.audio_lab.metrics import analyze_multichannel_peaks
-from tools.gt1000.audio_lab.commands import cmd_analyze, cmd_generate_tone, cmd_match_reference, cmd_reference_analyze, cmd_reference_plan, cmd_session_init
+from tools.gt1000.audio_lab.commands import cmd_analyze, cmd_generate_tone, cmd_match_reference, cmd_reference_analyze, cmd_reference_plan, cmd_reference_run, cmd_session_init
 from tools.gt1000.audio_lab.session import sanitize_label
 from tools.gt1000.audio_lab.setup_efct import build_dir_mon_data, decode_setup_efct
 
@@ -34,6 +34,7 @@ _AUDIO_CLI_PARSER_COVERAGE = """
 "audio", "analyze-trimmed"
 "audio", "reference", "analyze"
 "audio", "reference", "plan"
+"audio", "reference", "run"
 "audio", "match-reference"
 "system", "setup-efct"
 "system", "inout-set"
@@ -293,6 +294,75 @@ class AudioLabTests(unittest.TestCase):
                 self.assertIn("--verify", command)
                 self.assertEqual(candidate["writeCount"], 1)
                 self.assertEqual(candidate["renderCommand"][:4], ["audio", "session", "render", "--session"])
+
+    def test_reference_run_applies_renders_scores_and_restores_candidate(self) -> None:
+        from tools.gt1000 import live
+        from tools.gt1000.audio_lab import reference_runner
+
+        def fake_original_reads(*, timeout: float, requests: list[live.PatchReadRequest]) -> dict[str, list[int]]:
+            return {
+                live.address_key(request.address): [64] * live.seven_bit_address_value(request.size)
+                for request in requests
+            }
+
+        def fake_render(
+            session_name: str,
+            label: str,
+            *,
+            prepare_usb: bool,
+            midi_timeout: float,
+            settle_seconds: float,
+            snapshot_patch: bool,
+        ) -> dict:
+            session_dir = Path(tmp) / session_name
+            wet_path = session_dir / "renders" / f"{label}-wet.wav"
+            if "candidate" in label:
+                _write_composite_tone(wet_path, frequencies=[3000.0, 6000.0])
+            else:
+                _write_composite_tone(wet_path, frequencies=[220.0, 440.0])
+            return {
+                "id": "audioSessionRender",
+                "session": session_name,
+                "label": label,
+                "wetPath": str(wet_path),
+                "dryPath": str(session_dir / "dry.wav"),
+                "patchSnapshot": {"patchName": "TEST"},
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            with mock.patch.object(session, "session_root", return_value=directory):
+                cmd_generate_tone("run-test", duration=0.2, frequency=440.0, amplitude=0.2, sample_rate=44100)
+                reference = directory / "reference.wav"
+                profile_path = directory / "reference-profile.json"
+                _write_composite_tone(reference, frequencies=[3000.0, 6000.0])
+                cmd_reference_analyze(reference, output_path=profile_path)
+                with mock.patch.object(
+                    reference_runner.live,
+                    "read_data_sets",
+                    side_effect=fake_original_reads,
+                ), mock.patch.object(
+                    reference_runner,
+                    "apply_plan_after_audio",
+                    return_value={"verified": True},
+                ) as apply_mock, mock.patch.object(
+                    reference_runner,
+                    "render_labeled_wet",
+                    side_effect=fake_render,
+                ):
+                    result = cmd_reference_run(
+                        profile_path,
+                        session="run-test",
+                        max_candidates=1,
+                        verify_writes=True,
+                    )
+
+            self.assertEqual(result["id"], "audioReferenceRun")
+            self.assertEqual(result["candidateCount"], 1)
+            self.assertEqual(len(result["renders"]), 2)
+            self.assertEqual(result["best"]["label"], "eq-low-plus")
+            self.assertEqual(apply_mock.call_count, 2)
+            self.assertTrue(result["renders"][1]["restoreResult"]["verified"])
 
     def test_sanitize_render_label(self) -> None:
         self.assertEqual(sanitize_label("baseline v2"), "baseline-v2")

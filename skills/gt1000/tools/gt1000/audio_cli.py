@@ -23,6 +23,7 @@ try:
         cmd_reference_analyze,
         cmd_match_reference,
         cmd_reference_plan,
+        cmd_reference_run,
         cmd_render_branch,
         cmd_analyze_trimmed,
         cmd_session_init,
@@ -44,6 +45,7 @@ except ModuleNotFoundError:
         cmd_reference_analyze,
         cmd_match_reference,
         cmd_reference_plan,
+        cmd_reference_run,
         cmd_render_branch,
         cmd_analyze_trimmed,
         cmd_session_init,
@@ -179,6 +181,19 @@ def register_audio_commands(subcommands: argparse._SubParsersAction) -> None:
     reference_plan.add_argument("--session", required=True, help="Audio lab session name to use in render commands.")
     reference_plan.add_argument("--max-candidates", type=int, default=12, help="Candidate budget, default 12.")
     reference_plan.set_defaults(func=wrap_audio_command(cmd_audio_reference_plan))
+
+    reference_run = reference_sub.add_parser(
+        "run",
+        help="Apply bounded temp-patch candidates, render, score, rank, and restore each edit.",
+    )
+    reference_run.add_argument("profile", type=Path, help="Reference profile JSON from audio reference analyze.")
+    reference_run.add_argument("--session", required=True, help="Audio lab session name with dry.wav.")
+    reference_run.add_argument("--max-candidates", type=int, default=4, help="Candidate budget, default 4.")
+    reference_run.add_argument("--midi-timeout", type=float, default=20.0)
+    reference_run.add_argument("--settle-seconds", type=float, default=0.25)
+    reference_run.add_argument("--no-prepare-usb", action="store_true")
+    reference_run.add_argument("--no-verify", action="store_true", help="Skip read-back verification for temp patch writes/restores.")
+    reference_run.set_defaults(func=wrap_audio_command(cmd_audio_reference_run, requires_device=True))
 
     match_reference = audio_sub.add_parser(
         "match-reference",
@@ -405,6 +420,18 @@ def cmd_audio_reference_plan(args: argparse.Namespace) -> Any:
         args.profile,
         session=args.session,
         max_candidates=args.max_candidates,
+    )
+
+
+def cmd_audio_reference_run(args: argparse.Namespace) -> Any:
+    return cmd_reference_run(
+        args.profile,
+        session=args.session,
+        max_candidates=args.max_candidates,
+        midi_timeout=args.midi_timeout,
+        settle_seconds=args.settle_seconds,
+        prepare_usb=not args.no_prepare_usb,
+        verify_writes=not args.no_verify,
     )
 
 
