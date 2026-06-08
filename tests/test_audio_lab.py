@@ -88,6 +88,29 @@ def _write_tail_fixture(
     wav_io.write_wav_stereo(path, sample_rate, left, right)
 
 
+def _write_high_end_fixture(
+    path: Path,
+    *,
+    extra_frequency: float | None = None,
+    extra_amplitude: float = 0.0,
+    sample_rate: int = 44100,
+) -> None:
+    frames = int(1.25 * sample_rate)
+    left: list[float] = []
+    right: list[float] = []
+    for index in range(frames):
+        body = (
+            0.16 * math.sin(2.0 * math.pi * 440.0 * index / sample_rate)
+            + 0.10 * math.sin(2.0 * math.pi * 1600.0 * index / sample_rate)
+            + 0.05 * math.sin(2.0 * math.pi * 3200.0 * index / sample_rate)
+        )
+        extra = 0.0 if extra_frequency is None else extra_amplitude * math.sin(2.0 * math.pi * extra_frequency * index / sample_rate)
+        value = body + extra
+        left.append(value)
+        right.append(value)
+    wav_io.write_wav_stereo(path, sample_rate, left, right)
+
+
 class AudioLabTests(unittest.TestCase):
     def test_audio_cli_parser_coverage_markers(self) -> None:
         for line in _AUDIO_CLI_PARSER_COVERAGE.strip().splitlines():
@@ -370,6 +393,47 @@ class AudioLabTests(unittest.TestCase):
             self.assertEqual(matching_score["spaceError"], 0.0)
             self.assertGreater(mismatched_score["spaceError"], matching_score["spaceError"])
             self.assertLess(matching_score["score"], mismatched_score["score"])
+
+    def test_reference_profile_high_end_detects_added_fizz(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            reference_path = directory / "reference.wav"
+            fizz_path = directory / "fizz.wav"
+            _write_high_end_fixture(reference_path)
+            _write_high_end_fixture(fizz_path, extra_frequency=5854.0, extra_amplitude=0.10)
+
+            reference = metrics.reference_profile(reference_path)
+            fizz = metrics.reference_profile(fizz_path)
+
+            self.assertTrue(reference["highEnd"]["available"])
+            self.assertTrue(fizz["highEnd"]["available"])
+            self.assertGreater(
+                fizz["highEnd"]["fizzToPresenceDb"],
+                reference["highEnd"]["fizzToPresenceDb"],
+            )
+            self.assertGreater(
+                fizz["highEnd"]["fizzToVocalDb"],
+                reference["highEnd"]["fizzToVocalDb"],
+            )
+
+    def test_reference_match_score_penalizes_fizz_more_than_presence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            reference_path = directory / "reference.wav"
+            presence_path = directory / "presence.wav"
+            fizz_path = directory / "fizz.wav"
+            _write_high_end_fixture(reference_path)
+            _write_high_end_fixture(presence_path, extra_frequency=3200.0, extra_amplitude=0.10)
+            _write_high_end_fixture(fizz_path, extra_frequency=5854.0, extra_amplitude=0.10)
+
+            reference = metrics.reference_profile(reference_path)
+            presence = metrics.reference_profile(presence_path)
+            fizz = metrics.reference_profile(fizz_path)
+            presence_score = metrics.reference_match_score(reference, presence)
+            fizz_score = metrics.reference_match_score(reference, fizz)
+
+            self.assertGreater(fizz_score["highEndError"], presence_score["highEndError"])
+            self.assertGreater(fizz_score["score"], presence_score["score"])
 
     def test_reference_plan_emits_valid_bounded_patch_candidates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

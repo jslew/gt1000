@@ -21,6 +21,8 @@ DEFAULT_REFERENCE_BANDS: tuple[tuple[float, float], ...] = (
 SPECTRAL_FLOOR = 1.0e-12
 SPACE_FRAME_SECONDS = 0.05
 SPACE_HOP_SECONDS = 0.025
+HIGH_END_WINDOW_FRAMES = 8192
+HIGH_END_WINDOW_COUNT = 9
 
 
 def _rms_dbfs(samples: list[float]) -> float | None:
@@ -219,6 +221,102 @@ def _brightness_db(samples: list[float], sample_rate: int) -> float | None:
     body = _band_energy(windowed, sample_rate, 160.0, 2500.0)
     high = _band_energy(windowed, sample_rate, 2500.0, 8000.0)
     return _ratio_db(high, body)
+
+
+def _analysis_windows(samples: list[float], *, window_frames: int, count: int) -> list[list[float]]:
+    if not samples:
+        return []
+    if len(samples) <= window_frames:
+        return [_window_samples(samples, max_frames=window_frames)]
+    usable = len(samples) - window_frames
+    if count <= 1:
+        starts = [usable // 2]
+    else:
+        starts = [int(round((usable * index) / float(count - 1))) for index in range(count)]
+    windows: list[list[float]] = []
+    for start in starts:
+        segment = samples[start : start + window_frames]
+        windows.append(_window_samples(segment, max_frames=window_frames))
+    return windows
+
+
+def _energy_db(energy: float) -> float:
+    return 10.0 * math.log10(max(SPECTRAL_FLOOR, energy))
+
+
+def _window_high_end_metrics(window: list[float], sample_rate: int) -> dict[str, Any]:
+    low_mid = max(SPECTRAL_FLOOR, _band_energy(window, sample_rate, 160.0, 1250.0))
+    vocal = max(SPECTRAL_FLOOR, _band_energy(window, sample_rate, 1250.0, 2500.0))
+    presence = max(SPECTRAL_FLOOR, _band_energy(window, sample_rate, 2500.0, 5000.0))
+    fizz = max(SPECTRAL_FLOOR, _band_energy(window, sample_rate, 5000.0, 8000.0))
+    air = max(SPECTRAL_FLOOR, _band_energy(window, sample_rate, 8000.0, 12000.0))
+    return {
+        "rmsDbfs": _rms_dbfs(window),
+        "lowMidEnergyDb": _energy_db(low_mid),
+        "vocalEnergyDb": _energy_db(vocal),
+        "presenceEnergyDb": _energy_db(presence),
+        "fizzEnergyDb": _energy_db(fizz),
+        "airEnergyDb": _energy_db(air),
+        "presenceToVocalDb": _ratio_db(presence, vocal),
+        "fizzToPresenceDb": _ratio_db(fizz, presence),
+        "fizzToVocalDb": _ratio_db(fizz, vocal),
+        "airToVocalDb": _ratio_db(air, vocal),
+        "airToPresenceDb": _ratio_db(air, presence),
+        "lowMidToVocalDb": _ratio_db(low_mid, vocal),
+    }
+
+
+def _field_values(rows: list[dict[str, Any]], field: str) -> list[float]:
+    return [float(row[field]) for row in rows if row.get(field) is not None]
+
+
+def high_end_profile(
+    per_channel: list[list[float]],
+    channels: int,
+    *,
+    sample_rate: int,
+) -> dict[str, Any]:
+    mono = _mono_samples(per_channel, channels)
+    windows = _analysis_windows(
+        mono,
+        window_frames=HIGH_END_WINDOW_FRAMES,
+        count=HIGH_END_WINDOW_COUNT,
+    )
+    if not windows:
+        return {"available": False, "reason": "no audio samples"}
+    all_rows = [_window_high_end_metrics(window, sample_rate) for window in windows if window]
+    if not all_rows:
+        return {"available": False, "reason": "no analysis windows"}
+    rms_values = _field_values(all_rows, "rmsDbfs")
+    active_floor = _percentile(rms_values, 35.0)
+    rows = [
+        row
+        for row in all_rows
+        if active_floor is None or row.get("rmsDbfs") is not None and float(row["rmsDbfs"]) >= active_floor
+    ]
+    if not rows:
+        rows = all_rows
+    fields = (
+        "presenceToVocalDb",
+        "fizzToPresenceDb",
+        "fizzToVocalDb",
+        "airToVocalDb",
+        "airToPresenceDb",
+        "lowMidToVocalDb",
+    )
+    summary: dict[str, Any] = {
+        "available": True,
+        "windowFrames": HIGH_END_WINDOW_FRAMES,
+        "windowCount": len(all_rows),
+        "activeWindowCount": len(rows),
+        "activeWindowFloorDbfs": active_floor,
+        "note": "High-end rolloff/fizz descriptors sampled across active windows; more-negative fizz ratios mean less high-end hash.",
+    }
+    for field in fields:
+        values = _field_values(rows, field)
+        summary[field] = _median(values)
+        summary[f"{field}P90"] = _percentile(values, 90.0)
+    return summary
 
 
 def _repeat_hint(frames: list[dict[str, Any]]) -> dict[str, Any]:
@@ -509,6 +607,7 @@ def reference_profile(
         "profileVersion": 1,
         "bands": bands,
         "space": space_profile(per_channel, channels, sample_rate=sample_rate),
+        "highEnd": high_end_profile(per_channel, channels, sample_rate=sample_rate),
         "spectralCentroidHz": None if total_energy <= 0.0 else weighted_frequency / total_energy,
         "rmsDbfs": rms_dbfs,
         "peakDbfs": peak_dbfs,
@@ -525,6 +624,7 @@ def reference_match_score(
     band_weight: float = 1.0,
     rms_weight: float = 0.05,
     space_weight: float = 0.15,
+    high_end_weight: float = 0.25,
 ) -> dict[str, Any]:
     ref_bands = reference.get("bands") or []
     candidate_bands = candidate.get("bands") or []
@@ -554,18 +654,21 @@ def reference_match_score(
         rms_delta = float(candidate_rms) - float(ref_rms)
         rms_error = rms_delta * rms_delta
     space_error = _space_match_error(reference.get("space"), candidate.get("space"))
-    score = band_weight * band_error + rms_weight * rms_error + space_weight * space_error
+    high_end_error = _high_end_match_error(reference.get("highEnd"), candidate.get("highEnd"))
+    score = band_weight * band_error + rms_weight * rms_error + space_weight * space_error + high_end_weight * high_end_error
     return {
         "score": score,
         "bandError": band_error,
         "rmsError": rms_error,
         "spaceError": space_error,
+        "highEndError": high_end_error,
         "rmsDeltaDb": rms_delta,
         "bandWeight": band_weight,
         "rmsWeight": rms_weight,
         "spaceWeight": space_weight,
+        "highEndWeight": high_end_weight,
         "bandErrors": band_errors,
-        "note": "Lower score is closer to the stored reference profile; spaceError is a low-weight ambience/reverb descriptor.",
+        "note": "Lower score is closer to the stored reference profile; spaceError and highEndError are low-weight descriptors.",
     }
 
 
@@ -590,6 +693,42 @@ def _space_match_error(reference_space: Any, candidate_space: Any) -> float:
             continue
         normalized = (float(candidate_value) - float(ref_value)) / scale
         error += weight * normalized * normalized
+        used += weight
+    return 0.0 if used <= 0.0 else error / used
+
+
+def _asymmetric_db_error(candidate_value: float, reference_value: float, *, scale: float, excess_multiplier: float = 2.5) -> float:
+    delta = candidate_value - reference_value
+    multiplier = excess_multiplier if delta > 0.0 else 1.0
+    normalized = delta / scale
+    return multiplier * normalized * normalized
+
+
+def _high_end_match_error(reference_high: Any, candidate_high: Any) -> float:
+    if not isinstance(reference_high, dict) or not isinstance(candidate_high, dict):
+        return 0.0
+    if not reference_high.get("available") or not candidate_high.get("available"):
+        return 0.0
+    weighted_fields = (
+        ("fizzToVocalDb", 1.0, 8.0, 3.0),
+        ("fizzToVocalDbP90", 0.8, 8.0, 3.0),
+        ("fizzToPresenceDb", 0.8, 6.0, 2.5),
+        ("airToVocalDb", 0.4, 12.0, 2.0),
+        ("presenceToVocalDb", 0.5, 8.0, 1.5),
+    )
+    error = 0.0
+    used = 0.0
+    for field, weight, scale, excess_multiplier in weighted_fields:
+        ref_value = reference_high.get(field)
+        candidate_value = candidate_high.get(field)
+        if ref_value is None or candidate_value is None:
+            continue
+        error += weight * _asymmetric_db_error(
+            float(candidate_value),
+            float(ref_value),
+            scale=scale,
+            excess_multiplier=excess_multiplier,
+        )
         used += weight
     return 0.0 if used <= 0.0 else error / used
 

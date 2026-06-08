@@ -66,3 +66,14 @@ The reference profile includes a `space` section for ambience matching:
 - repeat lag/strength as a hint only
 
 Use this to distinguish dry, mono, wide, diffuse, and echo-like candidates. Do not treat repeat lag as confirmed delay time without an audition or a dedicated delay experiment.
+
+### Fizz / Upper-End Rolloff
+
+The reference profile includes a `highEnd` section for upper-end matching:
+
+- presence relative to vocal mids
+- fizz (`5-8 kHz`) relative to presence and vocal mids
+- air (`8-12 kHz`) relative to vocal mids and presence
+- median and high-percentile ratios across active windows
+
+Use this to avoid candidates with excess high-end hash even when the broad spectral score improves. Excess fizz is penalized asymmetrically: being too fizzy hurts more than being slightly too dark. The metric uses lightweight probe frequencies, so narrow synthetic tones can fall between probes; treat `highEnd` as a robust direction signal, not a laboratory spectrum.
