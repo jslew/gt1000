@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,8 @@ from .metrics import (
     analyze_multichannel_peaks,
     capture_silence_troubleshooting,
     compare_files,
+    reference_match_score,
+    reference_profile,
     rms_delta_db,
 )
 from .branch_lab import branch_context, compare_branches, probe_branch, probe_param, render_branch
@@ -243,6 +246,85 @@ def cmd_analyze_trimmed(
         "files": files,
         "comparisons": deltas,
         "note": "Metrics on trimmed regions only (steady-state); positive delta means louder than first file.",
+    }
+
+
+def cmd_reference_analyze(
+    path: Path,
+    *,
+    output_path: Path | None = None,
+    trim_start_seconds: float = 0.0,
+    trim_end_seconds: float = 0.0,
+) -> dict[str, Any]:
+    if not path.is_file():
+        raise AudioLabError(f"reference WAV not found: {path}", 64)
+    profile = reference_profile(
+        path,
+        trim_start_seconds=trim_start_seconds,
+        trim_end_seconds=trim_end_seconds,
+    )
+    output = output_path or path.with_name(f"{path.stem}-reference-profile.json")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(profile, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return {
+        "id": "audioReferenceAnalyze",
+        "referencePath": str(path),
+        "profilePath": str(output),
+        "profile": profile,
+        "nextStep": "Run `audio match-reference <profile.json> <candidate.wav>...` to rank wet renders.",
+    }
+
+
+def cmd_match_reference(
+    profile_path: Path,
+    candidate_paths: list[Path],
+    *,
+    trim_start_seconds: float = 0.0,
+    trim_end_seconds: float = 0.0,
+    band_weight: float = 1.0,
+    rms_weight: float = 0.05,
+) -> dict[str, Any]:
+    if not profile_path.is_file():
+        raise AudioLabError(f"reference profile not found: {profile_path}", 64)
+    if not candidate_paths:
+        raise AudioLabError("match-reference requires at least one candidate WAV", 64)
+    reference = json.loads(profile_path.read_text(encoding="utf-8"))
+    candidates: list[dict[str, Any]] = []
+    for candidate_path in candidate_paths:
+        if not candidate_path.is_file():
+            raise AudioLabError(f"candidate WAV not found: {candidate_path}", 64)
+        candidate_profile = reference_profile(
+            candidate_path,
+            trim_start_seconds=trim_start_seconds,
+            trim_end_seconds=trim_end_seconds,
+        )
+        score = reference_match_score(
+            reference,
+            candidate_profile,
+            band_weight=band_weight,
+            rms_weight=rms_weight,
+        )
+        candidates.append(
+            {
+                "path": str(candidate_path),
+                "score": score["score"],
+                "bandError": score["bandError"],
+                "rmsDeltaDb": score["rmsDeltaDb"],
+                "profile": candidate_profile,
+                "details": score,
+            }
+        )
+    ranked = sorted(candidates, key=lambda item: item["score"])
+    return {
+        "id": "audioMatchReference",
+        "referenceProfilePath": str(profile_path),
+        "referencePath": reference.get("path"),
+        "ranked": ranked,
+        "best": ranked[0],
+        "note": (
+            "Phase 4 MVP scoring only: lower score is closer by approximate band energy plus RMS penalty. "
+            "It does not guarantee a perceptual tone match."
+        ),
     }
 
 

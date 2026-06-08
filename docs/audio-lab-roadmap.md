@@ -2,7 +2,7 @@
 
 Implementation plan for USB dry capture, GT-1000 re-amping, DSP comparison, and (later) reference-tone matching. This extends the existing SysEx/patch CLI; it does not replace it.
 
-**Status:** Phases 1-3 complete; Phase 4 tone chase not started.
+**Status:** Phases 1-3 complete; Phase 4 tone chase started with offline reference profiling/scoring.
 **Related:** [musician-cli-backlog.md](musician-cli-backlog.md), [AGENTS.md](../AGENTS.md), [audio-lab-reamp-protocol.md](audio-lab-reamp-protocol.md), [midi-reference/address-map.md](../skills/gt1000/references/midi-reference/address-map.md)
 
 ## Vision
@@ -208,8 +208,8 @@ scripts/gt1000-agent --pretty audio session render --label baseline
 
 | Item | Description |
 |------|-------------|
-| `audio reference analyze` | Band energy curve, spectral centroid, crest; store `reference-profile.json`. |
-| `audio match-reference` | Score wet render vs profile (weighted band error + loudness penalty). |
+| `audio reference analyze` | Band energy curve, spectral centroid, crest; store `reference-profile.json`. Done for approximate stdlib-only band profile via `audio reference analyze`. |
+| `audio match-reference` | Score wet render vs profile (weighted band error + loudness penalty). Done for offline candidate WAV ranking via `audio match-reference`. |
 | Search planner | Limited cartesian/grid over **typed** knobs: amp type, gain, EQ bands, cab sim, key drive block level — not full patch space. |
 | Candidate budget | Default max 12 renders per session; human can approve expansion. |
 | Skill guidance | Tone chasing is iterative and approximate; cite limits (DI vs mic, playing dynamics). |
@@ -270,7 +270,7 @@ Optional: user weights “more mids” via band weight overrides.
 | A | 1 | `audio_lab` package, `record-dry`, `reamp`, `analyze`, unit tests — **done** |
 | B | 2 | Session dirs, `session render`, `system inout` writes, orchestrator — **done** |
 | C | 3 | Investigation primitives + compare-branches; agent-led DIV1 proof — **done** |
-| D | 4 | Reference profile, search planner, ranked candidates |
+| D | 4 | Reference profile + offline scoring started; search planner and live ranked candidates remain |
 
 ## Agent / skill integration (after Phase 2)
 

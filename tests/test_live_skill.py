@@ -174,6 +174,8 @@ LIVE_VERIFIED_COMMAND_PATHS = {
     ("audio", "probe-param"),
     ("audio", "render-branch"),
     ("audio", "analyze-trimmed"),
+    ("audio", "reference"),
+    ("audio", "match-reference"),
     ("system", "setup-efct"),
     ("system", "inout-set"),
 }

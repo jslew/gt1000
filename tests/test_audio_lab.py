@@ -11,7 +11,7 @@ from pathlib import Path
 from tools.gt1000.audio_lab import audio_io, coreaudio_io, devices, metrics, session, wav_io
 from tools.gt1000.audio_lab.errors import AudioLabError
 from tools.gt1000.audio_lab.metrics import analyze_multichannel_peaks
-from tools.gt1000.audio_lab.commands import cmd_analyze, cmd_generate_tone, cmd_session_init
+from tools.gt1000.audio_lab.commands import cmd_analyze, cmd_generate_tone, cmd_match_reference, cmd_reference_analyze, cmd_session_init
 from tools.gt1000.audio_lab.session import sanitize_label
 from tools.gt1000.audio_lab.setup_efct import build_dir_mon_data, decode_setup_efct
 
@@ -32,9 +32,26 @@ _AUDIO_CLI_PARSER_COVERAGE = """
 "audio", "probe-param"
 "audio", "render-branch"
 "audio", "analyze-trimmed"
+"audio", "reference", "analyze"
+"audio", "match-reference"
 "system", "setup-efct"
 "system", "inout-set"
 """
+
+
+def _write_composite_tone(path: Path, *, frequencies: list[float], duration: float = 0.5, sample_rate: int = 44100) -> None:
+    frames = max(1, int(duration * sample_rate))
+    left: list[float] = []
+    right: list[float] = []
+    amplitude = 0.3 / max(1, len(frequencies))
+    for index in range(frames):
+        value = sum(
+            amplitude * math.sin(2.0 * math.pi * frequency * index / sample_rate)
+            for frequency in frequencies
+        )
+        left.append(value)
+        right.append(value)
+    wav_io.write_wav_stereo(path, sample_rate, left, right)
 
 
 class AudioLabTests(unittest.TestCase):
@@ -230,6 +247,31 @@ class AudioLabTests(unittest.TestCase):
             payload = cmd_analyze([path])
             self.assertEqual(payload["id"], "audioAnalyze")
             self.assertIn("rmsDbfs", payload["file"])
+
+    def test_reference_profile_and_match_reference_rank_closer_candidate_first(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            reference = directory / "reference.wav"
+            close = directory / "close.wav"
+            far = directory / "far.wav"
+            profile_path = directory / "reference-profile.json"
+            _write_composite_tone(reference, frequencies=[220.0, 880.0])
+            _write_composite_tone(close, frequencies=[220.0, 880.0])
+            _write_composite_tone(far, frequencies=[3000.0, 6000.0])
+
+            profile_payload = cmd_reference_analyze(reference, output_path=profile_path)
+            self.assertEqual(profile_payload["id"], "audioReferenceAnalyze")
+            self.assertTrue(profile_path.is_file())
+            self.assertGreater(len(profile_payload["profile"]["bands"]), 1)
+            self.assertIsNotNone(profile_payload["profile"]["crestDb"])
+
+            match_payload = cmd_match_reference(profile_path, [far, close])
+            self.assertEqual(match_payload["id"], "audioMatchReference")
+            self.assertEqual(match_payload["best"]["path"], str(close))
+            self.assertLess(
+                match_payload["ranked"][0]["score"],
+                match_payload["ranked"][1]["score"],
+            )
 
     def test_sanitize_render_label(self) -> None:
         self.assertEqual(sanitize_label("baseline v2"), "baseline-v2")

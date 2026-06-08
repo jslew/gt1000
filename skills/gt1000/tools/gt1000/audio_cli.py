@@ -20,6 +20,8 @@ try:
         cmd_branch_context,
         cmd_probe_param,
         cmd_probe_branch,
+        cmd_reference_analyze,
+        cmd_match_reference,
         cmd_render_branch,
         cmd_analyze_trimmed,
         cmd_session_init,
@@ -38,6 +40,8 @@ except ModuleNotFoundError:
         cmd_branch_context,
         cmd_probe_param,
         cmd_probe_branch,
+        cmd_reference_analyze,
+        cmd_match_reference,
         cmd_render_branch,
         cmd_analyze_trimmed,
         cmd_session_init,
@@ -152,6 +156,30 @@ def register_audio_commands(subcommands: argparse._SubParsersAction) -> None:
     analyze_trim.add_argument("--trim-start", type=float, default=2.0, dest="trim_start_seconds")
     analyze_trim.add_argument("--trim-end", type=float, default=1.5, dest="trim_end_seconds")
     analyze_trim.set_defaults(func=wrap_audio_command(cmd_audio_analyze_trimmed))
+
+    reference = audio_sub.add_parser("reference", help="Analyze reference guitar tones for Phase 4 scoring.")
+    reference_sub = reference.add_subparsers(dest="reference_command", required=True)
+    reference_analyze = reference_sub.add_parser(
+        "analyze",
+        help="Build a reference-profile JSON file from an isolated reference WAV.",
+    )
+    reference_analyze.add_argument("file", type=Path, help="Reference WAV file.")
+    reference_analyze.add_argument("--output", type=Path, help="Profile JSON output path.")
+    reference_analyze.add_argument("--trim-start", type=float, default=0.0, dest="trim_start_seconds")
+    reference_analyze.add_argument("--trim-end", type=float, default=0.0, dest="trim_end_seconds")
+    reference_analyze.set_defaults(func=wrap_audio_command(cmd_audio_reference_analyze))
+
+    match_reference = audio_sub.add_parser(
+        "match-reference",
+        help="Score one or more wet WAVs against a stored reference profile.",
+    )
+    match_reference.add_argument("profile", type=Path, help="Reference profile JSON from audio reference analyze.")
+    match_reference.add_argument("files", nargs="+", type=Path, help="Candidate wet WAV files to rank.")
+    match_reference.add_argument("--trim-start", type=float, default=0.0, dest="trim_start_seconds")
+    match_reference.add_argument("--trim-end", type=float, default=0.0, dest="trim_end_seconds")
+    match_reference.add_argument("--band-weight", type=float, default=1.0)
+    match_reference.add_argument("--rms-weight", type=float, default=0.05)
+    match_reference.set_defaults(func=wrap_audio_command(cmd_audio_match_reference))
 
     session = audio_sub.add_parser("session", help="Initialize and render repeatable audio lab sessions.")
     session_sub = session.add_subparsers(dest="session_command", required=True)
@@ -339,6 +367,26 @@ def cmd_audio_prepare_reamp(args: argparse.Namespace) -> Any:
 
 def cmd_audio_analyze(args: argparse.Namespace) -> Any:
     return cmd_analyze(list(args.files))
+
+
+def cmd_audio_reference_analyze(args: argparse.Namespace) -> Any:
+    return cmd_reference_analyze(
+        args.file,
+        output_path=args.output,
+        trim_start_seconds=args.trim_start_seconds,
+        trim_end_seconds=args.trim_end_seconds,
+    )
+
+
+def cmd_audio_match_reference(args: argparse.Namespace) -> Any:
+    return cmd_match_reference(
+        args.profile,
+        list(args.files),
+        trim_start_seconds=args.trim_start_seconds,
+        trim_end_seconds=args.trim_end_seconds,
+        band_weight=args.band_weight,
+        rms_weight=args.rms_weight,
+    )
 
 
 def cmd_audio_session_init(args: argparse.Namespace) -> Any:

@@ -166,6 +166,23 @@ class LiveAudioLabTests(unittest.TestCase):
                 analyzed["file"]["rmsDbfs"],
                 delta=0.1,
             )
+            profile_path = Path(tmp) / session / "reference-profile.json"
+            reference = parse_json_stdout(
+                run_cli(
+                    "audio",
+                    "reference",
+                    "analyze",
+                    str(dry_path),
+                    "--output",
+                    str(profile_path),
+                    env=env,
+                )
+            )
+            self.assertEqual(reference["id"], "audioReferenceAnalyze")
+            self.assertTrue(profile_path.is_file())
+            match = parse_json_stdout(run_cli("audio", "match-reference", str(profile_path), str(dry_path), env=env))
+            self.assertEqual(match["id"], "audioMatchReference")
+            self.assertEqual(match["best"]["path"], str(dry_path))
 
     def test_generate_reamp_analyze(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

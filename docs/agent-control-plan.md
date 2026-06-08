@@ -75,13 +75,14 @@ Status legend:
 
 ### Near-Term Priority
 
-Focus implementation on the first three P1 rows:
+The first three P1 rows are implemented as supported CLI workflows. Keep tightening labels, edge-case live verification, and timeout behavior as maintenance work, but new feature work should move to the remaining gaps:
 
-1. Expand full effect parameter schemas and editors.
-2. Add general CTL/EXP, Assign, Patch MIDI, and LED editing.
-3. Add library and patch-management operations.
+1. Add richer user patch backup/restore metadata, diff, and selective restore.
+2. Extend librarian workflows only after future proprietary Tone Studio `.tsl` keys are mapped to verified GT-1000 user-memory addresses.
+3. Add shared STOMPBOX data read/edit/write plus `.stx` backup/restore, with clear warnings for edits that affect shared data.
+4. Add typed validators for selected system/global writes, starting with the safest high-value settings and preserving read-back verification.
 
-These unlock the highest-value Tone Studio editing workflows while preserving the repo's core safety rule: writes must go through typed, validated commands with read-back verification where practical.
+The audio-lab roadmap is separate: Phases 1-3 are complete, and the next audio milestone is Phase 4 reference tone chasing.
 
 ## Current MIDI Findings To Preserve
 

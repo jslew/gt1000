@@ -34,4 +34,4 @@ scripts/gt1000-agent --pretty patch block preamp1 --live --timeout 8
 
 The Python agent CLI performs live MIDI reads through its Python CoreMIDI backend and can inspect saved full patch JSON dumps offline. Search this wiki directly with `rg`; wiki search belongs to the skill/docs layer, not to the device CLI.
 
-The next planned CLI view is `patch controls`, which should expose PatchCommon/SystemControl/Assign-derived switch mappings.
+For switch/control questions, use `patch performance` for the stage-facing view and `patch controls` for raw PatchCommon/SystemControl/Assign-derived details. STOMPBOX selection inspection is available with `patch stompbox --live`; shared STOMPBOX data editing remains a maintainer backlog item.
