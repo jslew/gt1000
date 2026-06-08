@@ -287,10 +287,10 @@ class AudioLabTests(unittest.TestCase):
 
             self.assertEqual(plan["id"], "audioReferencePlan")
             self.assertEqual(plan["candidateCount"], 3)
-            self.assertEqual(plan["candidates"][0]["label"], "eq-low-plus")
+            self.assertEqual(plan["candidates"][0]["label"], "patch-level-plus")
             for candidate in plan["candidates"]:
                 command = candidate["patchCommand"]
-                self.assertEqual(command[:2], ["patch", "set"])
+                self.assertEqual(command[0], "patch")
                 self.assertIn("--verify", command)
                 self.assertEqual(candidate["writeCount"], 1)
                 self.assertEqual(candidate["renderCommand"][:4], ["audio", "session", "render", "--session"])
@@ -360,9 +360,87 @@ class AudioLabTests(unittest.TestCase):
             self.assertEqual(result["id"], "audioReferenceRun")
             self.assertEqual(result["candidateCount"], 1)
             self.assertEqual(len(result["renders"]), 2)
-            self.assertEqual(result["best"]["label"], "eq-low-plus")
+            self.assertEqual(result["best"]["label"], "patch-level-plus")
             self.assertEqual(apply_mock.call_count, 2)
             self.assertTrue(result["renders"][1]["restoreResult"]["verified"])
+
+    def test_reference_run_skips_unverified_candidate_before_render(self) -> None:
+        from tools.gt1000 import live, patch_edit
+        from tools.gt1000.audio_lab import reference_runner
+
+        candidate = {
+            "label": "untrusted",
+            "renderLabel": "candidate-01-untrusted",
+            "area": "eq1",
+            "block": "eq1",
+            "parameter": "highGain",
+            "value": "72",
+            "command": "patch-set",
+            "requiresLiveVerification": True,
+        }
+        candidate_plan = patch_edit.build_parameter_set_plan("eq1", "highGain", "72")
+
+        def fake_original_reads(*, timeout: float, requests: list[live.PatchReadRequest]) -> dict[str, list[int]]:
+            return {
+                live.address_key(request.address): [64] * live.seven_bit_address_value(request.size)
+                for request in requests
+            }
+
+        def fake_render(
+            session_name: str,
+            label: str,
+            *,
+            prepare_usb: bool,
+            midi_timeout: float,
+            settle_seconds: float,
+            snapshot_patch: bool,
+        ) -> dict:
+            session_dir = Path(tmp) / session_name
+            wet_path = session_dir / "renders" / f"{label}-wet.wav"
+            _write_composite_tone(wet_path, frequencies=[220.0, 440.0])
+            return {"id": "audioSessionRender", "label": label, "wetPath": str(wet_path)}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            with mock.patch.object(session, "session_root", return_value=directory):
+                cmd_generate_tone("skip-test", duration=0.2, frequency=440.0, amplitude=0.2, sample_rate=44100)
+                reference = directory / "reference.wav"
+                profile_path = directory / "reference-profile.json"
+                _write_composite_tone(reference, frequencies=[220.0, 440.0])
+                cmd_reference_analyze(reference, output_path=profile_path)
+                with mock.patch.object(
+                    reference_runner,
+                    "plan_reference_candidates",
+                    return_value={
+                        "id": "audioReferencePlan",
+                        "session": "skip-test",
+                        "candidateCount": 1,
+                        "candidates": [candidate],
+                    },
+                ), mock.patch.object(
+                    reference_runner,
+                    "_candidate_patch_plan",
+                    return_value=candidate_plan,
+                ), mock.patch.object(
+                    reference_runner.live,
+                    "read_data_sets",
+                    side_effect=fake_original_reads,
+                ), mock.patch.object(
+                    reference_runner,
+                    "apply_plan_after_audio",
+                    side_effect=[{"verified": False}, {"verified": True}],
+                ), mock.patch.object(
+                    reference_runner,
+                    "render_labeled_wet",
+                    side_effect=fake_render,
+                ) as render_mock:
+                    result = cmd_reference_run(profile_path, session="skip-test", max_candidates=1, verify_writes=False)
+
+            self.assertEqual(result["id"], "audioReferenceRun")
+            self.assertEqual(len(result["renders"]), 1)
+            self.assertEqual(result["skippedCandidates"][0]["label"], "untrusted")
+            self.assertIn("restoreResult", result["skippedCandidates"][0])
+            render_mock.assert_called_once()
 
     def test_sanitize_render_label(self) -> None:
         self.assertEqual(sanitize_label("baseline v2"), "baseline-v2")

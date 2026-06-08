@@ -14,10 +14,11 @@ except ModuleNotFoundError:
 @dataclass(frozen=True)
 class CandidateSpec:
     label: str
-    block: str
+    area: str
     parameter: str
     value: str
     intent: str
+    command: str = "patch-set"
 
 
 WARMER_CANDIDATES = (
@@ -35,10 +36,8 @@ BRIGHTER_CANDIDATES = (
 )
 
 LOUDNESS_CANDIDATES = (
-    CandidateSpec("eq-level-plus", "eq1", "level", "72", "Raise EQ output level."),
-    CandidateSpec("eq-level-minus", "eq1", "level", "56", "Lower EQ output level."),
-    CandidateSpec("dist-level-plus", "dist1", "level", "70", "Raise drive block level if active."),
-    CandidateSpec("dist-level-minus", "dist1", "level", "45", "Lower drive block level if active."),
+    CandidateSpec("patch-level-plus", "master", "level", "115", "Raise the whole patch level.", "master-set"),
+    CandidateSpec("patch-level-minus", "master", "level", "85", "Lower the whole patch level.", "master-set"),
 )
 
 
@@ -77,16 +76,21 @@ def plan_reference_candidates(
 
 def _ordered_candidate_specs(centroid_hz: float | None) -> list[CandidateSpec]:
     if centroid_hz is None:
-        return list(BRIGHTER_CANDIDATES + WARMER_CANDIDATES + LOUDNESS_CANDIDATES)
+        return list(LOUDNESS_CANDIDATES + BRIGHTER_CANDIDATES + WARMER_CANDIDATES)
     if centroid_hz < 700.0:
-        return list(BRIGHTER_CANDIDATES + LOUDNESS_CANDIDATES + WARMER_CANDIDATES)
+        return list(LOUDNESS_CANDIDATES + BRIGHTER_CANDIDATES + WARMER_CANDIDATES)
     if centroid_hz > 1800.0:
-        return list(WARMER_CANDIDATES + LOUDNESS_CANDIDATES + BRIGHTER_CANDIDATES)
-    return list(BRIGHTER_CANDIDATES[:2] + WARMER_CANDIDATES[:2] + LOUDNESS_CANDIDATES + BRIGHTER_CANDIDATES[2:] + WARMER_CANDIDATES[2:])
+        return list(LOUDNESS_CANDIDATES + WARMER_CANDIDATES + BRIGHTER_CANDIDATES)
+    return list(LOUDNESS_CANDIDATES + BRIGHTER_CANDIDATES[:2] + WARMER_CANDIDATES[:2] + BRIGHTER_CANDIDATES[2:] + WARMER_CANDIDATES[2:])
 
 
 def _candidate_payload(index: int, spec: CandidateSpec, *, session: str) -> dict[str, Any]:
-    plan = patch_edit.build_parameter_set_plan(spec.block, spec.parameter, spec.value)
+    if spec.command == "master-set":
+        plan = patch_edit.build_master_set_plan(spec.parameter, spec.value)
+        patch_command = ["patch", "master-set", spec.parameter, spec.value, "--live", "--verify"]
+    else:
+        plan = patch_edit.build_parameter_set_plan(spec.area, spec.parameter, spec.value)
+        patch_command = ["patch", "set", spec.area, spec.parameter, spec.value, "--live", "--verify"]
     render_label = f"candidate-{index:02d}-{spec.label}"
     return {
         "index": index,
@@ -94,10 +98,13 @@ def _candidate_payload(index: int, spec: CandidateSpec, *, session: str) -> dict
         "renderLabel": render_label,
         "intent": spec.intent,
         "patchPlan": plan.id,
-        "patchCommand": ["patch", "set", spec.block, spec.parameter, spec.value, "--live", "--verify"],
+        "patchCommand": patch_command,
         "renderCommand": ["audio", "session", "render", "--session", session, "--label", render_label],
-        "block": spec.block,
+        "command": spec.command,
+        "area": spec.area,
+        "block": spec.area if spec.command == "patch-set" else None,
         "parameter": spec.parameter,
+        "requiresLiveVerification": spec.command != "master-set",
         "value": spec.value,
         "writeCount": len(plan.writes),
     }

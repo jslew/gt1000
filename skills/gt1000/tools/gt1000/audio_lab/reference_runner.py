@@ -41,6 +41,7 @@ def run_reference_candidates(
     original_data = _read_original_write_data(candidate_plans, timeout=midi_timeout)
 
     scored_renders: list[dict[str, Any]] = []
+    skipped_candidates: list[dict[str, Any]] = []
     baseline = _render_and_score(
         reference,
         session=session,
@@ -53,9 +54,20 @@ def run_reference_candidates(
     scored_renders.append(baseline)
 
     for index, (candidate, candidate_plan) in enumerate(zip(plan["candidates"], candidate_plans), start=1):
-        apply_result = apply_plan_after_audio(candidate_plan, timeout=midi_timeout, verify=verify_writes)
+        candidate_verify = verify_writes or bool(candidate.get("requiresLiveVerification"))
+        apply_result = apply_plan_after_audio(candidate_plan, timeout=midi_timeout, verify=candidate_verify)
         restore_result: dict[str, Any] | None = None
         try:
+            if candidate_verify and apply_result.get("verified") is not True:
+                skipped_candidates.append(
+                    {
+                        "label": candidate["label"],
+                        "reason": "candidate write did not pass live read-back verification",
+                        "candidate": candidate,
+                        "applyResult": apply_result,
+                    }
+                )
+                continue
             scored = _render_and_score(
                 reference,
                 session=session,
@@ -84,6 +96,8 @@ def run_reference_candidates(
             last_candidate = scored_renders[-1].get("candidate") if scored_renders else None
             if isinstance(last_candidate, dict) and last_candidate.get("label") == candidate["label"]:
                 scored_renders[-1]["restoreResult"] = restore_result
+            if skipped_candidates and skipped_candidates[-1].get("label") == candidate["label"]:
+                skipped_candidates[-1]["restoreResult"] = restore_result
 
     ranked = sorted(scored_renders, key=lambda item: item["score"])
     result = {
@@ -94,10 +108,12 @@ def run_reference_candidates(
         "candidateBudget": max_candidates,
         "candidateCount": len(plan["candidates"]),
         "renders": scored_renders,
+        "skippedCandidates": skipped_candidates,
         "ranked": ranked,
         "best": ranked[0],
         "notes": [
             "Temporary-patch candidate writes were restored after each render.",
+            "Candidates that do not pass live write/read-back verification are skipped before rendering.",
             "Lower score is closer to the reference profile by approximate band energy plus RMS penalty.",
             "No user-slot write was performed by this command.",
         ],
@@ -119,8 +135,13 @@ def run_reference_candidates(
 
 
 def _candidate_patch_plan(candidate: dict[str, Any]) -> patch_edit.PatchPlan:
+    if candidate.get("command") == "master-set":
+        return patch_edit.build_master_set_plan(
+            str(candidate["parameter"]),
+            str(candidate["value"]),
+        )
     return patch_edit.build_parameter_set_plan(
-        str(candidate["block"]),
+        str(candidate["area"]),
         str(candidate["parameter"]),
         str(candidate["value"]),
     )

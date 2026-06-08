@@ -35,6 +35,7 @@ Use this routing:
 - Setlist readiness questions: use `patch setlist-audit <bank-or-slots> --live` to check patch-level jumps, tuner access, BPM mismatches, expression-pedal changes, and SYSTEM-preference controls.
 - Patch loudness matching questions: use `patch level-audit <bank-or-slots> --live` before writing, then `patch normalize-levels <bank-or-slots> --target <level> --live --verify` when the user wants user-slot levels changed.
 - Divider branch balance or “match the clean/drive level” on the same test tone: run a USB re-amp investigation internally (see `references/audio-lab-investigation.md`; verification checklist in `references/audio-lab-investigation-verification.md`). When finished, **present findings** in plain language—starting gap, what control actually worked, final loudness vs their goal. **Do not save** anything to a user slot automatically. If the goal was met (or they accept a partial fix), **offer** to apply the same block changes to the current patch for them to try by ear, or to save to a named user slot only if they say so. Remind them that measurement restores the patch after each probe, so nothing is stored until they agree.
+- Reference-tone matching/chasing: treat this as an agent-facilitated audio lab workflow, not a user-facing CLI recipe. Ask for an isolated reference WAV and either use an existing dry-take session or create one. Internally run reference profiling, bounded candidate planning, and the temp-patch render/rank loop. Present the result as: reference used, dry take/session, baseline rank/score, top candidate(s), what changed musically, render paths available for audition, and whether temp edits were restored. Make clear that scoring is approximate and not a guarantee of a perceptual match. **Do not persist** a winning candidate; offer to re-apply it temporarily for listening or save it to a named user slot only after explicit approval.
 - Common musician edit requests such as solo boost, tap tempo, delay toggle, tuner-on-control, or expression-volume setup: use `patch intent <intent> --live --verify` before dropping to lower-level control editors.
 - Switch/control questions: run `patch performance` first for stage-use questions and `patch controls` for raw control/Assign details. Open `references/midi-reference/patch-controls.md` only if a raw/unknown function appears or the user asks how a physical control is encoded.
 - Assign behavior, MIDI CC, tuner control, or assigned-off-block reachability: run `patch controls` or `patch summary` first. Open `references/midi-reference/assigns.md` only for source IDs, target min/max encoding, target table caveats, or write planning.
@@ -144,6 +145,24 @@ $GT1000_AGENT --pretty patch intent delay-toggle --control ctl2 --block delay1 -
 ```
 
 Persistent operations require an explicit user decision per **Permission gates** in `SKILL.md`—not a harness continuation alone.
+
+## Reference Tone Chase Workflow
+
+Use this when the musician asks to match, chase, approximate, or rank against a reference guitar tone.
+
+1. Confirm the reference WAV path and the dry take/session. If no dry take exists, create or record one through the audio lab before running candidates.
+2. Ensure USB audio setup is available; if audio dependencies are missing, use `references/skill-audio-setup.md` internally.
+3. Build the reference profile and run the bounded candidate loop internally. Keep candidate writes temporary and restored by default. If a candidate uses a parameter that is not already live-verified, verify that exact write/read-back before rendering it; skip the candidate if verification fails.
+4. Report the best few results in musician-facing terms. Include the render file paths for audition, but do not expose command syntax unless asked.
+5. Ask before re-applying a winning candidate for live listening. Ask separately before saving to any user slot.
+
+Current MVP boundaries:
+
+- Candidate search is intentionally bounded and conservative.
+- It ranks rendered WAVs by approximate spectral/loudness metrics.
+- Unverified candidate parameters must pass live write/read-back before their render can count.
+- The score is a decision aid, not a promise that the candidate sounds best to a player.
+- The workflow should end with auditionable renders and a clear recommendation, not an automatic save.
 
 ## Description Workflow
 
