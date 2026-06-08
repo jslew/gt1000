@@ -233,7 +233,7 @@ Optional: user weights “more mids” via band weight overrides.
 
 - [x] End-to-end MVP: reference WAV + dry take → baseline + bounded temp-patch candidates rendered and ranked for audition (`audio reference run`).
 - [x] No non-validated SysEx; all MVP candidate writes go through existing patch edit paths.
-- [ ] Clear “not a match guarantee” in musician-facing output.
+- [x] Clear “not a match guarantee” in musician-facing output.
 
 ---
 

@@ -292,8 +292,33 @@ class AudioLabTests(unittest.TestCase):
                 command = candidate["patchCommand"]
                 self.assertEqual(command[0], "patch")
                 self.assertIn("--verify", command)
+                if candidate["command"] == "master-set":
+                    self.assertFalse(candidate["requiresLiveVerification"])
+                    self.assertEqual(candidate["verificationPolicy"], "live-verified-surface")
+                else:
+                    self.assertTrue(candidate["requiresLiveVerification"])
+                    self.assertEqual(candidate["verificationPolicy"], "verify-before-render")
                 self.assertEqual(candidate["writeCount"], 1)
                 self.assertEqual(candidate["renderCommand"][:4], ["audio", "session", "render", "--session"])
+
+    def test_reference_plan_expands_to_verification_gated_drive_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            reference = directory / "reference.wav"
+            profile_path = directory / "reference-profile.json"
+            _write_composite_tone(reference, frequencies=[220.0, 880.0])
+            cmd_reference_analyze(reference, output_path=profile_path)
+
+            plan = cmd_reference_plan(profile_path, session="tone-chase", max_candidates=12)
+
+            labels = {candidate["label"]: candidate for candidate in plan["candidates"]}
+            self.assertIn("dist-level-plus", labels)
+            self.assertIn("dist-drive-plus", labels)
+            self.assertIn("preamp-level-plus", labels)
+            for label in ("dist-level-plus", "dist-drive-plus", "preamp-level-plus"):
+                self.assertTrue(labels[label]["requiresLiveVerification"])
+                self.assertEqual(labels[label]["verificationPolicy"], "verify-before-render")
+                self.assertEqual(labels[label]["patchCommand"][-1], "--verify")
 
     def test_reference_run_applies_renders_scores_and_restores_candidate(self) -> None:
         from tools.gt1000 import live
@@ -363,6 +388,10 @@ class AudioLabTests(unittest.TestCase):
             self.assertEqual(result["best"]["label"], "patch-level-plus")
             self.assertEqual(apply_mock.call_count, 2)
             self.assertTrue(result["renders"][1]["restoreResult"]["verified"])
+            self.assertIn(
+                "Scores are an audition/ranking aid, not a guarantee of a perceptual tone match.",
+                result["notes"],
+            )
 
     def test_reference_run_skips_unverified_candidate_before_render(self) -> None:
         from tools.gt1000 import live, patch_edit

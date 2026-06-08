@@ -40,6 +40,24 @@ LOUDNESS_CANDIDATES = (
     CandidateSpec("patch-level-minus", "master", "level", "85", "Lower the whole patch level.", "master-set"),
 )
 
+PREAMP_TONE_CANDIDATES = (
+    CandidateSpec("preamp-level-plus", "preamp1", "level", "58", "Raise preamp output if the preamp is active."),
+    CandidateSpec("preamp-level-minus", "preamp1", "level", "45", "Lower preamp output if the preamp is active."),
+    CandidateSpec("preamp-middle-plus", "preamp1", "middle", "60", "Add amp midrange focus."),
+    CandidateSpec("preamp-treble-plus", "preamp1", "treble", "60", "Add amp treble bite."),
+    CandidateSpec("preamp-presence-plus", "preamp1", "presence", "60", "Add amp presence and edge."),
+)
+
+DRIVE_CANDIDATES = (
+    CandidateSpec("dist-level-plus", "dist1", "level", "70", "Raise drive block output if active."),
+    CandidateSpec("dist-level-minus", "dist1", "level", "45", "Lower drive block output if active."),
+    CandidateSpec("dist-drive-plus", "dist1", "drive", "58", "Add drive saturation if the block is active."),
+    CandidateSpec("dist-drive-minus", "dist1", "drive", "45", "Reduce drive saturation if the block is active."),
+    CandidateSpec("dist-tone-plus", "dist1", "tone", "62", "Brighten the drive block if active."),
+    CandidateSpec("dist-tone-minus", "dist1", "tone", "42", "Darken the drive block if active."),
+    CandidateSpec("dist-bottom-plus", "dist1", "bottom", "65", "Add low-end support in the drive block if active."),
+)
+
 
 def plan_reference_candidates(
     reference_profile: dict[str, Any],
@@ -68,7 +86,8 @@ def plan_reference_candidates(
         "candidates": candidates,
         "notes": [
             "Planner only: no patch writes, MIDI, audio capture, or persistent slot changes were performed.",
-            "Each candidate command uses the existing validated patch set surface.",
+            "Each candidate command uses the existing validated patch edit surface.",
+            "Candidates marked requiresLiveVerification must pass live write/read-back before rendering.",
             "Run candidates against a temp patch, render each label, then score wet WAVs with audio match-reference.",
         ],
     }
@@ -76,12 +95,20 @@ def plan_reference_candidates(
 
 def _ordered_candidate_specs(centroid_hz: float | None) -> list[CandidateSpec]:
     if centroid_hz is None:
-        return list(LOUDNESS_CANDIDATES + BRIGHTER_CANDIDATES + WARMER_CANDIDATES)
+        return list(LOUDNESS_CANDIDATES + BRIGHTER_CANDIDATES + WARMER_CANDIDATES + DRIVE_CANDIDATES[:4] + PREAMP_TONE_CANDIDATES + DRIVE_CANDIDATES[4:])
     if centroid_hz < 700.0:
-        return list(LOUDNESS_CANDIDATES + BRIGHTER_CANDIDATES + WARMER_CANDIDATES)
+        return list(LOUDNESS_CANDIDATES + BRIGHTER_CANDIDATES + DRIVE_CANDIDATES[:4] + PREAMP_TONE_CANDIDATES + DRIVE_CANDIDATES[4:] + WARMER_CANDIDATES)
     if centroid_hz > 1800.0:
-        return list(LOUDNESS_CANDIDATES + WARMER_CANDIDATES + BRIGHTER_CANDIDATES)
-    return list(LOUDNESS_CANDIDATES + BRIGHTER_CANDIDATES[:2] + WARMER_CANDIDATES[:2] + BRIGHTER_CANDIDATES[2:] + WARMER_CANDIDATES[2:])
+        return list(LOUDNESS_CANDIDATES + WARMER_CANDIDATES + DRIVE_CANDIDATES[:4] + PREAMP_TONE_CANDIDATES + DRIVE_CANDIDATES[4:] + BRIGHTER_CANDIDATES)
+    return list(
+        LOUDNESS_CANDIDATES
+        + BRIGHTER_CANDIDATES[:2]
+        + WARMER_CANDIDATES[:2]
+        + PREAMP_TONE_CANDIDATES
+        + DRIVE_CANDIDATES
+        + BRIGHTER_CANDIDATES[2:]
+        + WARMER_CANDIDATES[2:]
+    )
 
 
 def _candidate_payload(index: int, spec: CandidateSpec, *, session: str) -> dict[str, Any]:
@@ -105,6 +132,7 @@ def _candidate_payload(index: int, spec: CandidateSpec, *, session: str) -> dict
         "block": spec.area if spec.command == "patch-set" else None,
         "parameter": spec.parameter,
         "requiresLiveVerification": spec.command != "master-set",
+        "verificationPolicy": "live-verified-surface" if spec.command == "master-set" else "verify-before-render",
         "value": spec.value,
         "writeCount": len(plan.writes),
     }

@@ -115,6 +115,7 @@ def run_reference_candidates(
             "Temporary-patch candidate writes were restored after each render.",
             "Candidates that do not pass live write/read-back verification are skipped before rendering.",
             "Lower score is closer to the reference profile by approximate band energy plus RMS penalty.",
+            "Scores are an audition/ranking aid, not a guarantee of a perceptual tone match.",
             "No user-slot write was performed by this command.",
         ],
     }
