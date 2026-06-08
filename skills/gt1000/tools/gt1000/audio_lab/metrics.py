@@ -954,6 +954,157 @@ def reference_match_score(
     }
 
 
+def reference_match_report(
+    reference: dict[str, Any],
+    candidate: dict[str, Any],
+    score: dict[str, Any],
+    *,
+    max_items: int = 5,
+) -> dict[str, Any]:
+    components = [
+        _score_component("broad bands", score.get("bandError"), score.get("bandWeight")),
+        _score_component("level", score.get("rmsError"), score.get("rmsWeight")),
+        _score_component("space / reverb", score.get("spaceError"), score.get("spaceWeight")),
+        _score_component("upper end / fizz", score.get("highEndError"), score.get("highEndWeight")),
+        _score_component("low body / flub", score.get("lowBodyError"), score.get("lowBodyWeight")),
+        _score_component("attack / sustain", score.get("envelopeError"), score.get("envelopeWeight")),
+        _score_component("lead-mid focus", score.get("leadMidError"), score.get("leadMidWeight")),
+    ]
+    components = [component for component in components if component is not None]
+    descriptor_deltas = _descriptor_deltas(reference, candidate)
+    band_deltas = _band_deltas(score)
+    strongest = sorted(
+        descriptor_deltas + band_deltas,
+        key=lambda item: abs(float(item.get("delta") or 0.0)),
+        reverse=True,
+    )[:max_items]
+    return {
+        "score": score.get("score"),
+        "rmsDeltaDb": score.get("rmsDeltaDb"),
+        "weightedComponents": components,
+        "descriptorDeltas": descriptor_deltas,
+        "largestBandDeltas": band_deltas[:max_items],
+        "strongestDifferences": strongest,
+        "plainSummary": _plain_match_summary(score, components, strongest),
+    }
+
+
+def _score_component(name: str, error_value: Any, weight_value: Any) -> dict[str, Any] | None:
+    if error_value is None or weight_value is None:
+        return None
+    try:
+        error = float(error_value)
+        weight = float(weight_value)
+    except (TypeError, ValueError):
+        return None
+    return {
+        "name": name,
+        "error": error,
+        "weight": weight,
+        "weighted": error * weight,
+    }
+
+
+def _descriptor_deltas(reference: dict[str, Any], candidate: dict[str, Any]) -> list[dict[str, Any]]:
+    specs = (
+        ("space", "tailToActiveDeltaDb", "ambience tail level", "dB"),
+        ("space", "tailSideToMidDbMedian", "ambience width", "dB"),
+        ("space", "repeatPeakStrength", "repeat strength", ""),
+        ("highEnd", "fizzToLeadMidDb", "fizz vs lead mids", "dB"),
+        ("highEnd", "presenceToLeadMidDb", "presence vs lead mids", "dB"),
+        ("lowBody", "subToBodyLowMidDb", "sub-bass vs body", "dB"),
+        ("lowBody", "bodyLowMidToMidLeadDb", "body/low mids vs lead range", "dB"),
+        ("envelope", "attackToSustainDb", "attack vs sustain", "dB"),
+        ("envelope", "sustainDropDb", "sustain drop", "dB"),
+        ("envelope", "sustainFractionWithin12Db", "stable sustain fraction", ""),
+        ("leadMid", "leadFocusIndexDb", "lead-mid focus", "dB"),
+        ("leadMid", "leadMidToLowMidDb", "lead mids vs low mids", "dB"),
+        ("leadMid", "leadMidToPresenceDb", "lead mids vs presence", "dB"),
+    )
+    rows: list[dict[str, Any]] = []
+    for section, field, label, unit in specs:
+        ref_section = reference.get(section)
+        candidate_section = candidate.get(section)
+        if not isinstance(ref_section, dict) or not isinstance(candidate_section, dict):
+            continue
+        if not ref_section.get("available") or not candidate_section.get("available"):
+            continue
+        ref_value = ref_section.get(field)
+        candidate_value = candidate_section.get(field)
+        if ref_value is None or candidate_value is None:
+            continue
+        try:
+            ref_float = float(ref_value)
+            candidate_float = float(candidate_value)
+        except (TypeError, ValueError):
+            continue
+        delta = candidate_float - ref_float
+        rows.append(
+            {
+                "section": section,
+                "field": field,
+                "label": label,
+                "reference": ref_float,
+                "candidate": candidate_float,
+                "delta": delta,
+                "unit": unit,
+                "direction": _delta_direction(delta),
+            }
+        )
+    return rows
+
+
+def _band_deltas(score: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for band in score.get("bandErrors") or []:
+        try:
+            low = float(band["lowHz"])
+            high = float(band["highHz"])
+            delta = float(band["logEnergyError"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        rows.append(
+            {
+                "section": "bands",
+                "field": f"{low:g}-{high:g}Hz",
+                "label": f"{low:g}-{high:g} Hz energy",
+                "delta": delta,
+                "unit": "log energy",
+                "direction": _delta_direction(delta),
+            }
+        )
+    return sorted(rows, key=lambda item: abs(float(item["delta"])), reverse=True)
+
+
+def _delta_direction(delta: float) -> str:
+    if delta > 0.1:
+        return "higher than reference"
+    if delta < -0.1:
+        return "lower than reference"
+    return "near reference"
+
+
+def _plain_match_summary(
+    score: dict[str, Any],
+    components: list[dict[str, Any]],
+    strongest: list[dict[str, Any]],
+) -> str:
+    if not components:
+        return "Candidate scored against the reference, but no component breakdown was available."
+    largest_component = max(components, key=lambda item: float(item["weighted"]))
+    summary = f"Main score pressure: {largest_component['name']}."
+    rms_delta = score.get("rmsDeltaDb")
+    if rms_delta is not None:
+        try:
+            summary += f" Candidate level is {float(rms_delta):+.1f} dB versus the reference."
+        except (TypeError, ValueError):
+            pass
+    if strongest:
+        first = strongest[0]
+        summary += f" Largest measured difference: {first['label']} is {first['direction']}."
+    return summary
+
+
 def _space_match_error(reference_space: Any, candidate_space: Any) -> float:
     if not isinstance(reference_space, dict) or not isinstance(candidate_space, dict):
         return 0.0

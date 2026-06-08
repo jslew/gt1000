@@ -15,6 +15,7 @@ from .metrics import (
     analyze_multichannel_peaks,
     capture_silence_troubleshooting,
     compare_files,
+    reference_match_report,
     reference_match_score,
     reference_profile,
     rms_delta_db,
@@ -314,6 +315,7 @@ def cmd_match_reference(
                 "rmsDeltaDb": score["rmsDeltaDb"],
                 "profile": candidate_profile,
                 "details": score,
+                "report": reference_match_report(reference, candidate_profile, score),
             }
         )
     ranked = sorted(candidates, key=lambda item: item["score"])

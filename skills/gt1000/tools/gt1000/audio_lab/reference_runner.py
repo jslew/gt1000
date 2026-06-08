@@ -14,7 +14,7 @@ except ModuleNotFoundError:
 
 from .branch_lab import apply_plan_after_audio
 from .errors import AudioLabError
-from .metrics import reference_match_score, reference_profile
+from .metrics import reference_match_report, reference_match_score, reference_profile
 from .orchestrator import render_labeled_wet
 from .reference_planner import plan_reference_candidates
 from .session import append_session_event, resolve_session_dir
@@ -241,4 +241,5 @@ def _render_and_score(
         "render": render,
         "profile": profile,
         "details": score,
+        "report": reference_match_report(reference, profile, score),
     }

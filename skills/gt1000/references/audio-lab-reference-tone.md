@@ -45,6 +45,7 @@ Report:
 - baseline rank/score
 - top candidate renders available for audition
 - what changed musically
+- why each top candidate ranked well or poorly: score pressure, largest band differences, and descriptor deltas
 - any skipped candidates and why
 - whether temporary edits were restored
 

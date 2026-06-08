@@ -411,6 +411,29 @@ class AudioLabTests(unittest.TestCase):
                 match_payload["ranked"][0]["score"],
                 match_payload["ranked"][1]["score"],
             )
+            best_report = match_payload["best"]["report"]
+            self.assertIn("weightedComponents", best_report)
+            self.assertIn("strongestDifferences", best_report)
+            self.assertIn("plainSummary", best_report)
+            self.assertTrue(any(component["name"] == "broad bands" for component in best_report["weightedComponents"]))
+
+    def test_reference_match_report_explains_descriptor_differences(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            reference = directory / "reference.wav"
+            fizz = directory / "fizz.wav"
+            profile_path = directory / "reference-profile.json"
+            _write_high_end_fixture(reference)
+            _write_high_end_fixture(fizz, extra_frequency=5854.0, extra_amplitude=0.16)
+            cmd_reference_analyze(reference, output_path=profile_path)
+
+            match_payload = cmd_match_reference(profile_path, [fizz])
+            report = match_payload["best"]["report"]
+
+            labels = {item["label"] for item in report["descriptorDeltas"]}
+            self.assertIn("fizz vs lead mids", labels)
+            self.assertGreater(match_payload["best"]["details"]["highEndError"], 0.0)
+            self.assertIn("Main score pressure", report["plainSummary"])
 
     def test_reference_profile_space_metrics_detect_wide_tail(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -894,6 +917,8 @@ class AudioLabTests(unittest.TestCase):
             self.assertNotEqual(result["best"]["label"], "baseline")
             self.assertEqual(apply_mock.call_count, 2)
             self.assertTrue(result["renders"][1]["restoreResult"]["verified"])
+            self.assertIn("plainSummary", result["best"]["report"])
+            self.assertIn("weightedComponents", result["best"]["report"])
             self.assertIn(
                 "Scores are an audition/ranking aid, not a guarantee of a perceptual tone match.",
                 result["notes"],
