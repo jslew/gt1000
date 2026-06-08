@@ -74,6 +74,15 @@
       "max_gt1000_commands_before_escalate": 6
     },
     {
+      "id": "reference_tone_match_tone_chase",
+      "index_intent": "Reference tone match / tone chase",
+      "user_messages": [
+        "Match this reference guitar tone against my dry take; do the audio lab work for me"
+      ],
+      "first_cli": {"match": "audio reference analyze"},
+      "notes": "Agent should locate/confirm reference and dry take, then run plan/render/rank internally; unverified candidate parameters must be read-back verified before render."
+    },
+    {
       "id": "solo_boost_delay_toggle_tuner_etc",
       "index_intent": "Solo boost, delay toggle, tuner, etc.",
       "user_messages": ["Set up a solo boost on CTL4"],

@@ -148,21 +148,7 @@ Persistent operations require an explicit user decision per **Permission gates**
 
 ## Reference Tone Chase Workflow
 
-Use this when the musician asks to match, chase, approximate, or rank against a reference guitar tone.
-
-1. Confirm the reference WAV path and the dry take/session. If no dry take exists, create or record one through the audio lab before running candidates.
-2. Ensure USB audio setup is available; if audio dependencies are missing, use `references/skill-audio-setup.md` internally.
-3. Build the reference profile and run the bounded candidate loop internally. Keep candidate writes temporary and restored by default. If a candidate uses a parameter that is not already live-verified, verify that exact write/read-back before rendering it; skip the candidate if verification fails.
-4. Report the best few results in musician-facing terms. Include the render file paths for audition, but do not expose command syntax unless asked.
-5. Ask before re-applying a winning candidate for live listening. Ask separately before saving to any user slot.
-
-Current MVP boundaries:
-
-- Candidate search is intentionally bounded and conservative.
-- It ranks rendered WAVs by approximate spectral/loudness metrics.
-- Unverified candidate parameters must pass live write/read-back before their render can count.
-- The score is a decision aid, not a promise that the candidate sounds best to a player.
-- The workflow should end with auditionable renders and a clear recommendation, not an automatic save.
+Use `references/audio-lab-reference-tone.md` for reference-tone matching/chasing. It owns the agent-run audio lab loop, candidate verification rule, reporting shape, and persistence gate.
 
 ## Description Workflow
 

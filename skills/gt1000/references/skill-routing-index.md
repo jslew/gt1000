@@ -20,6 +20,7 @@ Every bundled reference markdown file is listed below. `tests/test_skill_routing
 | `references/user-profile-onboarding.md` | No `gt1000-profile.md` yet; creating or updating profile memory |
 | `references/audio-lab-investigation.md` | USB re-amp quantitative experiments (agent-owned loop) |
 | `references/audio-lab-investigation-verification.md` | Verifying investigation behavior / regression checklist |
+| `references/audio-lab-reference-tone.md` | Reference-tone matching/chasing workflow, candidate verification, reporting, persistence gate |
 | `references/gt1000-wiki/README.md` | Wiki overview; which manual extract to open next |
 | `references/gt1000-wiki/owner-manual.md` | Owner-manual concepts (STOMPBOX caution, divider behavior, device UI) |
 | `references/gt1000-wiki/parameter-guide.md` | Parameter meaning, block categories, in/out and USB menu context |
@@ -47,7 +48,7 @@ Every bundled reference markdown file is listed below. `tests/test_skill_routing
 | Setlist readiness | `patch setlist-audit <slots> --live --timeout 20` | — |
 | Patch level across slots | `patch level-audit` then `patch normalize-levels` | `skill-detail.md` |
 | Divider / branch measurable balance | `audio branch-context`; then investigation doc | `audio-lab-investigation.md` |
-| Reference tone match / tone chase | Audio lab reference workflow; agent runs profile, plan, render/rank internally | `skill-detail.md` |
+| Reference tone match / tone chase | `audio reference analyze <reference.wav>`; then agent runs plan/render/rank internally | `audio-lab-reference-tone.md` |
 | Solo boost, delay toggle, tuner, etc. | `patch intent <name> --live --verify` | `midi-reference/cli-usage.md` |
 | Switches / stage behavior | `patch performance --live --timeout 15` | `patch-controls.md` |
 | Assign / CC / tuner encoding | `patch controls --live --timeout 15` | `assigns.md` |
