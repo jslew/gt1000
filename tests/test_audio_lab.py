@@ -11,7 +11,7 @@ from pathlib import Path
 from tools.gt1000.audio_lab import audio_io, coreaudio_io, devices, metrics, session, wav_io
 from tools.gt1000.audio_lab.errors import AudioLabError
 from tools.gt1000.audio_lab.metrics import analyze_multichannel_peaks
-from tools.gt1000.audio_lab.commands import cmd_analyze, cmd_generate_tone, cmd_match_reference, cmd_reference_analyze, cmd_session_init
+from tools.gt1000.audio_lab.commands import cmd_analyze, cmd_generate_tone, cmd_match_reference, cmd_reference_analyze, cmd_reference_plan, cmd_session_init
 from tools.gt1000.audio_lab.session import sanitize_label
 from tools.gt1000.audio_lab.setup_efct import build_dir_mon_data, decode_setup_efct
 
@@ -33,6 +33,7 @@ _AUDIO_CLI_PARSER_COVERAGE = """
 "audio", "render-branch"
 "audio", "analyze-trimmed"
 "audio", "reference", "analyze"
+"audio", "reference", "plan"
 "audio", "match-reference"
 "system", "setup-efct"
 "system", "inout-set"
@@ -272,6 +273,26 @@ class AudioLabTests(unittest.TestCase):
                 match_payload["ranked"][0]["score"],
                 match_payload["ranked"][1]["score"],
             )
+
+    def test_reference_plan_emits_valid_bounded_patch_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            reference = directory / "reference.wav"
+            profile_path = directory / "reference-profile.json"
+            _write_composite_tone(reference, frequencies=[3000.0, 6000.0])
+            cmd_reference_analyze(reference, output_path=profile_path)
+
+            plan = cmd_reference_plan(profile_path, session="tone-chase", max_candidates=3)
+
+            self.assertEqual(plan["id"], "audioReferencePlan")
+            self.assertEqual(plan["candidateCount"], 3)
+            self.assertEqual(plan["candidates"][0]["label"], "eq-low-plus")
+            for candidate in plan["candidates"]:
+                command = candidate["patchCommand"]
+                self.assertEqual(command[:2], ["patch", "set"])
+                self.assertIn("--verify", command)
+                self.assertEqual(candidate["writeCount"], 1)
+                self.assertEqual(candidate["renderCommand"][:4], ["audio", "session", "render", "--session"])
 
     def test_sanitize_render_label(self) -> None:
         self.assertEqual(sanitize_label("baseline v2"), "baseline-v2")

@@ -180,6 +180,21 @@ class LiveAudioLabTests(unittest.TestCase):
             )
             self.assertEqual(reference["id"], "audioReferenceAnalyze")
             self.assertTrue(profile_path.is_file())
+            plan = parse_json_stdout(
+                run_cli(
+                    "audio",
+                    "reference",
+                    "plan",
+                    str(profile_path),
+                    "--session",
+                    session,
+                    "--max-candidates",
+                    "2",
+                    env=env,
+                )
+            )
+            self.assertEqual(plan["id"], "audioReferencePlan")
+            self.assertEqual(plan["candidateCount"], 2)
             match = parse_json_stdout(run_cli("audio", "match-reference", str(profile_path), str(dry_path), env=env))
             self.assertEqual(match["id"], "audioMatchReference")
             self.assertEqual(match["best"]["path"], str(dry_path))

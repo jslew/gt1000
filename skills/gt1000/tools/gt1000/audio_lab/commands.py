@@ -22,6 +22,7 @@ from .metrics import (
 from .branch_lab import branch_context, compare_branches, probe_branch, probe_param, render_branch
 from .device_snapshot import capture_live_snapshots, write_device_snapshots
 from .orchestrator import render_labeled_wet
+from .reference_planner import plan_reference_candidates
 from .session import append_session_event, default_dry_path, resolve_session_dir, write_session_meta
 from .wav_io import extract_channels, generate_sine_tone
 
@@ -325,6 +326,25 @@ def cmd_match_reference(
             "Phase 4 MVP scoring only: lower score is closer by approximate band energy plus RMS penalty. "
             "It does not guarantee a perceptual tone match."
         ),
+    }
+
+
+def cmd_reference_plan(
+    profile_path: Path,
+    *,
+    session: str,
+    max_candidates: int = 12,
+) -> dict[str, Any]:
+    if not profile_path.is_file():
+        raise AudioLabError(f"reference profile not found: {profile_path}", 64)
+    reference = json.loads(profile_path.read_text(encoding="utf-8"))
+    try:
+        plan = plan_reference_candidates(reference, session=session, max_candidates=max_candidates)
+    except ValueError as error:
+        raise AudioLabError(str(error), 64) from error
+    return {
+        **plan,
+        "referenceProfilePath": str(profile_path),
     }
 
 

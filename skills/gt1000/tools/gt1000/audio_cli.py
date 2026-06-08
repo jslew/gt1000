@@ -22,6 +22,7 @@ try:
         cmd_probe_branch,
         cmd_reference_analyze,
         cmd_match_reference,
+        cmd_reference_plan,
         cmd_render_branch,
         cmd_analyze_trimmed,
         cmd_session_init,
@@ -42,6 +43,7 @@ except ModuleNotFoundError:
         cmd_probe_branch,
         cmd_reference_analyze,
         cmd_match_reference,
+        cmd_reference_plan,
         cmd_render_branch,
         cmd_analyze_trimmed,
         cmd_session_init,
@@ -168,6 +170,15 @@ def register_audio_commands(subcommands: argparse._SubParsersAction) -> None:
     reference_analyze.add_argument("--trim-start", type=float, default=0.0, dest="trim_start_seconds")
     reference_analyze.add_argument("--trim-end", type=float, default=0.0, dest="trim_end_seconds")
     reference_analyze.set_defaults(func=wrap_audio_command(cmd_audio_reference_analyze))
+
+    reference_plan = reference_sub.add_parser(
+        "plan",
+        help="Plan bounded patch candidates for reference-tone search without writing anything.",
+    )
+    reference_plan.add_argument("profile", type=Path, help="Reference profile JSON from audio reference analyze.")
+    reference_plan.add_argument("--session", required=True, help="Audio lab session name to use in render commands.")
+    reference_plan.add_argument("--max-candidates", type=int, default=12, help="Candidate budget, default 12.")
+    reference_plan.set_defaults(func=wrap_audio_command(cmd_audio_reference_plan))
 
     match_reference = audio_sub.add_parser(
         "match-reference",
@@ -386,6 +397,14 @@ def cmd_audio_match_reference(args: argparse.Namespace) -> Any:
         trim_end_seconds=args.trim_end_seconds,
         band_weight=args.band_weight,
         rms_weight=args.rms_weight,
+    )
+
+
+def cmd_audio_reference_plan(args: argparse.Namespace) -> Any:
+    return cmd_reference_plan(
+        args.profile,
+        session=args.session,
+        max_candidates=args.max_candidates,
     )
 
 

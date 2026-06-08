@@ -210,7 +210,7 @@ scripts/gt1000-agent --pretty audio session render --label baseline
 |------|-------------|
 | `audio reference analyze` | Band energy curve, spectral centroid, crest; store `reference-profile.json`. Done for approximate stdlib-only band profile via `audio reference analyze`. |
 | `audio match-reference` | Score wet render vs profile (weighted band error + loudness penalty). Done for offline candidate WAV ranking via `audio match-reference`. |
-| Search planner | Limited cartesian/grid over **typed** knobs: amp type, gain, EQ bands, cab sim, key drive block level — not full patch space. |
+| Search planner | Limited cartesian/grid over **typed** knobs: amp type, gain, EQ bands, cab sim, key drive block level — not full patch space. Started with offline bounded `audio reference plan`; live apply/render loop remains. |
 | Candidate budget | Default max 12 renders per session; human can approve expansion. |
 | Skill guidance | Tone chasing is iterative and approximate; cite limits (DI vs mic, playing dynamics). |
 
@@ -270,7 +270,7 @@ Optional: user weights “more mids” via band weight overrides.
 | A | 1 | `audio_lab` package, `record-dry`, `reamp`, `analyze`, unit tests — **done** |
 | B | 2 | Session dirs, `session render`, `system inout` writes, orchestrator — **done** |
 | C | 3 | Investigation primitives + compare-branches; agent-led DIV1 proof — **done** |
-| D | 4 | Reference profile + offline scoring started; search planner and live ranked candidates remain |
+| D | 4 | Reference profile, offline scoring, and bounded candidate planning started; live ranked candidates remain |
 
 ## Agent / skill integration (after Phase 2)
 
