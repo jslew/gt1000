@@ -12,6 +12,7 @@ from tools.gt1000.audio_lab import audio_io, coreaudio_io, devices, metrics, ses
 from tools.gt1000.audio_lab.errors import AudioLabError
 from tools.gt1000.audio_lab.metrics import analyze_multichannel_peaks
 from tools.gt1000.audio_lab.commands import cmd_analyze, cmd_generate_tone, cmd_match_reference, cmd_reference_analyze, cmd_reference_plan, cmd_reference_run, cmd_session_init
+from tools.gt1000.audio_lab.reference_planner import plan_reference_candidates
 from tools.gt1000.audio_lab.session import sanitize_label
 from tools.gt1000.audio_lab.setup_efct import build_dir_mon_data, decode_setup_efct
 
@@ -724,7 +725,7 @@ class AudioLabTests(unittest.TestCase):
 
             self.assertEqual(plan["id"], "audioReferencePlan")
             self.assertEqual(plan["candidateCount"], 3)
-            self.assertEqual(plan["candidates"][0]["label"], "patch-level-plus")
+            self.assertIn("descriptorGuidance", plan)
             for candidate in plan["candidates"]:
                 command = candidate["patchCommand"]
                 self.assertEqual(command[0], "patch")
@@ -746,7 +747,7 @@ class AudioLabTests(unittest.TestCase):
             _write_composite_tone(reference, frequencies=[220.0, 880.0])
             cmd_reference_analyze(reference, output_path=profile_path)
 
-            plan = cmd_reference_plan(profile_path, session="tone-chase", max_candidates=12)
+            plan = cmd_reference_plan(profile_path, session="tone-chase", max_candidates=24)
 
             labels = {candidate["label"]: candidate for candidate in plan["candidates"]}
             self.assertIn("dist-level-plus", labels)
@@ -756,6 +757,74 @@ class AudioLabTests(unittest.TestCase):
                 self.assertTrue(labels[label]["requiresLiveVerification"])
                 self.assertEqual(labels[label]["verificationPolicy"], "verify-before-render")
                 self.assertEqual(labels[label]["patchCommand"][-1], "--verify")
+
+    def test_reference_plan_uses_space_lead_mid_and_sustain_descriptors(self) -> None:
+        profile = {
+            "path": "/tmp/reference.wav",
+            "profileVersion": 1,
+            "spectralCentroidHz": 950.0,
+            "space": {
+                "available": True,
+                "tailToActiveDeltaDb": -6.0,
+                "repeatPeakStrength": 0.08,
+                "tailSideToMidDb": -6.5,
+            },
+            "leadMid": {
+                "available": True,
+                "leadFocusIndexDb": 5.5,
+                "leadMidToLowMidDb": 4.5,
+            },
+            "envelope": {
+                "available": True,
+                "sustainDropDb": 1.0,
+                "sustainFractionWithin12Db": 0.92,
+            },
+        }
+
+        plan = plan_reference_candidates(profile, session="tone-chase", max_candidates=14)
+        labels = [candidate["label"] for candidate in plan["candidates"]]
+        guidance = {entry["signal"] for entry in plan["descriptorGuidance"]}
+
+        self.assertIn("space-wet", guidance)
+        self.assertIn("lead-focus", guidance)
+        self.assertIn("sustain", guidance)
+        self.assertEqual(labels[0], "reverb-level-plus")
+        self.assertLess(labels.index("reverb-level-plus"), labels.index("patch-level-plus"))
+        self.assertLess(labels.index("eq-2k-plus"), labels.index("patch-level-plus"))
+        self.assertIn("comp-sustain-plus", labels)
+        for label in ("reverb-level-plus", "eq-2k-plus", "comp-sustain-plus"):
+            candidate = next(item for item in plan["candidates"] if item["label"] == label)
+            self.assertTrue(candidate["requiresLiveVerification"])
+            self.assertEqual(candidate["writeCount"], 1)
+
+    def test_reference_plan_uses_fizz_and_flub_control_descriptors(self) -> None:
+        profile = {
+            "path": "/tmp/reference.wav",
+            "profileVersion": 1,
+            "spectralCentroidHz": 1400.0,
+            "highEnd": {
+                "available": True,
+                "fizzToLeadMidDb": -4.0,
+                "fizzToPresenceDb": -3.0,
+                "presenceToLeadMidDb": 2.0,
+            },
+            "lowBody": {
+                "available": True,
+                "subToBodyLowMidDb": -1.0,
+                "bodyLowMidToMidLeadDb": -4.0,
+            },
+        }
+
+        plan = plan_reference_candidates(profile, session="tone-chase", max_candidates=9)
+        labels = [candidate["label"] for candidate in plan["candidates"]]
+        guidance = {entry["signal"] for entry in plan["descriptorGuidance"]}
+
+        self.assertIn("fizz-control", guidance)
+        self.assertIn("flub-control", guidance)
+        self.assertLess(labels.index("eq-high-minus"), labels.index("patch-level-plus"))
+        self.assertLess(labels.index("eq-low-minus"), labels.index("patch-level-plus"))
+        self.assertIn("preamp-presence-minus", labels)
+        self.assertEqual(len(labels), len(set(labels)))
 
     def test_reference_run_applies_renders_scores_and_restores_candidate(self) -> None:
         from tools.gt1000 import live
@@ -822,7 +891,7 @@ class AudioLabTests(unittest.TestCase):
             self.assertEqual(result["id"], "audioReferenceRun")
             self.assertEqual(result["candidateCount"], 1)
             self.assertEqual(len(result["renders"]), 2)
-            self.assertEqual(result["best"]["label"], "patch-level-plus")
+            self.assertNotEqual(result["best"]["label"], "baseline")
             self.assertEqual(apply_mock.call_count, 2)
             self.assertTrue(result["renders"][1]["restoreResult"]["verified"])
             self.assertIn(

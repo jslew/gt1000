@@ -24,6 +24,18 @@ Every candidate parameter that is not already live-verified must pass live write
 
 Already live-verified candidate surfaces may be used directly, but default live runs should still verify writes when practical.
 
+## Candidate Strategy
+
+Use descriptor evidence to order the first candidate moves before falling back to broad spectral-centroid moves:
+
+- space/reverb evidence should try reverb and delay level/time/feedback candidates before generic EQ
+- fizz or high-end evidence should try upper-end control candidates before broad brightening
+- low-body evidence should separate useful body from flub, cutting low end before adding body when sub-bass is high
+- envelope evidence should try sustain or attack-clarity candidates based on active-frame behavior
+- lead-mid evidence should try focused guitar-mid candidates before generic bright/warm moves
+
+Short synthetic tones are not reliable ambience evidence. Treat the space descriptor as meaningful only when the reference is long enough to contain a real tail or repeat pattern.
+
 ## Reporting
 
 Report:

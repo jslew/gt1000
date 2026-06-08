@@ -58,6 +58,57 @@ DRIVE_CANDIDATES = (
     CandidateSpec("dist-bottom-plus", "dist1", "bottom", "65", "Add low-end support in the drive block if active."),
 )
 
+DESCRIPTOR_CANDIDATES: dict[str, tuple[CandidateSpec, ...]] = {
+    "space-wet": (
+        CandidateSpec("reverb-level-plus", "reverb", "effectLevel", "35", "Add ambience level if reverb is active."),
+        CandidateSpec("reverb-time-plus", "reverb", "time", "55", "Lengthen the reverb tail if reverb is active."),
+        CandidateSpec("delay-level-plus", "delay1", "effectLevel", "35", "Add echo level if delay 1 is active."),
+        CandidateSpec("delay-feedback-plus", "delay1", "feedback", "28", "Add repeat persistence if delay 1 is active."),
+    ),
+    "space-dry": (
+        CandidateSpec("reverb-level-minus", "reverb", "effectLevel", "15", "Reduce ambience level if reverb is active."),
+        CandidateSpec("delay-level-minus", "delay1", "effectLevel", "12", "Reduce echo level if delay 1 is active."),
+    ),
+    "fizz-control": (
+        CandidateSpec("eq-high-minus", "eq1", "highGain", "56", "Soften upper treble."),
+        CandidateSpec("dist-tone-minus", "dist1", "tone", "42", "Darken the drive block if active."),
+        CandidateSpec("preamp-presence-minus", "preamp1", "presence", "45", "Reduce amp presence and edge."),
+        CandidateSpec("eq-4k-minus", "eq1", "geq4kHz", "56", "Reduce hard upper-mid edge."),
+    ),
+    "brightness": (
+        CandidateSpec("eq-high-plus", "eq1", "highGain", "72", "Add top-end bite."),
+        CandidateSpec("eq-high-mid-plus", "eq1", "highMidGain", "72", "Add upper-mid presence."),
+        CandidateSpec("preamp-presence-plus", "preamp1", "presence", "60", "Add amp presence and edge."),
+        CandidateSpec("preamp-treble-plus", "preamp1", "treble", "60", "Add amp treble bite."),
+    ),
+    "body-support": (
+        CandidateSpec("eq-low-mid-plus", "eq1", "lowMidGain", "72", "Add lower-mid body."),
+        CandidateSpec("preamp-bass-plus", "preamp1", "bass", "58", "Add amp low-end support."),
+        CandidateSpec("eq-low-plus", "eq1", "lowGain", "72", "Add low-end weight."),
+    ),
+    "flub-control": (
+        CandidateSpec("eq-low-minus", "eq1", "lowGain", "56", "Reduce low-end weight."),
+        CandidateSpec("preamp-bass-minus", "preamp1", "bass", "45", "Reduce amp low-end support."),
+        CandidateSpec("eq-low-mid-minus", "eq1", "lowMidGain", "56", "Reduce lower-mid buildup."),
+    ),
+    "lead-focus": (
+        CandidateSpec("eq-2k-plus", "eq1", "geq2kHz", "72", "Bring the lead guitar range forward."),
+        CandidateSpec("preamp-middle-plus", "preamp1", "middle", "60", "Add amp midrange focus."),
+        CandidateSpec("eq-high-mid-plus", "eq1", "highMidGain", "72", "Add upper-mid presence."),
+        CandidateSpec("preamp-presence-plus", "preamp1", "presence", "60", "Add amp presence and edge."),
+    ),
+    "sustain": (
+        CandidateSpec("comp-sustain-plus", "comp", "sustain", "60", "Add compression sustain if the compressor is active."),
+        CandidateSpec("preamp-gain-plus", "preamp1", "gain", "58", "Add preamp saturation and thickness."),
+        CandidateSpec("dist-drive-plus", "dist1", "drive", "58", "Add drive saturation if the block is active."),
+    ),
+    "attack-clarity": (
+        CandidateSpec("preamp-gain-minus", "preamp1", "gain", "45", "Reduce saturation for a clearer attack."),
+        CandidateSpec("dist-drive-minus", "dist1", "drive", "45", "Reduce drive saturation if the block is active."),
+        CandidateSpec("eq-high-mid-plus", "eq1", "highMidGain", "72", "Add upper-mid presence."),
+    ),
+}
+
 
 def plan_reference_candidates(
     reference_profile: dict[str, Any],
@@ -73,7 +124,11 @@ def plan_reference_candidates(
     except (TypeError, ValueError):
         centroid_hz = None
 
-    ordered_specs = _ordered_candidate_specs(centroid_hz)[:max_candidates]
+    descriptor_specs, descriptor_guidance = _descriptor_candidate_specs(reference_profile)
+    if descriptor_specs:
+        ordered_specs = _dedupe_specs(descriptor_specs + list(LOUDNESS_CANDIDATES) + _ordered_candidate_specs(centroid_hz))[:max_candidates]
+    else:
+        ordered_specs = _dedupe_specs(list(LOUDNESS_CANDIDATES) + _ordered_candidate_specs(centroid_hz))[:max_candidates]
     candidates = [_candidate_payload(index, spec, session=session) for index, spec in enumerate(ordered_specs, start=1)]
     return {
         "id": "audioReferencePlan",
@@ -81,6 +136,7 @@ def plan_reference_candidates(
         "referencePath": reference_profile.get("path"),
         "referenceProfileVersion": reference_profile.get("profileVersion"),
         "spectralCentroidHz": centroid_hz,
+        "descriptorGuidance": descriptor_guidance,
         "candidateBudget": max_candidates,
         "candidateCount": len(candidates),
         "candidates": candidates,
@@ -91,6 +147,98 @@ def plan_reference_candidates(
             "Run candidates against a temp patch, render each label, then score wet WAVs with audio match-reference.",
         ],
     }
+
+
+def _descriptor_candidate_specs(reference_profile: dict[str, Any]) -> tuple[list[CandidateSpec], list[dict[str, Any]]]:
+    specs: list[CandidateSpec] = []
+    guidance: list[dict[str, Any]] = []
+
+    def add(signal: str, reason: str, value: float | None) -> None:
+        if signal not in DESCRIPTOR_CANDIDATES:
+            return
+        specs.extend(DESCRIPTOR_CANDIDATES[signal])
+        guidance.append({"signal": signal, "reason": reason, "value": value})
+
+    duration_seconds = _profile_float(reference_profile, "analyzedDurationSeconds")
+    space = reference_profile.get("space")
+    if isinstance(space, dict) and space.get("available") and (duration_seconds is None or duration_seconds >= 1.0):
+        tail_delta = _profile_float(space, "tailToActiveDeltaDb")
+        repeat_strength = _profile_float(space, "repeatPeakStrength")
+        side_to_mid = _profile_float(space, "tailSideToMidDb")
+        if tail_delta is not None and tail_delta > -9.0:
+            add("space-wet", "reference has a strong ambience tail", tail_delta)
+        elif tail_delta is not None and tail_delta < -18.0:
+            add("space-dry", "reference has a low ambience tail", tail_delta)
+        if repeat_strength is not None and repeat_strength >= 0.05:
+            add("space-wet", "reference has measurable repeat energy", repeat_strength)
+        if side_to_mid is not None and side_to_mid > -9.0:
+            add("space-wet", "reference ambience is relatively wide", side_to_mid)
+
+    high_end = reference_profile.get("highEnd")
+    if isinstance(high_end, dict) and high_end.get("available"):
+        fizz_to_lead = _profile_float(high_end, "fizzToLeadMidDb")
+        fizz_to_presence = _profile_float(high_end, "fizzToPresenceDb")
+        presence_to_lead = _profile_float(high_end, "presenceToLeadMidDb")
+        if (fizz_to_lead is not None and fizz_to_lead > -10.0) or (fizz_to_presence is not None and fizz_to_presence > -6.0):
+            add("fizz-control", "reference upper end needs fizz-aware candidates", fizz_to_lead)
+        elif presence_to_lead is not None and presence_to_lead < -8.0:
+            add("brightness", "reference has restrained presence relative to lead mids, so test controlled brightness moves", presence_to_lead)
+        elif presence_to_lead is not None and presence_to_lead > 4.0:
+            add("brightness", "reference has prominent presence bite", presence_to_lead)
+
+    low_body = reference_profile.get("lowBody")
+    if isinstance(low_body, dict) and low_body.get("available"):
+        sub_to_body_low_mid = _profile_float(low_body, "subToBodyLowMidDb")
+        body_low_to_mid_lead = _profile_float(low_body, "bodyLowMidToMidLeadDb")
+        if sub_to_body_low_mid is not None and sub_to_body_low_mid > -4.0:
+            add("flub-control", "reference has enough sub energy that low-end control must be tested", sub_to_body_low_mid)
+        if body_low_to_mid_lead is not None and body_low_to_mid_lead > 3.0:
+            add("body-support", "reference has strong guitar body relative to mids", body_low_to_mid_lead)
+        elif body_low_to_mid_lead is not None and body_low_to_mid_lead < -3.0:
+            add("flub-control", "reference is lean below the lead range", body_low_to_mid_lead)
+
+    lead_mid = reference_profile.get("leadMid")
+    if isinstance(lead_mid, dict) and lead_mid.get("available"):
+        lead_focus = _profile_float(lead_mid, "leadFocusIndexDb")
+        lead_to_low = _profile_float(lead_mid, "leadMidToLowMidDb")
+        if (lead_focus is not None and lead_focus > 3.0) or (lead_to_low is not None and lead_to_low > 3.0):
+            add("lead-focus", "reference lead range is forward relative to surrounding guitar bands", lead_focus)
+        elif lead_focus is not None and lead_focus < -4.0:
+            add("body-support", "reference lead range is not dominant, so body candidates should stay in play", lead_focus)
+
+    envelope = reference_profile.get("envelope")
+    if isinstance(envelope, dict) and envelope.get("available"):
+        sustain_drop = _profile_float(envelope, "sustainDropDb")
+        within_12 = _profile_float(envelope, "sustainFractionWithin12Db")
+        attack_to_sustain = _profile_float(envelope, "attackToSustainDb")
+        if (sustain_drop is not None and sustain_drop < 2.0) or (within_12 is not None and within_12 > 0.85):
+            add("sustain", "reference has stable singing sustain", sustain_drop)
+        if attack_to_sustain is not None and attack_to_sustain > 4.0:
+            add("attack-clarity", "reference has a pronounced pick attack", attack_to_sustain)
+
+    return _dedupe_specs(specs), guidance
+
+
+def _profile_float(section: dict[str, Any], field: str) -> float | None:
+    value = section.get(field)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _dedupe_specs(specs: list[CandidateSpec]) -> list[CandidateSpec]:
+    ordered: list[CandidateSpec] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for spec in specs:
+        key = (spec.command, spec.area, spec.parameter, spec.value)
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(spec)
+    return ordered
 
 
 def _ordered_candidate_specs(centroid_hz: float | None) -> list[CandidateSpec]:
