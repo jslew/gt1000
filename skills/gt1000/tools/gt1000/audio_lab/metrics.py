@@ -18,6 +18,23 @@ DEFAULT_REFERENCE_BANDS: tuple[tuple[float, float], ...] = (
     (2500.0, 5000.0),
     (5000.0, 8000.0),
 )
+BAND_EMPHASIS_PRESETS: dict[str, dict[tuple[float, float], float]] = {
+    "balanced": {},
+    "mids": {
+        (640.0, 1250.0): 2.0,
+        (1250.0, 2500.0): 2.5,
+    },
+    "low": {
+        (80.0, 160.0): 2.0,
+        (160.0, 320.0): 2.0,
+        (320.0, 640.0): 1.5,
+    },
+    "high": {
+        (2500.0, 5000.0): 2.0,
+        (5000.0, 8000.0): 2.5,
+    },
+}
+BAND_EMPHASIS_CHOICES = tuple(BAND_EMPHASIS_PRESETS)
 SPECTRAL_FLOOR = 1.0e-12
 SPACE_FRAME_SECONDS = 0.05
 SPACE_HOP_SECONDS = 0.025
@@ -31,6 +48,34 @@ ENVELOPE_FRAME_SECONDS = 0.025
 ENVELOPE_HOP_SECONDS = 0.0125
 ENVELOPE_ACTIVE_RANGE_DB = 24.0
 ENVELOPE_ATTACK_SECONDS = 0.15
+
+
+def band_emphasis_multipliers(emphasis: str) -> dict[tuple[float, float], float]:
+    preset = BAND_EMPHASIS_PRESETS.get(emphasis)
+    if preset is None:
+        raise ValueError(f"unknown band emphasis {emphasis!r}; expected one of {', '.join(BAND_EMPHASIS_CHOICES)}")
+    return dict(preset)
+
+
+def score_weights_for_emphasis(emphasis: str) -> dict[str, float]:
+    """Return reference_match_score keyword weights for a named band-emphasis preset."""
+    weights = {
+        "band_weight": 1.0,
+        "rms_weight": 0.05,
+        "space_weight": 0.15,
+        "high_end_weight": 0.25,
+        "low_body_weight": 0.25,
+        "envelope_weight": 0.2,
+        "lead_mid_weight": 0.25,
+        "band_multipliers": band_emphasis_multipliers(emphasis),
+    }
+    if emphasis == "mids":
+        weights["lead_mid_weight"] = 0.45
+    elif emphasis == "low":
+        weights["low_body_weight"] = 0.45
+    elif emphasis == "high":
+        weights["high_end_weight"] = 0.45
+    return weights
 
 
 def _rms_dbfs(samples: list[float]) -> float | None:
@@ -890,6 +935,7 @@ def reference_match_score(
     low_body_weight: float = 0.25,
     envelope_weight: float = 0.2,
     lead_mid_weight: float = 0.25,
+    band_multipliers: dict[tuple[float, float], float] | None = None,
 ) -> dict[str, Any]:
     ref_bands = reference.get("bands") or []
     candidate_bands = candidate.get("bands") or []
@@ -901,7 +947,9 @@ def reference_match_score(
         ref_log = float(ref_band["logEnergy"])
         candidate_log = float(candidate_band["logEnergy"])
         error = candidate_log - ref_log
-        squared = error * error
+        band_key = (float(ref_band["lowHz"]), float(ref_band["highHz"]))
+        multiplier = 1.0 if band_multipliers is None else band_multipliers.get(band_key, 1.0)
+        squared = error * error * multiplier
         band_error += squared
         band_errors.append(
             {
@@ -909,6 +957,7 @@ def reference_match_score(
                 "highHz": ref_band["highHz"],
                 "logEnergyError": error,
                 "squaredError": squared,
+                "weight": multiplier,
             }
         )
     ref_rms = reference.get("rmsDbfs")
@@ -950,6 +999,10 @@ def reference_match_score(
         "envelopeWeight": envelope_weight,
         "leadMidWeight": lead_mid_weight,
         "bandErrors": band_errors,
+        "bandEmphasis": {
+            f"{low:g}-{high:g}": value
+            for (low, high), value in (band_multipliers or {}).items()
+        },
         "note": "Lower score is closer to the stored reference profile; descriptor errors are low-weight tone-shape terms.",
     }
 

@@ -857,6 +857,53 @@ class AudioLabTests(unittest.TestCase):
         self.assertIn("preamp-presence-minus", labels)
         self.assertEqual(len(labels), len(set(labels)))
 
+    def test_reference_match_score_mid_emphasis_weights_lead_bands(self) -> None:
+        from tools.gt1000.audio_lab.metrics import reference_match_score, score_weights_for_emphasis
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            reference_path = directory / "reference.wav"
+            mid_shift_path = directory / "mid-shift.wav"
+            _write_composite_tone(reference_path, frequencies=[1000.0, 2000.0])
+            _write_composite_tone(mid_shift_path, frequencies=[500.0, 6000.0])
+
+            reference = metrics.reference_profile(reference_path)
+            shifted = metrics.reference_profile(mid_shift_path)
+            balanced = reference_match_score(reference, shifted, **score_weights_for_emphasis("balanced"))
+            mids = reference_match_score(reference, shifted, **score_weights_for_emphasis("mids"))
+
+            self.assertGreater(mids["score"], balanced["score"])
+            self.assertGreater(mids["leadMidWeight"], balanced["leadMidWeight"])
+            self.assertIn("1250-2500", mids["bandEmphasis"])
+
+    def test_reference_plan_uses_attack_clarity_and_brightness_descriptors(self) -> None:
+        profile = {
+            "path": "/tmp/reference.wav",
+            "profileVersion": 1,
+            "spectralCentroidHz": 1500.0,
+            "highEnd": {
+                "available": True,
+                "fizzToLeadMidDb": -12.0,
+                "fizzToPresenceDb": -8.0,
+                "presenceToLeadMidDb": 5.0,
+            },
+            "envelope": {
+                "available": True,
+                "attackToSustainDb": 5.5,
+                "sustainDropDb": 4.0,
+                "sustainFractionWithin12Db": 0.55,
+            },
+        }
+
+        plan = plan_reference_candidates(profile, session="tone-chase", max_candidates=10)
+        labels = [candidate["label"] for candidate in plan["candidates"]]
+        guidance = {entry["signal"] for entry in plan["descriptorGuidance"]}
+
+        self.assertIn("brightness", guidance)
+        self.assertIn("attack-clarity", guidance)
+        self.assertLess(labels.index("preamp-presence-plus"), labels.index("patch-level-plus"))
+        self.assertLess(labels.index("preamp-gain-minus"), labels.index("patch-level-plus"))
+
     def test_reference_plan_includes_validated_amp_and_paired_cab_candidates(self) -> None:
         profile = {
             "path": "/tmp/reference.wav",
@@ -1125,6 +1172,110 @@ class AudioLabTests(unittest.TestCase):
             self.assertEqual(result["skippedCandidates"][0]["label"], "untrusted")
             self.assertIn("restoreResult", result["skippedCandidates"][0])
             render_mock.assert_called_once()
+
+    def test_select_active_block_candidates_skips_switched_off_blocks_and_backfills(self) -> None:
+        from tools.gt1000 import live, patch_edit
+        from tools.gt1000.audio_lab import reference_runner
+
+        eq_switch_key = live.address_key(patch_edit.block_address("eq1"))
+
+        def fake_switch_reads(*, timeout: float, requests: list[live.PatchReadRequest]) -> dict[str, list[int]]:
+            data: dict[str, list[int]] = {}
+            for request in requests:
+                key = live.address_key(request.address)
+                data[key] = [0] if key == eq_switch_key else [1]
+            return data
+
+        candidates = [
+            {"label": "eq-high-plus", "settings": [{"area": "eq1", "parameter": "highGain", "value": "72"}]},
+            {"label": "dist-level-plus", "settings": [{"area": "dist1", "parameter": "level", "value": "70"}]},
+            {"label": "patch-level-plus", "settings": [{"area": "master", "parameter": "level", "value": "115"}]},
+        ]
+        with mock.patch.object(reference_runner.live, "read_data_sets", side_effect=fake_switch_reads):
+            selection = reference_runner._select_active_block_candidates(
+                candidates, max_candidates=2, timeout=5.0
+            )
+
+        self.assertEqual([item["label"] for item in selection["selected"]], ["dist-level-plus", "patch-level-plus"])
+        self.assertEqual(selection["skippedInactive"][0]["label"], "eq-high-plus")
+        self.assertIn("eq1", selection["skippedInactive"][0]["reason"])
+        self.assertEqual(selection["blockStates"]["eq1"], "off")
+        self.assertEqual(selection["blockStates"]["dist1"], "on")
+        self.assertEqual(selection["blockStates"]["master"], "unknown")
+
+    def test_select_active_block_candidates_keeps_candidates_when_reads_fail(self) -> None:
+        from tools.gt1000 import live
+        from tools.gt1000.audio_lab import reference_runner
+
+        candidates = [
+            {"label": "eq-high-plus", "settings": [{"area": "eq1", "parameter": "highGain", "value": "72"}]},
+        ]
+        with mock.patch.object(
+            reference_runner.live,
+            "read_data_sets",
+            side_effect=live.LiveMIDIError("No GT-1000 MIDI source found"),
+        ):
+            selection = reference_runner._select_active_block_candidates(
+                candidates, max_candidates=1, timeout=5.0
+            )
+
+        self.assertEqual([item["label"] for item in selection["selected"]], ["eq-high-plus"])
+        self.assertEqual(selection["skippedInactive"], [])
+        self.assertEqual(selection["blockStates"]["eq1"], "unknown")
+
+    def test_reference_run_attempts_emergency_restore_when_aborted(self) -> None:
+        from tools.gt1000 import live
+        from tools.gt1000.audio_lab import reference_runner
+
+        def fake_original_reads(*, timeout: float, requests: list[live.PatchReadRequest]) -> dict[str, list[int]]:
+            return {
+                live.address_key(request.address): [64] * live.seven_bit_address_value(request.size)
+                for request in requests
+            }
+
+        render_calls = {"count": 0}
+
+        def fake_render(session_name: str, label: str, **kwargs) -> dict:
+            render_calls["count"] += 1
+            if render_calls["count"] > 1:
+                raise RuntimeError("simulated render failure mid-run")
+            session_dir = Path(tmp) / session_name
+            wet_path = session_dir / "renders" / f"{label}-wet.wav"
+            _write_composite_tone(wet_path, frequencies=[220.0, 440.0])
+            return {"id": "audioSessionRender", "label": label, "wetPath": str(wet_path)}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            with mock.patch.object(session, "session_root", return_value=directory):
+                cmd_generate_tone("abort-test", duration=0.2, frequency=440.0, amplitude=0.2, sample_rate=44100)
+                reference = directory / "reference.wav"
+                profile_path = directory / "reference-profile.json"
+                _write_composite_tone(reference, frequencies=[220.0, 440.0])
+                cmd_reference_analyze(reference, output_path=profile_path)
+                with mock.patch.object(
+                    reference_runner.live,
+                    "read_data_sets",
+                    side_effect=fake_original_reads,
+                ), mock.patch.object(
+                    reference_runner,
+                    "apply_plan_after_audio",
+                    return_value={"verified": True},
+                ) as apply_mock, mock.patch.object(
+                    reference_runner,
+                    "render_labeled_wet",
+                    side_effect=fake_render,
+                ):
+                    with self.assertRaises(RuntimeError):
+                        cmd_reference_run(
+                            profile_path,
+                            session="abort-test",
+                            max_candidates=1,
+                            verify_writes=True,
+                        )
+
+            plan_ids = [call.args[0].id for call in apply_mock.call_args_list]
+            self.assertEqual(plan_ids[-1], "reference-run-restore:abort")
+            self.assertTrue(any(plan_id.startswith("reference-run-restore:candidate") for plan_id in plan_ids))
 
     def test_sanitize_render_label(self) -> None:
         self.assertEqual(sanitize_label("baseline v2"), "baseline-v2")

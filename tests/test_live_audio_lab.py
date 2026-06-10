@@ -204,17 +204,36 @@ class LiveAudioLabTests(unittest.TestCase):
                     "--session",
                     session,
                     "--max-candidates",
-                    "1",
+                    "3",
                     "--midi-timeout",
-                    "20",
+                    "30",
                     env=env,
                 )
             )
             self.assertEqual(reference_run["id"], "audioReferenceRun")
-            self.assertEqual(reference_run["candidateCount"], 1)
-            self.assertEqual(len(reference_run["ranked"]), 2)
-            self.assertIn("restoreResult", reference_run["renders"][1])
-            match = parse_json_stdout(run_cli("audio", "match-reference", str(profile_path), str(dry_path), env=env))
+            self.assertEqual(reference_run["candidateCount"], 3)
+            self.assertGreaterEqual(len(reference_run["ranked"]), 2)
+            self.assertLessEqual(len(reference_run["ranked"]), 4)
+            self.assertEqual(reference_run["emphasis"], "balanced")
+            self.assertGreaterEqual(len(reference_run["auditionShortlist"]), 2)
+            ranked_scores = [item["score"] for item in reference_run["ranked"]]
+            self.assertGreater(len(set(ranked_scores)), 1, "expected at least two distinct ranked scores")
+            candidate_renders = [
+                item for item in reference_run["renders"] if item.get("label") != "baseline"
+            ]
+            self.assertGreaterEqual(len(candidate_renders), 1)
+            self.assertIn("restoreResult", candidate_renders[0])
+            match = parse_json_stdout(
+                run_cli(
+                    "audio",
+                    "match-reference",
+                    str(profile_path),
+                    str(dry_path),
+                    "--emphasis",
+                    "balanced",
+                    env=env,
+                )
+            )
             self.assertEqual(match["id"], "audioMatchReference")
             self.assertEqual(match["best"]["path"], str(dry_path))
 

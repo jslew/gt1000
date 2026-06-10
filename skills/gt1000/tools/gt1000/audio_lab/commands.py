@@ -19,6 +19,7 @@ from .metrics import (
     reference_match_score,
     reference_profile,
     rms_delta_db,
+    score_weights_for_emphasis,
 )
 from .branch_lab import branch_context, compare_branches, probe_branch, probe_param, render_branch
 from .device_snapshot import capture_live_snapshots, write_device_snapshots
@@ -284,14 +285,23 @@ def cmd_match_reference(
     *,
     trim_start_seconds: float = 0.0,
     trim_end_seconds: float = 0.0,
-    band_weight: float = 1.0,
-    rms_weight: float = 0.05,
+    emphasis: str = "balanced",
+    band_weight: float | None = None,
+    rms_weight: float | None = None,
 ) -> dict[str, Any]:
     if not profile_path.is_file():
         raise AudioLabError(f"reference profile not found: {profile_path}", 64)
     if not candidate_paths:
         raise AudioLabError("match-reference requires at least one candidate WAV", 64)
     reference = json.loads(profile_path.read_text(encoding="utf-8"))
+    try:
+        score_weights = score_weights_for_emphasis(emphasis)
+    except ValueError as error:
+        raise AudioLabError(str(error), 64) from error
+    if band_weight is not None:
+        score_weights["band_weight"] = band_weight
+    if rms_weight is not None:
+        score_weights["rms_weight"] = rms_weight
     candidates: list[dict[str, Any]] = []
     for candidate_path in candidate_paths:
         if not candidate_path.is_file():
@@ -301,12 +311,7 @@ def cmd_match_reference(
             trim_start_seconds=trim_start_seconds,
             trim_end_seconds=trim_end_seconds,
         )
-        score = reference_match_score(
-            reference,
-            candidate_profile,
-            band_weight=band_weight,
-            rms_weight=rms_weight,
-        )
+        score = reference_match_score(reference, candidate_profile, **score_weights)
         candidates.append(
             {
                 "path": str(candidate_path),
@@ -325,8 +330,9 @@ def cmd_match_reference(
         "referencePath": reference.get("path"),
         "ranked": ranked,
         "best": ranked[0],
+        "emphasis": emphasis,
         "note": (
-            "Phase 4 MVP scoring only: lower score is closer by approximate band energy plus RMS penalty. "
+            "Lower score is closer by approximate band energy, descriptor shape, and RMS penalty. "
             "It does not guarantee a perceptual tone match."
         ),
     }
@@ -356,16 +362,23 @@ def cmd_reference_run(
     *,
     session: str,
     max_candidates: int = 12,
+    emphasis: str = "balanced",
     midi_timeout: float = 20.0,
     settle_seconds: float = 0.25,
     prepare_usb: bool = True,
     verify_writes: bool = True,
 ) -> dict[str, Any]:
     try:
+        score_weights = score_weights_for_emphasis(emphasis)
+    except ValueError as error:
+        raise AudioLabError(str(error), 64) from error
+    try:
         return run_reference_candidates(
             profile_path,
             session=session,
             max_candidates=max_candidates,
+            score_weights=score_weights,
+            emphasis=emphasis,
             midi_timeout=midi_timeout,
             settle_seconds=settle_seconds,
             prepare_usb=prepare_usb,

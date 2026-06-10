@@ -735,7 +735,34 @@ def _plan_payload(plan: patch_edit.PatchPlan) -> dict[str, Any]:
 
 
 def apply_plan_fresh_process(plan: patch_edit.PatchPlan, *, timeout: float, verify: bool) -> dict[str, Any]:
-    """Apply a MIDI write in a fresh process after PortAudio has run in this one."""
+    """Apply a MIDI write in a fresh process after PortAudio has run in this one.
+
+    Retries at process granularity: a process whose first midiserver contact
+    yielded an empty endpoint snapshot can stay blind to the GT-1000, while a
+    brand-new process gets a fresh snapshot and usually succeeds immediately.
+    """
+    attempts = _fresh_process_attempts()
+    last_error: live.LiveMIDIError | None = None
+    for attempt in range(attempts):
+        try:
+            return _apply_plan_fresh_process_once(plan, timeout=timeout, verify=verify)
+        except live.LiveMIDIError as error:
+            if not live.is_endpoint_unavailable_error(error) or attempt == attempts - 1:
+                raise
+            last_error = error
+            time.sleep(2.0 * (attempt + 1))
+    raise last_error if last_error else live.LiveMIDIError("fresh MIDI write retry exhausted")
+
+
+def _fresh_process_attempts() -> int:
+    try:
+        value = int(os.environ.get("GT1000_FRESH_PROCESS_ATTEMPTS", "3"))
+    except ValueError:
+        return 3
+    return max(1, value)
+
+
+def _apply_plan_fresh_process_once(plan: patch_edit.PatchPlan, *, timeout: float, verify: bool) -> dict[str, Any]:
     script = """
 import json
 import sys

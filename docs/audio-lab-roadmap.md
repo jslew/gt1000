@@ -2,7 +2,7 @@
 
 Implementation plan for USB dry capture, GT-1000 re-amping, DSP comparison, and (later) reference-tone matching. This extends the existing SysEx/patch CLI; it does not replace it.
 
-**Status:** Phases 1-3 complete; Phase 4 tone chase has an MVP end-to-end runner for bounded temp-patch candidates.
+**Status:** Phases 1-4 complete and live-verified on hardware. Reference-tone chasing runs end-to-end with descriptor-aware scoring, bounded temp-patch search, inactive-block candidate filtering, abort-safe restore, and musician-facing agent guidance; the live reference run test passes repeatedly, including the post-audio restore path.
 **Related:** [musician-cli-backlog.md](musician-cli-backlog.md), [AGENTS.md](../AGENTS.md), [audio-lab-reamp-protocol.md](audio-lab-reamp-protocol.md), [midi-reference/address-map.md](../skills/gt1000/references/midi-reference/address-map.md)
 
 ## Vision
@@ -200,19 +200,21 @@ scripts/gt1000-agent --pretty audio session render --label baseline
 
 ---
 
-## Phase 4 — Reference tone chasing (MVP)
+## Phase 4 — Reference tone chasing
 
 **Outcome:** User provides reference WAV (isolated guitar); agent derives spectral target, proposes constrained patch variants, re-amps dry take against each, ranks by objective, returns best + diff report.
 
 ### Deliverables
 
-| Item | Description |
-|------|-------------|
-| `audio reference analyze` | Band energy curve, spectral centroid, crest; store `reference-profile.json`. Done for approximate stdlib-only band profile via `audio reference analyze`. |
-| `audio match-reference` | Score wet render vs profile (weighted band error + loudness penalty). Done for offline candidate WAV ranking via `audio match-reference`. |
-| Search planner | Limited cartesian/grid over **typed** knobs: amp type, gain, EQ bands, cab sim, key drive block level — not full patch space. Started with offline bounded `audio reference plan` and one-command temp-patch runner via `audio reference run`. |
-| Candidate budget | Default max 12 renders per session; human can approve expansion. |
-| Skill guidance | Tone chasing is iterative and approximate; cite limits (DI vs mic, playing dynamics). |
+| Item | Description | Status |
+|------|-------------|--------|
+| `audio reference analyze` | Band energy curve, spectral centroid, crest, and descriptor profiles (`space`, `highEnd`, `lowBody`, `envelope`, `leadMid`); store `reference-profile.json`. | Done |
+| `audio match-reference` | Score wet render vs profile (weighted bands, descriptor shape, loudness penalty); optional `--emphasis` presets (`balanced`, `mids`, `low`, `high`). | Done |
+| Search planner | Descriptor-aware bounded search over **typed** knobs: amp type, gain, EQ bands, cab sim, drive/reverb/delay, key block levels — not full patch space. `audio reference plan` + `audio reference run`. | Done |
+| Candidate budget | Default max 12 renders per session; human can approve expansion. | Done |
+| Inactive-block filtering | `audio reference run` reads each target block's switch byte first, skips candidates whose block is bypassed (a write would verify but never change the wet render), and backfills the budget from a larger planner pool. | Done |
+| Run reliability & abort safety | Post-audio CoreMIDI endpoint refresh (process MIDI client + run-loop pump in `live.py`), process-level retry for fresh post-audio MIDI writes, and an abort-time emergency restore of all captured original bytes so the temp patch is never left mutated. | Done |
+| Skill guidance | Tone chasing is iterative and approximate; cite limits (DI vs mic, playing dynamics). See `references/audio-lab-reference-tone.md`. | Done |
 
 ### Objective (v1)
 
@@ -226,14 +228,19 @@ Optional: user weights “more mids” via band weight overrides.
 
 ### Tests
 
-- Unit: two synthetic tones → ranker orders closer spectrum first.
-- Live: one reference clip + one dry take → top-3 candidates differ audibly and in JSON scores.
+- Unit: synthetic tones → ranker orders closer spectrum first; descriptor metrics and planner ordering; band-emphasis presets.
+- Live: reference profile + dry take → `audio reference run --max-candidates 3` ranks distinct scores and restores temp patch bytes.
 
 ### Exit criteria
 
-- [x] End-to-end MVP: reference WAV + dry take → baseline + bounded temp-patch candidates rendered and ranked for audition (`audio reference run`).
-- [x] No non-validated SysEx; all MVP candidate writes go through existing patch edit paths.
-- [x] Clear “not a match guarantee” in musician-facing output.
+- [x] End-to-end: reference WAV + dry take → baseline + bounded temp-patch candidates rendered and ranked for audition (`audio reference run`).
+- [x] No non-validated SysEx; all candidate writes go through existing patch edit paths with verify-before-render.
+- [x] Clear “not a match guarantee” in musician-facing output and CLI notes.
+- [x] Descriptor-aware planner and scoring (`space`, `highEnd`, `lowBody`, `envelope`, `leadMid`) with diff reports and audition shortlist.
+- [x] Optional band-emphasis weighting for user goals such as “more mids”.
+- [x] Candidate budget is spent on audible changes: bypassed-block candidates are skipped up front and replaced from the planner pool.
+- [x] Live reference run (`test_generated_tone_simulates_recording`) passes repeatedly on connected hardware, including the post-audio restore path.
+- [x] An aborted run attempts a best-effort restore of every captured original byte range before re-raising.
 
 ---
 
@@ -270,7 +277,7 @@ Optional: user weights “more mids” via band weight overrides.
 | A | 1 | `audio_lab` package, `record-dry`, `reamp`, `analyze`, unit tests — **done** |
 | B | 2 | Session dirs, `session render`, `system inout` writes, orchestrator — **done** |
 | C | 3 | Investigation primitives + compare-branches; agent-led DIV1 proof — **done** |
-| D | 4 | Reference profile, offline scoring, bounded planning, and temp-patch render/rank MVP implemented; richer search space and musician-facing guidance remain |
+| D | 4 | Reference profile, descriptor scoring, bounded planning, temp-patch render/rank, band-emphasis presets, and musician-facing guidance — **done** |
 
 ## Agent / skill integration (after Phase 2)
 
@@ -291,4 +298,4 @@ Add to **skill-developer** / AGENTS.md (not musician SKILL.md):
 
 ---
 
-*Last updated: 2026-05-28*
+*Last updated: 2026-06-10*

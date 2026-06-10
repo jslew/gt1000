@@ -192,11 +192,14 @@ class LiveUtilityTests(unittest.TestCase):
                 return "" if self.calls == 1 else "GT-1000"
 
         midi = FakeMidi()
-        with mock.patch.object(live.time, "sleep") as sleep:
+        with mock.patch.object(live, "ensure_process_midi_client") as ensure, mock.patch.object(
+            live, "wait_for_endpoint_refresh"
+        ) as wait:
             endpoint = live.find_endpoint(midi, lambda: 1, lambda index: 123)
 
         self.assertEqual(endpoint, 123)
-        sleep.assert_called_once_with(0.25)
+        ensure.assert_called_once_with(midi)
+        wait.assert_called_once_with(midi, 0.25)
 
     def test_lenient_consecutive_miss_limit_defaults_and_ignores_bad_env(self):
         with mock.patch.dict(live.os.environ, {}, clear=False):

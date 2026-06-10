@@ -189,6 +189,12 @@ def register_audio_commands(subcommands: argparse._SubParsersAction) -> None:
     reference_run.add_argument("profile", type=Path, help="Reference profile JSON from audio reference analyze.")
     reference_run.add_argument("--session", required=True, help="Audio lab session name with dry.wav.")
     reference_run.add_argument("--max-candidates", type=int, default=12, help="Candidate budget, default 12.")
+    reference_run.add_argument(
+        "--emphasis",
+        choices=("balanced", "mids", "low", "high"),
+        default="balanced",
+        help="Band-emphasis preset used when ranking rendered candidates.",
+    )
     reference_run.add_argument("--midi-timeout", type=float, default=20.0)
     reference_run.add_argument("--settle-seconds", type=float, default=0.25)
     reference_run.add_argument("--no-prepare-usb", action="store_true")
@@ -203,8 +209,24 @@ def register_audio_commands(subcommands: argparse._SubParsersAction) -> None:
     match_reference.add_argument("files", nargs="+", type=Path, help="Candidate wet WAV files to rank.")
     match_reference.add_argument("--trim-start", type=float, default=0.0, dest="trim_start_seconds")
     match_reference.add_argument("--trim-end", type=float, default=0.0, dest="trim_end_seconds")
-    match_reference.add_argument("--band-weight", type=float, default=1.0)
-    match_reference.add_argument("--rms-weight", type=float, default=0.05)
+    match_reference.add_argument(
+        "--emphasis",
+        choices=("balanced", "mids", "low", "high"),
+        default="balanced",
+        help="Band-emphasis preset for scoring (e.g. mids weights lead-range bands higher).",
+    )
+    match_reference.add_argument(
+        "--band-weight",
+        type=float,
+        default=None,
+        help="Override broad-band weight after applying --emphasis.",
+    )
+    match_reference.add_argument(
+        "--rms-weight",
+        type=float,
+        default=None,
+        help="Override loudness penalty weight after applying --emphasis.",
+    )
     match_reference.set_defaults(func=wrap_audio_command(cmd_audio_match_reference))
 
     session = audio_sub.add_parser("session", help="Initialize and render repeatable audio lab sessions.")
@@ -410,6 +432,7 @@ def cmd_audio_match_reference(args: argparse.Namespace) -> Any:
         list(args.files),
         trim_start_seconds=args.trim_start_seconds,
         trim_end_seconds=args.trim_end_seconds,
+        emphasis=args.emphasis,
         band_weight=args.band_weight,
         rms_weight=args.rms_weight,
     )
@@ -427,6 +450,7 @@ def cmd_audio_reference_run(args: argparse.Namespace) -> Any:
     return cmd_reference_run(
         args.profile,
         session=args.session,
+        emphasis=args.emphasis,
         max_candidates=args.max_candidates,
         midi_timeout=args.midi_timeout,
         settle_seconds=args.settle_seconds,

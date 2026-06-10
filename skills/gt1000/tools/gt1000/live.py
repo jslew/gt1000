@@ -623,6 +623,9 @@ class CoreMIDI:
         self.cm.MIDIPacketListAdd.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p, ctypes.c_uint64, ctypes.c_ulong, ctypes.c_void_p]
         self.cm.MIDIPacketListAdd.restype = ctypes.c_void_p
 
+        self.cf.CFRunLoopRunInMode.argtypes = [ctypes.c_void_p, ctypes.c_double, ctypes.c_bool]
+        self.cf.CFRunLoopRunInMode.restype = ctypes.c_int32
+
     def cf_string(self, text: str) -> ctypes.c_void_p:
         return self.cf.CFStringCreateWithCString(None, text.encode("utf-8"), 0x08000100)
 
@@ -657,6 +660,7 @@ class CoreMIDI:
 
 def list_ports() -> dict[str, Any]:
     midi = CoreMIDI()
+    ensure_process_midi_client(midi)
     return {"destinations": midi.destinations(), "sources": midi.sources()}
 
 
@@ -888,6 +892,57 @@ def send_channel_voice(message: list[int], delay: float = 0.1) -> None:
             midi.cm.MIDIClientDispose(client)
 
 
+_PROCESS_MIDI_CLIENT = ctypes.c_uint32(0)
+
+
+def ensure_process_midi_client(midi: CoreMIDI) -> None:
+    """Create one long-lived per-process MIDIClient before endpoint enumeration.
+
+    Without a real client, macOS serves MIDIGetNumberOfDestinations/Sources from a
+    per-process MIDISetup snapshot taken at first implicit midiserver contact. If
+    that contact happens at a bad moment (for example right after PortAudio tears
+    down a USB audio stream), the snapshot can be empty and it never refreshes,
+    so every in-process retry sees zero endpoints while the device is attached.
+    A real client plus a serviced CFRunLoop is what allows the snapshot to update.
+    """
+    if _PROCESS_MIDI_CLIENT.value:
+        return
+    client_name = midi.cf_string("GT1000PythonProcessClient")
+    status = midi.cm.MIDIClientCreate(client_name, None, None, ctypes.byref(_PROCESS_MIDI_CLIENT))
+    midi.cf.CFRelease(client_name)
+    if status != 0:
+        _PROCESS_MIDI_CLIENT.value = 0
+        diagnostic_event("live.endpoint.process_client_failed", osStatus=status)
+
+
+def wait_for_endpoint_refresh(midi: CoreMIDI, seconds: float) -> None:
+    """Wait between endpoint-find attempts while letting CoreMIDI refresh its setup.
+
+    Plain time.sleep never lets this thread service CoreMIDI setup notifications,
+    so the cached endpoint list can stay frozen for the life of the process. Pump
+    the default CFRunLoop mode instead, and only sleep for whatever time remains
+    if the run loop has nothing scheduled (CFRunLoopRunInMode returns immediately
+    with kCFRunLoopRunFinished when the thread has no run loop sources).
+    """
+    if seconds <= 0:
+        return
+    deadline = time.monotonic() + seconds
+    mode = midi.cf_string("kCFRunLoopDefaultMode")
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            result = midi.cf.CFRunLoopRunInMode(mode, ctypes.c_double(remaining), False)
+            if result == 1:  # kCFRunLoopRunFinished: no sources on this thread
+                remaining = deadline - time.monotonic()
+                if remaining > 0:
+                    time.sleep(remaining)
+                return
+    finally:
+        midi.cf.CFRelease(mode)
+
+
 def find_destination_with_endpoint_retry() -> tuple[CoreMIDI, int | None]:
     attempts = endpoint_retry_attempts()
     for attempt in range(attempts):
@@ -903,7 +958,7 @@ def find_destination_with_endpoint_retry() -> tuple[CoreMIDI, int | None]:
                 attempts=attempts,
                 delaySeconds=delay,
             )
-            time.sleep(delay)
+            wait_for_endpoint_refresh(midi, delay)
     return midi, None
 
 
@@ -928,7 +983,7 @@ def transact_requests_with_endpoint_retry(
                 delaySeconds=delay,
                 error=str(error),
             )
-            time.sleep(delay)
+            wait_for_endpoint_refresh(CoreMIDI(), delay)
     raise LiveMIDIError("GT-1000 endpoint retry exhausted")
 
 
@@ -1260,13 +1315,14 @@ def packets_from_packet_list(packet_list: ctypes.POINTER(MIDIPacketList)) -> lis
 
 
 def find_endpoint(midi: CoreMIDI, count_fn: Callable[[], int], endpoint_fn: Callable[[int], int]) -> int | None:
+    ensure_process_midi_client(midi)
     for attempt in range(endpoint_find_attempts()):
         for index in range(count_fn()):
             endpoint = endpoint_fn(index)
             if is_default_gt1000_endpoint(midi.endpoint_name(endpoint)):
                 return endpoint
         if attempt < endpoint_find_attempts() - 1:
-            time.sleep(0.25)
+            wait_for_endpoint_refresh(midi, 0.25)
     return None
 
 
