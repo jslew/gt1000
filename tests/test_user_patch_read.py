@@ -24,6 +24,65 @@ class UserPatchReadTests(unittest.TestCase):
         self._validation_log_env.stop()
         self._validation_log_dir.cleanup()
 
+    def test_sysex_assembler_skips_interleaved_realtime_bytes(self):
+        assembler = live.SysExAssembler()
+        message = live.build_request_data([0x10, 0x00, 0x10, 0x61], [0x00, 0x00, 0x00, 0x04])
+        interleaved = message[:5] + [0xF8] + message[5:9] + [0xFE] + message[9:]
+
+        assembled = assembler.assemble([interleaved])
+
+        self.assertEqual(assembled, [message])
+
+    def test_parse_data_set_rejects_foreign_device_id(self):
+        message = live.build_data_set([0x10, 0x00, 0x10, 0x61], [0x00, 0x07, 0x08, 0x00])
+        foreign = list(message)
+        foreign[2] = 0x11
+
+        self.assertIsNotNone(live.parse_data_set(message))
+        self.assertIsNone(live.parse_data_set(foreign))
+
+    def test_nibbles_for_rejects_values_that_do_not_fit(self):
+        self.assertEqual(live.nibbles_for(0xFFFF), [15, 15, 15, 15])
+        with self.assertRaises(ValueError):
+            live.nibbles_for(0x10000)
+        with self.assertRaises(ValueError):
+            live.nibbles_for(256, byte_count=2)
+
+    def test_wait_for_quiet_input_returns_quickly_on_silent_bus(self):
+        state = live.PatchReadState()
+
+        started = live.time.monotonic()
+        live.wait_for_quiet_input(state, quiet_seconds=0.5, max_seconds=5.0, initial_grace=0.05)
+        elapsed = live.time.monotonic() - started
+
+        self.assertLess(elapsed, 0.4)
+
+    def test_wait_for_quiet_input_waits_full_window_after_traffic(self):
+        state = live.PatchReadState()
+        state.last_packet_at = live.time.monotonic()
+
+        started = live.time.monotonic()
+        live.wait_for_quiet_input(state, quiet_seconds=0.2, max_seconds=5.0)
+        elapsed = live.time.monotonic() - started
+
+        self.assertGreaterEqual(elapsed, 0.2)
+
+    def test_resident_block_raw_parameters_mark_named_offsets(self):
+        looper = next(block for block in live.RESIDENT_BLOCKS if block.id == "looper")
+        snapshot = live.empty_snapshot()
+        effect_data = [0] * 0x11C
+        effect_data[looper.offset] = 42
+
+        block = live.block_from_definition(
+            snapshot,
+            looper,
+            effect_data[looper.offset:looper.offset + looper.size],
+            base_data=effect_data,
+        )
+
+        self.assertEqual(block["rawParameters"][0]["rawValue"], 42)
+        self.assertTrue(block["rawParameters"][0]["isNamed"])
+
     def test_user_slot_addresses_use_roland_seven_bit_stride(self):
         self.assertEqual(live.user_patch_base("U01-1"), [0x20, 0x00, 0x00, 0x00])
         self.assertEqual(live.user_patch_base("u01-5"), [0x20, 0x04, 0x00, 0x00])
@@ -37,10 +96,16 @@ class UserPatchReadTests(unittest.TestCase):
     def test_user_bank_slots_are_normalized(self):
         self.assertEqual(live.user_bank_slots("u1"), ["U01-1", "U01-2", "U01-3", "U01-4", "U01-5"])
 
-    def test_master_delay_live_record_size_matches_device_response(self):
+    def test_master_delay_record_size_matches_midi_implementation(self):
+        # Official PatchMstDelay total size is 0x2C; live-verified on the tested
+        # unit, which answers the full 44-byte read at 10 00 21 00.
         master_delay = next(block for block in live.SUMMARY_BLOCKS if block.id == "masterDelay")
 
-        self.assertEqual(master_delay.size, 28)
+        self.assertEqual(master_delay.size, 44)
+        last_parameter_end = max(
+            parameter.offset + parameter.byte_count for parameter in master_delay.parameters
+        )
+        self.assertLessEqual(last_parameter_end, master_delay.size)
 
     def test_temporary_patch_addresses_remap_to_user_slot(self):
         base = live.user_patch_base("U01-2")
@@ -1583,13 +1648,40 @@ class UserPatchReadTests(unittest.TestCase):
         args = agent_cli.build_parser().parse_args(["system", "inputs", "--live", "--number", "2"])
         data = list(b"SECOND          ") + [32]
 
-        with mock.patch.object(agent_cli.live, "read_system_section", return_value={"00 01 01 00": data}) as read_section:
+        with mock.patch.object(agent_cli, "read_patch_records_with_timeout", return_value={"00 01 01 00": data}) as read_records:
             result = agent_cli.cmd_system_inputs(args)
 
-        read_section.assert_called_once_with([0x00, 0x01, 0x01, 0x00], [0x00, 0x00, 0x00, 0x11], timeout=8.0)
+        read_records.assert_called_once()
+        requests = read_records.call_args.args[2]
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0].address, [0x00, 0x01, 0x01, 0x00])
+        self.assertEqual(requests[0].size, [0x00, 0x00, 0x00, 0x11])
         self.assertEqual(result["id"], "systemInputSettings")
         self.assertEqual(result["settings"][0]["name"], "SECOND")
         self.assertEqual(result["settings"][0]["inputLevelDb"], 0)
+
+    def test_system_inputs_view_reads_all_inputs_in_one_session(self):
+        args = agent_cli.build_parser().parse_args(["system", "inputs", "--live"])
+        raw = {
+            agent_cli.live.address_key(agent_cli.system_input_setting_address(number)): list(b"NAME            ") + [32]
+            for number in range(1, 11)
+        }
+
+        with mock.patch.object(agent_cli, "read_patch_records_with_timeout", return_value=raw) as read_records:
+            result = agent_cli.cmd_system_inputs(args)
+
+        read_records.assert_called_once()
+        requests = read_records.call_args.args[2]
+        self.assertEqual(len(requests), 10)
+        self.assertEqual(len(result["settings"]), 10)
+        self.assertEqual(result["settings"][9]["number"], 10)
+
+    def test_system_inputs_set_rejects_out_of_range_level(self) -> None:
+        args = agent_cli.build_parser().parse_args(
+            ["system", "inputs-set", "3", "input-level", "21", "--live"],
+        )
+        with self.assertRaises(agent_cli.CLIError):
+            agent_cli.cmd_system_inputs_set(args)
 
     def test_system_inputs_set_requires_live(self) -> None:
         args = agent_cli.build_parser().parse_args(["system", "inputs-set", "3", "input-level", "12"])

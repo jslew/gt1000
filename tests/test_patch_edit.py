@@ -863,7 +863,7 @@ class PatchEditTests(unittest.TestCase):
         self.assertEqual(preference.writes[0].address, [0x00, 0x00, 0x10, 0x2A])
         self.assertEqual(preference.writes[0].data, [0])
 
-        rename = patch_edit.build_rename_plan("ABCDEFGHIJKLMNOPQ", slot="U03-2")
+        rename = patch_edit.build_rename_plan("ABCDEFGHIJKLMNOP", slot="U03-2")
         self.assertEqual(rename.writes[0].address, [0x20, 0x0B, 0x00, 0x00])
         self.assertEqual(rename.writes[0].data, list(b"ABCDEFGHIJKLMNOP"))
 
@@ -874,6 +874,65 @@ class PatchEditTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             patch_edit.build_led_set_plan("ctl1", "off", "auto-cyan")
+
+    def test_rename_plan_rejects_silently_mangled_names(self):
+        with self.assertRaises(ValueError):
+            patch_edit.build_rename_plan("")
+        with self.assertRaises(ValueError):
+            patch_edit.build_rename_plan("   ")
+        with self.assertRaises(ValueError):
+            patch_edit.build_rename_plan("ABCDEFGHIJKLMNOPQ")
+        with self.assertRaises(ValueError):
+            patch_edit.build_rename_plan("CAFÉ LEAD")
+
+        trailing = patch_edit.build_rename_plan("LEAD TONE       ")
+        self.assertEqual(trailing.writes[0].data, list(b"LEAD TONE       "))
+
+    def test_assign_set_plan_limits_active_range_for_midi_cc_sources(self):
+        with self.assertRaises(ValueError):
+            patch_edit.build_assign_set_plan(
+                1,
+                enabled=True,
+                target=987,
+                target_min=0,
+                target_max=1,
+                source=patch_edit.assign_source_for_cc(80),
+                mode="moment",
+                active_min=0,
+                active_max=16383,
+            )
+
+        non_cc = patch_edit.build_assign_set_plan(
+            1,
+            enabled=True,
+            target=987,
+            target_min=0,
+            target_max=1,
+            source=19,
+            mode="moment",
+            active_min=0,
+            active_max=1023,
+        )
+        self.assertEqual(non_cc.writes[0].data[24:28], live.nibbles_for(1023))
+
+    def test_assign_plans_allow_documented_inverted_target_ranges(self):
+        plan = patch_edit.build_assign_cc_plan(1, target=158, target_min=100, target_max=0, source_cc=80, mode="moment")
+        data = plan.writes[0].data
+        self.assertEqual(data[5:9], live.nibbles_for(32768 + 100))
+        self.assertEqual(data[9:13], live.nibbles_for(32768))
+
+    def test_tsl_led_import_writes_are_clamped_to_device_record_size(self):
+        led = [byte % 11 for byte in range(32)]
+        patch = {
+            "tslDevice": "GT-1000",
+            "paramSet": {"User_patch%led": [f"{byte:02X}" for byte in led]},
+        }
+
+        writes = patch_edit.tsl_paramset_writes(patch, "U10-1", 1)
+
+        led_write = next(write for write in writes if "Patch Led" in write.label)
+        self.assertEqual(len(led_write.data), 0x1E)
+        self.assertEqual(led_write.data, led[:0x1E])
 
     def test_exchange_plan_swaps_known_patch_records(self):
         requests_a = patch_edit.clone_core_read_requests("U03-2")

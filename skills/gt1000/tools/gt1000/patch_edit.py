@@ -685,6 +685,9 @@ def tsl_paramset_writes(patch: dict[str, Any], destination: str, patch_index: in
         data = data_from_tsl_hex_list(key, value)
         if len(data) > max_size:
             raise ValueError(f"TSL {key} has {len(data)} bytes, exceeding supported size {max_size}")
+        write_size = TSL_DEVICE_WRITE_SIZES.get(key)
+        if write_size is not None and len(data) > write_size:
+            data = data[:write_size]
         writes.append(live.PatchWrite(f"Import {destination} TSL {label}", remap_clone_address(address, destination), data))
     if not writes:
         raise ValueError(f"TSL patch {patch_index} does not contain supported GT-1000 paramSet records")
@@ -710,6 +713,14 @@ def unsupported_tsl_paramset_keys(patch: dict[str, Any]) -> list[str]:
         return []
     specs = tsl_paramset_specs()
     return sorted(key for key in param_set if key not in specs and not is_ignorable_tsl_paramset_key(key))
+
+
+# Tone Studio .tsl files can carry more bytes than the device record allocates.
+# The official MIDI implementation defines PatchLed as 0x1E bytes; clamp the DT1
+# write so a 0x20-byte TSL led array cannot spill past the record boundary.
+TSL_DEVICE_WRITE_SIZES = {
+    "User_patch%led": 0x1E,
+}
 
 
 def tsl_paramset_specs() -> dict[str, tuple[str, list[int], int]]:
@@ -1229,6 +1240,8 @@ def build_assign_cc_plan(
     source = assign_source_for_cc(source_cc)
     if mode not in {"toggle", "moment"}:
         raise ValueError("assign mode must be toggle or moment")
+    # target_min > target_max is deliberately allowed: the parameter guide
+    # documents that an inverted range reverses the parameter response.
     for label, value in {"target": target, "target_min": target_min, "target_max": target_max}.items():
         if not 0 <= value <= 16383:
             raise ValueError(f"{label} must be 0...16383")
@@ -1278,12 +1291,20 @@ def build_assign_set_plan(
 ) -> PatchPlan:
     if mode not in {"toggle", "moment"}:
         raise ValueError("assign mode must be toggle or moment")
+    # target_min > target_max is deliberately allowed: the parameter guide
+    # documents that an inverted range reverses the parameter response.
     validate_assign_int("target", target, 0, 16383)
     validate_assign_int("target_min", target_min, 0, 16383)
     validate_assign_int("target_max", target_max, 0, 16383)
     validate_assign_int("source", source, 0, 127)
-    validate_assign_int("active_min", active_min, 0, 16383)
-    validate_assign_int("active_max", active_max, 0, 16383)
+    if is_midi_cc_assign_source(source):
+        # MIDI CC sources send 0...127; a wider ACT RANGE maps CC 127 near the
+        # bottom of the range and can leave the target effectively off.
+        validate_assign_int("active_min", active_min, 0, 127)
+        validate_assign_int("active_max", active_max, 0, 127)
+    else:
+        validate_assign_int("active_min", active_min, 0, 16383)
+        validate_assign_int("active_max", active_max, 0, 16383)
     validate_assign_int("midi_channel", midi_channel, 0, 16)
     validate_assign_int("midi_cc", midi_cc, 0, 127)
     validate_assign_int("midi_cc_min", midi_cc_min, 0, 16383)
@@ -1454,6 +1475,7 @@ def build_control_preference_plan(control: str, preference: str) -> PatchPlan:
 
 
 def build_rename_plan(name: str, *, slot: str | None = None) -> PatchPlan:
+    validate_patch_name(name)
     write = live.PatchWrite("Patch name", live.TEMPORARY_PATCH_NAME, patch_name_data(name))
     plan = PatchPlan(
         id="rename",
@@ -1725,7 +1747,7 @@ def primary_patch_record_definitions(*, include_fx_algorithms: bool = True) -> l
             )
             for number in range(1, 17)
         ],
-        live.PatchReadRequest("Patch Effect", live.TEMPORARY_PATCH_EFFECT, [0x00, 0x00, 0x01, 0x1C]),
+        live.PatchReadRequest("Patch Effect", live.TEMPORARY_PATCH_EFFECT, live.TEMPORARY_PATCH_EFFECT_SIZE),
         *[
             live.PatchReadRequest(block.display_name, block.address, live.seven_bit_address(block.size))
             for block in list(live.SUMMARY_BLOCKS) + (list(live.FX_ALGORITHM_BLOCKS) if include_fx_algorithms else [])
@@ -1750,6 +1772,16 @@ def remap_clone_address(address: list[int], slot: str) -> list[int]:
     if patch3_base_value <= address_value < patch3_base_value + 0x2300:
         return live.address_adding(live.user_patch3_base(slot), address_value - patch3_base_value)
     return live.remap_temporary_patch_address(address, live.user_patch_base(slot))
+
+
+def validate_patch_name(name: str) -> None:
+    if not name.strip():
+        raise ValueError("patch name must not be empty")
+    significant = name.rstrip()
+    if len(significant) > 16:
+        raise ValueError("patch name must be at most 16 characters")
+    if any(not 0x20 <= ord(character) <= 0x7E for character in significant):
+        raise ValueError("patch name must contain printable ASCII characters only")
 
 
 def patch_name_data(name: str) -> list[int]:
@@ -1777,6 +1809,12 @@ def assign_address(number: int) -> list[int]:
 
 
 def assign_switch_writes(enabled: bool) -> list[live.PatchWrite]:
+    """Toggle all 16 assign switches.
+
+    Enabling intentionally writes only the 1-byte SW field so each assign's
+    existing target/source/range configuration is preserved; disabling writes
+    the full canonical disabled payload to leave slots in a known-clean state.
+    """
     if enabled:
         return [live.PatchWrite(f"Assign {number} switch on", assign_address(number), [0x01]) for number in range(1, 17)]
     return [live.PatchWrite(f"Assign {number} disabled", assign_address(number), DISABLED_ASSIGN_DATA) for number in range(1, 17)]
@@ -1844,6 +1882,11 @@ def assign_source_for_cc(cc: int) -> int:
     if 64 <= cc <= 95:
         return cc - 11
     raise ValueError("MIDI CC Assign sources support CC#1...31 and CC#64...95")
+
+
+def is_midi_cc_assign_source(source: int) -> bool:
+    # Source bytes 22...52 are CC#1...31 and 53...84 are CC#64...95.
+    return 22 <= source <= 84
 
 
 def all_switchable_blocks_off() -> list[live.PatchWrite]:

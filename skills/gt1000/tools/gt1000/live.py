@@ -62,6 +62,7 @@ def diagnostic_write_summary(writes: list["PatchWrite"]) -> list[dict[str, Any]]
 TEMPORARY_PATCH_NAME = [0x10, 0x00, 0x00, 0x00]
 TEMPORARY_PATCH_MASTER_BPM = [0x10, 0x00, 0x10, 0x61]
 TEMPORARY_PATCH_EFFECT = [0x10, 0x00, 0x10, 0x00]
+TEMPORARY_PATCH_EFFECT_SIZE = [0x00, 0x00, 0x01, 0x1C]
 TEMPORARY_PATCH_COMMON = [0x10, 0x00, 0x00, 0x00]
 TEMPORARY_PATCH_STOMPBOX = [0x10, 0x00, 0x01, 0x00]
 TEMPORARY_PATCH_LED = [0x10, 0x00, 0x02, 0x00]
@@ -210,6 +211,8 @@ EQ_PARAMETERS = (
     byte("geq250Hz", "GEQ 250Hz", 17), byte("geq500Hz", "GEQ 500Hz", 18),
     byte("geq1kHz", "GEQ 1kHz", 19), byte("geq2kHz", "GEQ 2kHz", 20),
     byte("geq4kHz", "GEQ 4kHz", 21), byte("geq8kHz", "GEQ 8kHz", 22),
+    # The official PatchEq record has a single LEVEL byte at offset 0x0D shared by
+    # PARAMETRIC and GRAPHIC modes; "geqLevel" is a deliberate alias of "level".
     byte("geq16kHz", "GEQ 16kHz", 23), byte("geqLevel", "GEQ LEVEL", 13),
 )
 DELAY_PARAMETERS = (
@@ -278,7 +281,7 @@ SUMMARY_BLOCKS = [
     BlockDefinition("delay2", "DELAY 2", 16, [0x10, 0x00, 0x1E, 0x00], 9, DELAY_PARAMETERS),
     BlockDefinition("delay3", "DELAY 3", 17, [0x10, 0x00, 0x1F, 0x00], 9, DELAY_PARAMETERS),
     BlockDefinition("delay4", "DELAY 4", 18, [0x10, 0x00, 0x20, 0x00], 9, DELAY_PARAMETERS),
-    BlockDefinition("masterDelay", "MASTER DELAY", 19, [0x10, 0x00, 0x21, 0x00], 28, MASTER_DELAY_PARAMETERS),
+    BlockDefinition("masterDelay", "MASTER DELAY", 19, [0x10, 0x00, 0x21, 0x00], 44, MASTER_DELAY_PARAMETERS),
     BlockDefinition("chorus", "CHORUS", 14, [0x10, 0x00, 0x22, 0x00], 24, CHORUS_PARAMETERS),
     BlockDefinition("fx1", "FX 1", 7, [0x10, 0x00, 0x23, 0x00], 2, FX_PARAMETERS),
     BlockDefinition("fx2", "FX 2", 8, [0x10, 0x00, 0x3E, 0x00], 2, FX_PARAMETERS),
@@ -524,7 +527,7 @@ def seven_bit_address(value: int) -> list[int]:
 INITIAL_READS = [
     PatchReadRequest("Patch Name", TEMPORARY_PATCH_NAME, [0x00, 0x00, 0x00, 0x10]),
     PatchReadRequest("Master BPM", TEMPORARY_PATCH_MASTER_BPM, [0x00, 0x00, 0x00, 0x04]),
-    PatchReadRequest("Patch Effect", TEMPORARY_PATCH_EFFECT, [0x00, 0x00, 0x01, 0x1C]),
+    PatchReadRequest("Patch Effect", TEMPORARY_PATCH_EFFECT, TEMPORARY_PATCH_EFFECT_SIZE),
     PatchReadRequest("Patch Common", TEMPORARY_PATCH_COMMON, [0x00, 0x00, 0x00, 0x7E]),
     PatchReadRequest("System Control", SYSTEM_CONTROL, [0x00, 0x00, 0x00, 0x36]),
 ]
@@ -1056,10 +1059,16 @@ def transact_requests(timeout: float, requests: list[PatchReadRequest], *, requi
     try:
         wait_for_quiet_input(state)
 
-        request_delay = float(os.environ.get("GT1000_REQUEST_DELAY", str(DEFAULT_REQUEST_DELAY)))
+        try:
+            request_delay = float(os.environ.get("GT1000_REQUEST_DELAY", str(DEFAULT_REQUEST_DELAY)))
+        except ValueError:
+            request_delay = DEFAULT_REQUEST_DELAY
         idle_timeout = read_idle_timeout(timeout)
         request_total_timeout = read_request_total_timeout(timeout)
-        request_retries = int(os.environ.get("GT1000_REQUEST_RETRIES", "1"))
+        try:
+            request_retries = int(os.environ.get("GT1000_REQUEST_RETRIES", "1"))
+        except ValueError:
+            request_retries = 1
         consecutive_misses = 0
         lenient_miss_limit = lenient_consecutive_miss_limit()
         # Send requests one at a time. Large RQ1 bursts can leave the tested unit
@@ -1150,7 +1159,9 @@ class PatchReadState:
         self.expected: set[str] = set()
         self.received: set[str] = set()
         self.data_sets: dict[str, list[int]] = {}
-        self.last_packet_at: float | None = time.monotonic()
+        # None means no packet seen yet; wait_for_quiet_input then only waits a
+        # short grace period instead of a full quiet window on a silent bus.
+        self.last_packet_at: float | None = None
         self.packet_count = 0
         self.message_count = 0
         self.data_set_count = 0
@@ -1235,12 +1246,29 @@ class PatchReadState:
         )
 
 
-def wait_for_quiet_input(state: PatchReadState, quiet_seconds: float = 0.5, max_seconds: float = 15.0) -> None:
+def wait_for_quiet_input(
+    state: PatchReadState,
+    quiet_seconds: float = 0.5,
+    max_seconds: float = 15.0,
+    initial_grace: float = 0.1,
+) -> None:
+    """Absorb stale in-flight traffic before sending requests.
+
+    If no packet arrives within ``initial_grace`` the bus is treated as quiet
+    immediately; once any packet is seen, a full ``quiet_seconds`` window of
+    silence is required. This keeps the stale-reply protection without paying a
+    fixed half-second on every transaction against a silent bus.
+    """
     deadline = time.monotonic() + max_seconds
+    grace_deadline = time.monotonic() + initial_grace
     while time.monotonic() < deadline:
-        if state.quiet_for() >= quiet_seconds:
+        quiet = state.quiet_for()
+        if quiet == float("inf"):
+            if time.monotonic() >= grace_deadline:
+                return
+        elif quiet >= quiet_seconds:
             return
-        time.sleep(0.05)
+        time.sleep(0.02)
 
 
 def read_idle_timeout(timeout: float) -> float:
@@ -1272,6 +1300,11 @@ class SysExAssembler:
         messages = []
         for packet in packets:
             for byte_value in packet:
+                # MIDI real-time messages (0xF8-0xFF, e.g. clock/active sensing) are
+                # allowed to interleave inside a SysEx transfer and must not be
+                # appended to the message, or the checksum fails and the reply drops.
+                if byte_value >= 0xF8:
+                    continue
                 if byte_value == 0xF0:
                     self.buffer = [byte_value]
                 elif self.buffer:
@@ -1365,7 +1398,7 @@ def build_data_set(address: list[int], data: list[int]) -> list[int]:
 def parse_data_set(message: list[int]) -> tuple[list[int], list[int]] | None:
     if len(message) < 14 or message[0] != 0xF0 or message[-1] != 0xF7:
         return None
-    if message[1] != ROLAND_ID or message[3:7] != MODEL_ID or message[7] != DT1:
+    if message[1] != ROLAND_ID or message[2] != DEVICE_ID or message[3:7] != MODEL_ID or message[7] != DT1:
         return None
     address = message[8:12]
     data = message[12:-2]
@@ -1397,6 +1430,8 @@ def integer_from_nibbles(values: list[int]) -> int | None:
 def nibbles_for(value: int, byte_count: int = 4) -> list[int]:
     if value < 0 or byte_count <= 0:
         raise ValueError("nibble values require a non-negative value and positive byte count")
+    if value >= 1 << (4 * byte_count):
+        raise ValueError(f"value {value} does not fit in {byte_count} nibbles")
     return [(value >> shift) & 0x0F for shift in range((byte_count - 1) * 4, -1, -4)]
 
 
@@ -1439,7 +1474,7 @@ def apply_data_set(snapshot: dict[str, Any], address: list[int], data: list[int]
     elif address == TEMPORARY_PATCH_EFFECT:
         apply_patch_effect(snapshot, data)
     else:
-        definition = next((block for block in list(SUMMARY_BLOCKS) + list(FX_ALGORITHM_BLOCKS) if block.address == address), None)
+        definition = BLOCKS_BY_ADDRESS_KEY.get(address_key(address))
         if definition:
             apply_block_summary(snapshot, definition, data)
         elif is_assign_address(address):
@@ -1546,8 +1581,11 @@ def block_from_definition(
             "rawValue": raw_value,
             "displayValue": display_parameter_value(parameter, raw_value),
         })
+    # Resident-block parameter offsets are absolute within the Patch Effect record,
+    # while rawParameters below enumerate the block's data slice from zero.
+    offset_rebase = definition.offset if isinstance(definition, ResidentBlockDefinition) else 0
     named_offsets = {
-        offset
+        offset - offset_rebase
         for parameter in definition.parameters
         for offset in range(parameter.offset, parameter.offset + parameter.byte_count)
     }
@@ -1644,6 +1682,12 @@ def chain_element_name(raw_value: int) -> str:
 
 def address_key(address: list[int]) -> str:
     return " ".join(f"{byte:02X}" for byte in address)
+
+
+BLOCKS_BY_ADDRESS_KEY: dict[str, BlockDefinition] = {
+    address_key(block.address): block
+    for block in list(SUMMARY_BLOCKS) + list(FX_ALGORITHM_BLOCKS)
+}
 
 
 def hex_bytes(values: list[int]) -> list[str]:

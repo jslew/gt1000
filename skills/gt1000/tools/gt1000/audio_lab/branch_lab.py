@@ -94,7 +94,7 @@ def read_branch_lab_context(divider_id: str, timeout: float) -> tuple[dict[str, 
     divider_address = patch_edit.block_address(divider_id)
     divider_size = live.seven_bit_address(block.size)
     requests = [
-        live.PatchReadRequest("Patch Effect", live.TEMPORARY_PATCH_EFFECT, [0x00, 0x00, 0x01, 0x1C]),
+        live.PatchReadRequest("Patch Effect", live.TEMPORARY_PATCH_EFFECT, live.TEMPORARY_PATCH_EFFECT_SIZE),
         live.PatchReadRequest(divider_id, divider_address, divider_size),
     ]
     raw = live.read_data_sets(timeout=timeout, requests=requests)

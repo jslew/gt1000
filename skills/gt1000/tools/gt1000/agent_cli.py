@@ -1090,23 +1090,21 @@ def doctor_write_verify_check(timeout: float) -> dict[str, Any]:
     if level is None:
         raise CLIError("Patch Effect record did not contain a decodable current patch level")
     plan = patch_edit.build_master_set_plan("level", str(level))
-    result = apply_plan_cli(plan, timeout=max(timeout, 20.0), verify=False, create_restore=False)
-    verified_data = read_current_patch_effect_record(timeout, label="doctor write-check Patch Effect verify")
-    actual_level = live.patch_level_from_data(verified_data)
-    verified = actual_level == level
-    if not verified:
-        raise CLIError(f"doctor write-check verification failed: expected level {level}, got {actual_level}")
+    # Use the same exact read-back verification as every other --verify path so a
+    # write that corrupts neighboring bytes cannot pass the health check.
+    result = apply_plan_cli(plan, timeout=max(timeout, 20.0), verify=True, create_restore=False, exact_verify=True)
+    if not result.get("verified"):
+        raise CLIError(f"doctor write-check verification failed: {json.dumps(result.get('verification'))}")
     return {
         "plan": result.get("plan"),
         "writeCount": result.get("writeCount"),
-        "verified": verified,
+        "verified": True,
         "levelWritten": level,
-        "actualLevel": actual_level,
     }
 
 
 def read_current_patch_effect_record(timeout: float, *, label: str) -> list[int]:
-    request = live.PatchReadRequest("Patch Effect", live.TEMPORARY_PATCH_EFFECT, [0x00, 0x00, 0x01, 0x1C])
+    request = live.PatchReadRequest("Patch Effect", live.TEMPORARY_PATCH_EFFECT, live.TEMPORARY_PATCH_EFFECT_SIZE)
     raw = read_patch_records_with_timeout(
         label,
         max(timeout, 20.0),
@@ -1480,9 +1478,12 @@ def _coerce_inputs_set_value(field: str, raw: str) -> int | str:
     canonical = system_edit.normalize_inputs_field(field)
     if canonical == "inputLevel":
         try:
-            return int(raw)
+            value = int(raw)
         except ValueError as error:
             raise ValueError("input level value must be an integer dB offset -20...+20") from error
+        if not -20 <= value <= 20:
+            raise ValueError("input level value must be an integer dB offset -20...+20")
+        return value
     return raw
 
 
@@ -1507,23 +1508,26 @@ def cmd_system_inputs(args: argparse.Namespace) -> Any:
     if not args.live:
         raise CLIError("system inputs requires --live because input settings are live device state", 64)
     numbers = [args.number] if args.number else list(range(1, 11))
+    size = [0x00, 0x00, 0x00, 0x11]
+    requests = [
+        live.PatchReadRequest(f"Input Setting {number}", system_input_setting_address(number), size)
+        for number in numbers
+    ]
+    # One live session for all requested settings instead of one CoreMIDI
+    # session per input.
+    try:
+        raw = read_patch_records_with_timeout(
+            "system inputs --live",
+            args.timeout,
+            requests,
+            reader=patch_edit.read_data_sets_sequential_session,
+        )
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
     settings = []
-    for number in numbers:
-        address = system_input_setting_address(number)
-        size = [0x00, 0x00, 0x00, 0x11]
-        try:
-            raw = live_call_with_timeout(
-                f"system inputs --live number {number}",
-                patch_record_process_timeout(args.timeout, 1),
-                live.read_system_section,
-                address,
-                size,
-                timeout=args.timeout,
-            )
-        except live.LiveMIDIError as error:
-            raise CLIError(str(error)) from error
-        data = raw.get(live.address_key(address), [])
-        settings.append(decode_system_input_setting(data, number=number, address=address, size=size))
+    for number, request in zip(numbers, requests):
+        data = raw.get(live.address_key(request.address), [])
+        settings.append(decode_system_input_setting(data, number=number, address=request.address, size=size))
     return {
         "id": "systemInputSettings",
         "label": "System Input Settings",
@@ -1564,6 +1568,12 @@ def chain_value_for_block_id(block_id: str) -> int:
     return block.chain_element_value
 
 
+# Single source of truth for which assign-target parameter ids are on/off
+# switches; shared by the encode (assign-cc defaults) and decode (assign views)
+# paths so they cannot drift.
+ASSIGN_ON_OFF_PARAMETER_IDS = frozenset({"sw", "soloSw", "bright", "trigger", "preampSw"})
+
+
 def assign_target_for_block_parameter(block_id: str, parameter_id: str) -> dict[str, Any]:
     resolved = resolve_block_id(block_id)
     parameter_key = normalize_cli_key(parameter_id)
@@ -1579,7 +1589,7 @@ def assign_target_for_block_parameter(block_id: str, parameter_id: str) -> dict[
                     category=target_range["category"],
                     blockId=resolved,
                     parameterId=candidate_id,
-                    isOnOff=candidate_id in {"sw", "soloSw", "bright", "trigger", "preampSw"},
+                    isOnOff=candidate_id in ASSIGN_ON_OFF_PARAMETER_IDS,
                 )
     raise ValueError(f"unknown Assign target for {block_id}.{parameter_id}")
 
@@ -1955,7 +1965,11 @@ def cmd_patch_setlist_audit(args: argparse.Namespace) -> Any:
         performances = []
         for index, slot in enumerate(slots):
             snapshot = read_user_slot_snapshot_lenient(slot, args.timeout, view="performance")
-            performances.append({"slot": slot, "performance": performance_from_snapshot_safe(snapshot)})
+            performances.append({
+                "slot": slot,
+                "performance": performance_from_snapshot_safe(snapshot),
+                "missingRequiredRecords": snapshot.get("missingRequiredRecords", []),
+            })
             delay_between_slot_reads(index, len(slots))
     except ValueError as error:
         raise CLIError(str(error), 64) from error
@@ -4347,6 +4361,18 @@ def setlist_audit_from_performances(slots: list[str], performances: list[dict[st
             ],
         }
         patches.append(patch)
+        missing_required = item.get("missingRequiredRecords") or []
+        if missing_required:
+            patch["missingRequiredRecords"] = [entry["label"] for entry in missing_required]
+            findings.append({
+                "severity": "error",
+                "slot": item["slot"],
+                "category": "read",
+                "message": (
+                    "Required records could not be read for this slot; values shown may be incomplete: "
+                    + ", ".join(entry["label"] for entry in missing_required)
+                ),
+            })
         if patch["partial"]:
             findings.append({
                 "severity": "warning",
@@ -4564,7 +4590,7 @@ def patch_master_level_address(slot: str) -> list[int]:
 def read_user_patch_effect_record(slot: str, timeout: float, *, label: str) -> list[int]:
     normalized = live.normalize_user_slot(slot)
     address = live.remap_temporary_patch_address(live.TEMPORARY_PATCH_EFFECT, live.user_patch_base(normalized))
-    request = live.PatchReadRequest("Patch Effect", address, [0x00, 0x00, 0x01, 0x1C])
+    request = live.PatchReadRequest("Patch Effect", address, live.TEMPORARY_PATCH_EFFECT_SIZE)
     read_timeout = max(timeout, 20.0)
     raw = read_patch_records_with_timeout(
         label,
@@ -4664,19 +4690,30 @@ def read_user_slot_level_snapshot(slot: str, timeout: float) -> dict[str, Any]:
             for request in source_requests
         ]
         raw: dict[str, list[int]] = {}
-        for source_request, remapped_request in zip(source_requests, remapped_requests):
-            read_timeout = max(timeout, 20.0) if source_request.label == "Patch Effect" else timeout
-            try:
-                raw.update(read_patch_records_with_timeout(
-                    f"patch level-audit {source_slot} {source_request.label}",
-                    read_timeout,
-                    [remapped_request],
-                    reader=patch_edit.read_data_sets_sequential_session,
-                    attempts=3 if source_request.label == "Patch Effect" else 1,
-                ))
-            except CLIError:
-                if source_request.label == "Patch Effect":
-                    raise
+        # Read all records in one lenient session; Patch Effect remains required
+        # and gets dedicated retries only if the batch read misses it.
+        try:
+            raw.update(read_patch_records_with_timeout(
+                f"patch level-audit {source_slot}",
+                timeout,
+                remapped_requests,
+                reader=patch_edit.read_data_sets_lenient_session,
+                attempts=1,
+            ))
+        except CLIError:
+            pass
+        patch_effect_request = next(
+            (request for request in remapped_requests if request.label == "Patch Effect"),
+            None,
+        )
+        if patch_effect_request is not None and live.address_key(patch_effect_request.address) not in raw:
+            raw.update(read_patch_records_with_timeout(
+                f"patch level-audit {source_slot} Patch Effect",
+                max(timeout, 20.0),
+                [patch_effect_request],
+                reader=patch_edit.read_data_sets_sequential_session,
+                attempts=3,
+            ))
         return snapshot_from_patch_records(
             source_requests,
             remapped_requests,
@@ -4842,6 +4879,7 @@ def read_mapped_patch_snapshot_lenient(
     optional_requests = [request for request in remapped_requests if request.label not in required_labels]
     read_timeout = min(timeout, 5.0)
     raw: dict[str, list[int]] = {}
+    missing_required: list[dict[str, Any]] = []
     for request in required_requests:
         try:
             raw.update(read_patch_records_with_timeout(
@@ -4851,14 +4889,23 @@ def read_mapped_patch_snapshot_lenient(
                 reader=patch_edit.read_data_sets_sequential_session,
                 attempts=1,
             ))
-        except CLIError:
-            pass
+        except CLIError as error:
+            # Lenient reads must not silently drop required records: record the
+            # failure so callers can surface it instead of presenting a partial
+            # snapshot as complete.
+            missing_required.append({"label": request.label, "error": str(error)})
+            diagnostic_event(
+                "lenient_read.required_record_failed",
+                slot=source_slot,
+                label=request.label,
+                error=str(error),
+            )
     raw.update(read_patch_records_lenient_chunks(
         f"patch {source_slot} --live optional records",
         min(timeout, 2.0),
         optional_requests,
     ))
-    return snapshot_from_patch_records(
+    snapshot = snapshot_from_patch_records(
         requests,
         remapped_requests,
         raw,
@@ -4866,6 +4913,9 @@ def read_mapped_patch_snapshot_lenient(
         source_address=patch_base,
         source_type=source_type,
     )
+    if missing_required:
+        snapshot["missingRequiredRecords"] = missing_required
+    return snapshot
 
 
 def snapshot_from_patch_records(
@@ -5059,8 +5109,13 @@ def read_required_patch_records_with_timeout(
                 missing_requests,
                 **kwargs,
             ))
-        except CLIError:
-            pass
+        except CLIError as error:
+            diagnostic_event(
+                "read_required.attempt_failed",
+                label=label,
+                attempt=attempt + 1,
+                error=str(error),
+            )
         missing_requests = [
             request
             for request in requests
@@ -5415,7 +5470,15 @@ def read_write_slices(writes: list[live.PatchWrite], timeout: float, *, label: s
 
 
 def verify_plan_with_timeout(plan: patch_edit.PatchPlan, *, timeout: float, exact: bool = False) -> dict[str, Any]:
-    writes_to_verify = sampled_verification_writes(plan.writes)
+    # Every write is read back by default. Sampling disabled-Assign read-backs is a
+    # speed opt-in and is reported in the result so a sampled verify is never
+    # mistaken for a full one.
+    writes_to_verify = plan.writes
+    sampled = False
+    if assign_verification_sampling_enabled():
+        sampled_writes = sampled_verification_writes(plan.writes)
+        sampled = len(sampled_writes) < len(plan.writes)
+        writes_to_verify = sampled_writes
     request_by_write = [(write, write.read_request if exact else verification_read_request_for_write(write)) for write in writes_to_verify]
     requests = [request for _, request in request_by_write]
     read_timeout = targeted_read_timeout(timeout, requests)
@@ -5443,26 +5506,54 @@ def verify_plan_with_timeout(plan: patch_edit.PatchPlan, *, timeout: float, exac
             "expectedHex": live.hex_string(write.data),
             "actualHex": live.hex_string(actual_slice),
         })
-    return {"ok": all(check["ok"] for check in checks), "checks": checks}
+    return {
+        "ok": all(check["ok"] for check in checks),
+        "checks": checks,
+        "writeCount": len(plan.writes),
+        "verifiedWriteCount": len(writes_to_verify),
+        "sampledAssignVerification": sampled,
+    }
+
+
+def assign_verification_sampling_enabled() -> bool:
+    return os.environ.get("GT1000_VERIFY_SAMPLE_ASSIGNS") == "1"
+
+
+# Chain elements the device is allowed to reorder at the unreachable tail of the
+# chain after a chain write: BYPASS SUB L/R (31, 32), (RESERVED) (44), and
+# SUB OUT L/R (45, 46). Observed device normalization on the tested GT-1000.
+CHAIN_UTILITY_TAIL_VALUES = frozenset({31, 32, 44, 45, 46})
 
 
 def write_verification_ok(write: live.PatchWrite, actual_slice: list[int]) -> bool:
     if actual_slice == write.data:
         return True
-    if is_chain_write(write) and len(actual_slice) == len(write.data) and set(actual_slice) == set(write.data):
+    if is_chain_write(write) and len(actual_slice) == len(write.data):
         first_difference = next(
             (index for index, (expected, actual) in enumerate(zip(write.data, actual_slice)) if expected != actual),
             len(write.data),
         )
         expected_tail = write.data[first_difference:]
         actual_tail = actual_slice[first_difference:]
-        chain_utility_tail = {31, 32, 44, 45, 46}
-        return bool(expected_tail) and set(expected_tail) == set(actual_tail) and set(expected_tail) <= chain_utility_tail
+        # The differing tail must be an exact permutation (multiset equality, not
+        # set equality) of utility elements only; element counts must match.
+        return (
+            bool(expected_tail)
+            and sorted(expected_tail) == sorted(actual_tail)
+            and set(expected_tail) <= CHAIN_UTILITY_TAIL_VALUES
+        )
     return False
 
 
 def is_chain_write(write: live.PatchWrite) -> bool:
-    return len(write.data) == 49 and write.address[-2:] == [0x10, 0x68]
+    if len(write.data) != 49:
+        return False
+    if write.address == patch_edit.CHAIN_START:
+        return True
+    return any(
+        write.address == patch_edit.remap_clone_address(patch_edit.CHAIN_START, slot)
+        for slot in possible_user_slots_for_address(write.address)
+    )
 
 
 def sampled_verification_writes(writes: list[live.PatchWrite]) -> list[live.PatchWrite]:
@@ -5912,7 +6003,8 @@ def assign_editor_schema() -> dict[str, Any]:
         "assignRange": [1, 16],
         "targetRange": [0, 16383],
         "logicalValueRange": [0, 16383],
-        "activeRange": [0, 16383],
+        "activeRange": [0, 127],
+        "activeRangeNote": "ACT RANGE LO/HI must match the source's incoming value range; MIDI CC sources send 0...127.",
         "midiCcSources": ["cc1...cc31", "cc64...cc95"],
         "sourceAliases": [
             "num1...num5", "cur-num", "bank-down", "bank-up", "ctl1...ctl7",
@@ -6390,7 +6482,7 @@ def decode_assign_target_detail(raw: int | None) -> dict[str, Any]:
                 category=target_range["category"],
                 blockId=target_range["blockId"],
                 parameterId=parameter_id,
-                isOnOff=parameter_id in {"sw", "soloSw", "bright"},
+                isOnOff=parameter_id in ASSIGN_ON_OFF_PARAMETER_IDS,
             )
 
     return assign_target_detail(raw, name=f"TARGET {raw}", category=None, blockId=None, parameterId=None)

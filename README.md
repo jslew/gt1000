@@ -142,6 +142,7 @@ If you prefer not to use a CLI tool, you can copy the `skills/gt1000` directory 
 
 - macOS for the bundled live backend, which uses CoreMIDI through Python `ctypes`.
 - Python 3.9 or newer. The bundled skill is tested against the default macOS Python 3.9 runtime and newer Homebrew Python builds.
+- **USB audio lab only:** `pip install -r skills/gt1000/requirements-audio.txt` (`sounddevice`, `numpy`) into the Python environment you use for `scripts/gt1000-agent`. MIDI-only commands need no extra packages. Agent/CI setup: see [AGENTS.md](AGENTS.md) → **Python Environment**.
 - A GT-1000 or GT-1000CORE connected over USB/MIDI.
 - The normal MIDI endpoint should appear as `GT-1000`. Avoid `GT-1000 DAW CTRL` unless you deliberately want DAW-control behavior.
 

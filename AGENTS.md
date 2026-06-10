@@ -15,6 +15,31 @@
 - The runtime skill at `skills/gt1000/SKILL.md` is a musician-facing interface. Keep CLI development, maintenance, and testing guidance in this `AGENTS.md` file or deeper implementation references, not in the skill, unless the detail directly guides a musician-facing device interaction.
 - Every CLI command should have unit test coverage and an explicit live test verification path. For commands that write, the live verification must use the command's validated/read-back verification flow where practical.
 - **Agents: after adding or changing MIDI/audio CLI behavior, run the relevant live tests before finishing** (do not treat unit tests alone as sufficient when hardware is available). Audio lab: `GT1000_AUDIO_LIVE=1` + `tests/test_live_audio_lab.py`. Broader MIDI: `GT1000_LIVE=1` + `tests/test_live_skill.py`.
+
+## Python Environment
+
+MIDI/SysEx commands need **no extra pip packages** (stdlib + macOS CoreMIDI only). USB **audio lab** and `tests/test_live_audio_lab.py` need **sounddevice** + **numpy** from `skills/gt1000/requirements-audio.txt`.
+
+**Agents: do this before the first audio command or audio live test in a session** — do not wait for a skip or `ModuleNotFoundError`:
+
+```sh
+# Pick one interpreter for the whole session (prefer project .venv when present)
+PY="${GT1000_AUDIO_PYTHON:-.venv/bin/python}"
+command -v "$PY" >/dev/null || PY=python3
+
+# Install if missing (idempotent)
+"$PY" -c "import numpy, sounddevice" 2>/dev/null || \
+  "$PY" -m pip install -r skills/gt1000/requirements-audio.txt
+
+# Run audio live tests with the same interpreter
+GT1000_AUDIO_PYTHON="$PY" GT1000_AUDIO_LIVE=1 PYTHONDONTWRITEBYTECODE=1 \
+  "$PY" -m unittest tests.test_live_audio_lab -q
+```
+
+- **Do not** run audio live tests with bare `python3` if deps were installed into `.venv` — that produces `OK (skipped=…)` and looks like success when nothing ran.
+- A skip mentioning `sounddevice` / `numpy` means **install deps and re-run**, not "done."
+- Prefer `python3 -m venv .venv` + `.venv/bin/pip install -r skills/gt1000/requirements-audio.txt` over system Python. Do not use `pip install --break-system-packages`.
+- Musician-facing setup detail: `skills/gt1000/references/skill-audio-setup.md`.
 - Skill routing: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_skill_routing tests.test_skill_routing_eval -q` (registry coverage + LLM trace rubric). Score a transcript: `scripts/gt1000-routing-eval score-jsonl --jsonl <path> --scenario <id>`. Live agy suite: `scripts/gt1000-routing-eval-run suite` from `gt1000-scratch` (chat JSONL under `~/.gemini/tmp/gt1000-scratch/chats/`; needs agy auth + full-access for `--live` MIDI — see `skills/gt1000/references/skill-routing-eval.md`).
 - Useful checks:
   - `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -q`
@@ -38,7 +63,7 @@
   - `scripts/gt1000-agent --pretty audio reference plan <reference-profile.json> --session <name>`
   - `scripts/gt1000-agent --pretty audio reference run <reference-profile.json> --session <name> --max-candidates 3`
   - `scripts/gt1000-agent --pretty audio match-reference <reference-profile.json> <wet-a.wav> <wet-b.wav> --emphasis mids`
-  - `GT1000_AUDIO_LIVE=1 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_live_audio_lab -q` (requires `pip install -r skills/gt1000/requirements-audio.txt`; optional `GT1000_AUDIO_PYTHON` if not using the same interpreter). **Run this after every audio-lab change** when the GT-1000 is connected.
+  - Audio live tests: see **Python Environment** above (install deps first; set `GT1000_AUDIO_PYTHON` to the interpreter that has them). **Run after every audio-lab change** when the GT-1000 is connected.
   - Divider A/B live test is opt-in (slow): `GT1000_AUDIO_LIVE=1 GT1000_COMPARE_LIVE=1 python3 -m unittest tests.test_live_audio_lab.LiveAudioLabTests.test_compare_branches_on_current_patch -v`
 
 ## Audio Lab (USB record / re-amp)

@@ -97,6 +97,107 @@ class AgentCLITests(unittest.TestCase):
 
         self.assertTrue(agent_cli.write_verification_ok(write, actual))
 
+    def test_chain_verification_rejects_tail_count_changes(self):
+        data = list(agent_cli.patch_edit.CANONICAL_FULL_CHAIN)
+        data[-3:] = [31, 31, 32]
+        write = agent_cli.live.PatchWrite("Chain with repeated tail", [0x20, 0x2D, 0x10, 0x68], data)
+        actual = list(data)
+        actual[-3:] = [31, 32, 32]
+
+        self.assertFalse(agent_cli.write_verification_ok(write, actual))
+
+    def test_chain_verification_rejects_non_utility_tail_permutations(self):
+        write = agent_cli.live.PatchWrite(
+            "Chain",
+            [0x20, 0x2D, 0x10, 0x68],
+            list(agent_cli.patch_edit.CANONICAL_FULL_CHAIN),
+        )
+        actual = list(write.data)
+        actual[0], actual[1] = actual[1], actual[0]
+
+        self.assertFalse(agent_cli.write_verification_ok(write, actual))
+
+    def test_chain_write_detection_requires_chain_address(self):
+        chain_data = list(agent_cli.patch_edit.CANONICAL_FULL_CHAIN)
+        temporary = agent_cli.live.PatchWrite("Chain", agent_cli.patch_edit.CHAIN_START, chain_data)
+        user_slot = agent_cli.live.PatchWrite(
+            "Chain U10-1",
+            agent_cli.patch_edit.remap_clone_address(agent_cli.patch_edit.CHAIN_START, "U10-1"),
+            chain_data,
+        )
+        not_chain = agent_cli.live.PatchWrite("Other record", [0x10, 0x00, 0x12, 0x00], chain_data)
+
+        self.assertTrue(agent_cli.is_chain_write(temporary))
+        self.assertTrue(agent_cli.is_chain_write(user_slot))
+        self.assertFalse(agent_cli.is_chain_write(not_chain))
+
+    def test_verify_plan_verifies_every_write_by_default(self):
+        plan = agent_cli.patch_edit.build_4cm_template_plan()
+
+        def fake_live_call(label, process_timeout, func, *, timeout, requests):
+            return {}
+
+        live_call = MagicMock(side_effect=fake_live_call)
+        original = agent_cli.live_call_with_timeout
+        agent_cli.live_call_with_timeout = live_call
+        try:
+            result = agent_cli.verify_plan_with_timeout(plan, timeout=9)
+        finally:
+            agent_cli.live_call_with_timeout = original
+
+        self.assertEqual(result["verifiedWriteCount"], len(plan.writes))
+        self.assertEqual(len(result["checks"]), len(plan.writes))
+        self.assertFalse(result["sampledAssignVerification"])
+
+    def test_verify_plan_samples_assign_writes_only_when_opted_in(self):
+        plan = agent_cli.patch_edit.build_4cm_template_plan()
+
+        def fake_live_call(label, process_timeout, func, *, timeout, requests):
+            return {}
+
+        live_call = MagicMock(side_effect=fake_live_call)
+        original = agent_cli.live_call_with_timeout
+        agent_cli.live_call_with_timeout = live_call
+        try:
+            with unittest.mock.patch.dict(agent_cli.os.environ, {"GT1000_VERIFY_SAMPLE_ASSIGNS": "1"}, clear=False):
+                result = agent_cli.verify_plan_with_timeout(plan, timeout=9)
+        finally:
+            agent_cli.live_call_with_timeout = original
+
+        self.assertLess(result["verifiedWriteCount"], len(plan.writes))
+        self.assertTrue(result["sampledAssignVerification"])
+
+    def test_doctor_write_verify_check_uses_exact_read_back_verification(self):
+        effect_data = [0] * 0x11C
+        effect_data[0x5F:0x61] = [0x06, 0x04]  # level 100
+
+        with unittest.mock.patch.object(agent_cli, "read_current_patch_effect_record", return_value=effect_data):
+            with unittest.mock.patch.object(
+                agent_cli,
+                "apply_plan_cli",
+                return_value={"plan": "set:master:level", "writeCount": 1, "verified": True},
+            ) as apply_plan:
+                result = agent_cli.doctor_write_verify_check(8.0)
+
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["levelWritten"], 100)
+        kwargs = apply_plan.call_args.kwargs
+        self.assertTrue(kwargs["verify"])
+        self.assertTrue(kwargs["exact_verify"])
+
+    def test_doctor_write_verify_check_fails_when_verification_fails(self):
+        effect_data = [0] * 0x11C
+        effect_data[0x5F:0x61] = [0x06, 0x04]
+
+        with unittest.mock.patch.object(agent_cli, "read_current_patch_effect_record", return_value=effect_data):
+            with unittest.mock.patch.object(
+                agent_cli,
+                "apply_plan_cli",
+                return_value={"plan": "set:master:level", "writeCount": 1, "verified": False, "verification": {"ok": False}},
+            ):
+                with self.assertRaises(agent_cli.CLIError):
+                    agent_cli.doctor_write_verify_check(8.0)
+
     def test_diagnostic_log_option_writes_jsonl_events(self):
         parser = agent_cli.build_parser()
         args = parser.parse_args(["--diagnostic-log", "diag.jsonl", "ports", "--live"])
