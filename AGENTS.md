@@ -68,7 +68,7 @@ GT1000_AUDIO_PYTHON="$PY" GT1000_AUDIO_LIVE=1 PYTHONDONTWRITEBYTECODE=1 \
 
 ## Audio Lab (USB record / re-amp)
 
-- Phase 1 lives under `skills/gt1000/tools/gt1000/audio_lab/` with CLI group `audio`. Roadmap: [docs/audio-lab-roadmap.md](docs/audio-lab-roadmap.md).
+- Phase 1 lives under `skills/gt1000/tools/gt1000/audio_lab/` with CLI group `audio`. Roadmaps: [docs/audio-lab-roadmap.md](docs/audio-lab-roadmap.md), [docs/midi-cli-roadmap.md](docs/midi-cli-roadmap.md) (MIDI/SysEx verification and protocol gaps).
 - **USB audio (macOS):** `pip install -r skills/gt1000/requirements-audio.txt` (`sounddevice` + `numpy`). Capture and playback both use PortAudio/Core Audio (no ffmpeg). Sessions: `~/gt1000-sessions/` or `GT1000_SESSION_DIR`.
 - USB channel map: 1–2 main, 3–4 dry, 5–6 sub. `record-dry` (default `--bus dry`) captures six channels and extracts 3–4; `--bus main` or `--bus both` for 1–2. `audio probe` reports per-channel peaks.
 - Live audio needs full-access environment + Microphone privacy for the host app (Cursor/Terminal).

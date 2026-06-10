@@ -3,7 +3,7 @@
 Implementation plan for USB dry capture, GT-1000 re-amping, DSP comparison, and (later) reference-tone matching. This extends the existing SysEx/patch CLI; it does not replace it.
 
 **Status:** Phases 1-4 complete and live-verified on hardware. Reference-tone chasing runs end-to-end with descriptor-aware scoring, bounded temp-patch search, inactive-block candidate filtering, abort-safe restore, and musician-facing agent guidance; the live reference run test passes repeatedly, including the post-audio restore path.
-**Related:** [musician-cli-backlog.md](musician-cli-backlog.md), [AGENTS.md](../AGENTS.md), [audio-lab-reamp-protocol.md](audio-lab-reamp-protocol.md), [midi-reference/address-map.md](../skills/gt1000/references/midi-reference/address-map.md)
+**Related:** [midi-cli-roadmap.md](midi-cli-roadmap.md), [musician-cli-backlog.md](musician-cli-backlog.md), [AGENTS.md](../AGENTS.md), [audio-lab-reamp-protocol.md](audio-lab-reamp-protocol.md), [midi-reference/address-map.md](../skills/gt1000/references/midi-reference/address-map.md)
 
 ## Vision
 

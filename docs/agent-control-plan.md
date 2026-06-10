@@ -82,7 +82,7 @@ The first three P1 rows are implemented as supported CLI workflows. Keep tighten
 3. Add shared STOMPBOX data read/edit/write plus `.stx` backup/restore, with clear warnings for edits that affect shared data.
 4. Add typed validators for selected system/global writes, starting with the safest high-value settings and preserving read-back verification.
 
-The audio-lab roadmap is separate: Phases 1-3 are complete, and the next audio milestone is Phase 4 reference tone chasing.
+The audio-lab roadmap is separate: Phases 1–4 are complete ([audio-lab-roadmap.md](audio-lab-roadmap.md)). MIDI/SysEx correctness and verification work is tracked in [midi-cli-roadmap.md](midi-cli-roadmap.md) (gap-closure sprint complete as of 2026-06-10, commit `ad23dd0`).
 
 ## Current MIDI Findings To Preserve
 
