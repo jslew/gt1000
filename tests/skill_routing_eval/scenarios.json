@@ -1,0 +1,257 @@
+{
+  "version": 1,
+  "defaults": {
+    "forbidden_before_first_cli": [
+      {"pattern": "grep\\s+.*references/"},
+      {"pattern": "cat\\s+.*references/"},
+      {"pattern": "head\\s+.*references/"},
+      {"pattern": "sed\\s+.*references/"}
+    ],
+    "forbidden_anywhere": [
+      {"pattern": "gt1000-agent.*&&.*gt1000-agent"},
+      {"pattern": "agent_cli\\.py.*&&.*agent_cli\\.py"}
+    ],
+    "allowed_before_first_cli": [
+      {"pattern": "gt1000-profile"},
+      {"pattern": "user-profile-onboarding"},
+      {"pattern": "\\.config/gt1000"}
+    ]
+  },
+  "scenarios": [
+    {
+      "id": "describe_current_patch",
+      "index_intent": "Describe current patch",
+      "user_messages": ["What does my current patch sound like?"],
+      "first_cli": {"match": "patch musician-summary", "require_live": true, "timeout": 15},
+      "forbidden_before_first_cli": [
+        {"pattern": "--pretty patch summary"},
+        {"pattern": "--pretty patch chain"},
+        {"pattern": "--pretty patch overview"}
+      ],
+      "max_gt1000_commands_before_escalate": 2
+    },
+    {
+      "id": "describe_user_slot",
+      "index_intent": "Describe user slot",
+      "user_messages": ["Tell me about patch U01-3"],
+      "first_cli": {"match": "patch slot", "require_live": true, "timeout": 30},
+      "forbidden_before_first_cli": [
+        {"pattern": "--view summary"},
+        {"pattern": "--pretty patch musician-summary --live"}
+      ]
+    },
+    {
+      "id": "what_is_active_reachable_now",
+      "index_intent": "What is active / reachable now",
+      "user_messages": ["Which blocks are actually affecting the sound right now?"],
+      "first_cli": {"match": "patch chain", "require_live": true, "timeout": 15}
+    },
+    {
+      "id": "compare_patches",
+      "index_intent": "Compare patches",
+      "user_messages": ["How is U10-1 different from U10-2?"],
+      "first_cli": {"match": "patch diff", "require_live": true, "timeout": 30}
+    },
+    {
+      "id": "setlist_readiness",
+      "index_intent": "Setlist readiness",
+      "user_messages": ["Check bank U10 for setlist problems"],
+      "first_cli": {"match": "patch setlist-audit", "require_live": true, "timeout": 20}
+    },
+    {
+      "id": "patch_level_across_slots",
+      "index_intent": "Patch level across slots",
+      "user_messages": ["Are my U10 patches at similar levels?"],
+      "first_cli": {"match": "patch level-audit", "require_live": true, "timeout": 20}
+    },
+    {
+      "id": "divider_branch_measurable_balance",
+      "index_intent": "Divider / branch measurable balance",
+      "user_messages": [
+        "Match DIVIDER 1 branches within 1 dB on USB re-amp; do not save unless I ask"
+      ],
+      "first_cli": {"match": "audio branch-context"},
+      "max_gt1000_commands_before_escalate": 6
+    },
+    {
+      "id": "reference_tone_match_tone_chase",
+      "index_intent": "Reference tone match / tone chase",
+      "user_messages": [
+        "Match this reference guitar tone against my dry take; do the audio lab work for me"
+      ],
+      "first_cli": {"match": "audio reference analyze"},
+      "notes": "Agent should locate/confirm reference and dry take, then run plan/render/rank internally; candidate writes must be read-back verified before render."
+    },
+    {
+      "id": "solo_boost_delay_toggle_tuner_etc",
+      "index_intent": "Solo boost, delay toggle, tuner, etc.",
+      "user_messages": ["Set up a solo boost on CTL4"],
+      "first_cli": {"match": "patch intent", "require_live": true, "require_verify": true, "timeout": 20}
+    },
+    {
+      "id": "switches_stage_behavior",
+      "index_intent": "Switches / stage behavior",
+      "user_messages": ["What do my foot switches do on this patch?"],
+      "first_cli": {"match": "patch performance", "require_live": true, "timeout": 15}
+    },
+    {
+      "id": "assign_cc_tuner_encoding",
+      "index_intent": "Assign / CC / tuner encoding",
+      "user_messages": ["How is the tuner mapped on this patch?"],
+      "first_cli": {"match": "patch controls", "require_live": true, "timeout": 15}
+    },
+    {
+      "id": "install_tuner_on_control",
+      "index_intent": "Install tuner on control",
+      "user_messages": ["Put the tuner on a footswitch for me to try"],
+      "first_cli": {"match": "patch tuner-assign", "require_live": true, "require_verify": true, "timeout": 20}
+    },
+    {
+      "id": "select_user_slot_on_unit",
+      "index_intent": "Select user slot on unit",
+      "user_messages": ["Select patch U01-3 on the unit"],
+      "first_cli": {"match": "patch select"}
+    },
+    {
+      "id": "signal_chain_divider_mixer_detail",
+      "index_intent": "Signal chain / divider / mixer detail",
+      "user_messages": ["Show me the full signal chain routing"],
+      "first_cli": {"match": "patch chain", "require_live": true, "timeout": 15}
+    },
+    {
+      "id": "stompbox_shared_slots",
+      "index_intent": "STOMPBOX shared slots",
+      "user_messages": ["Is this patch using shared STOMPBOX slots?"],
+      "first_cli": {"match": "patch stompbox", "require_live": true, "timeout": 15}
+    },
+    {
+      "id": "system_midi_global",
+      "index_intent": "System MIDI / global",
+      "user_messages": ["What are my global MIDI settings?"],
+      "first_cli": {"match": "system midi", "require_live": true, "timeout": 8}
+    },
+    {
+      "id": "connection_timeouts",
+      "index_intent": "Connection / timeouts",
+      "user_messages": ["Live reads are timing out"],
+      "first_cli": {"match": "doctor", "require_live": true, "timeout": 8}
+    },
+    {
+      "id": "metronome_bpm_system",
+      "index_intent": "Metronome BPM (system)",
+      "user_messages": ["What is the system metronome BPM?"],
+      "first_cli": {"match": "system common", "require_live": true, "timeout": 8}
+    },
+    {
+      "id": "manual_mode_switches",
+      "index_intent": "Manual-mode switches",
+      "user_messages": ["What do the manual mode switches do?"],
+      "first_cli": {"match": "system manual", "require_live": true, "timeout": 8}
+    },
+    {
+      "id": "program_change_map",
+      "index_intent": "Program Change map",
+      "user_messages": ["Show PC map for bank 1"],
+      "first_cli": {"match": "system pcmap", "require_live": true, "timeout": 8}
+    },
+    {
+      "id": "input_level_gain_staging_thin_weak_harsh_tone",
+      "index_intent": "Input level, gain staging, thin/weak/harsh tone",
+      "user_messages": ["My drives sound weak — could input level be too low?"],
+      "first_cli": {"match": "system inputs", "require_live": true, "timeout": 8}
+    },
+    {
+      "id": "calibrate_save_global_input_preset_for_a_guitar",
+      "index_intent": "Calibrate / save global input preset for a guitar",
+      "user_messages": ["Help me calibrate input level for my Tele and save it in preset 3"],
+      "first_cli": {"match": "system inputs", "require_live": true, "timeout": 8}
+    },
+    {
+      "id": "input_settings_compare_all_ten_presets",
+      "index_intent": "Input settings (compare all ten presets)",
+      "user_messages": ["Show all ten global input presets"],
+      "first_cli": {"match": "system inputs", "require_live": true, "timeout": 8}
+    },
+    {
+      "id": "wrong_output_into_amp_pa_phones",
+      "index_intent": "Wrong output into amp/PA/phones",
+      "user_messages": ["Tone into my amp sounds wrong — almost clean chirp"],
+      "first_cli": {"match": "system inout", "require_live": true, "timeout": 8}
+    },
+    {
+      "id": "parameter_meaning",
+      "index_intent": "Parameter meaning",
+      "user_messages": ["What is delay1 time set to?"],
+      "first_cli": {"match": "patch block delay1", "require_live": true, "timeout": 15}
+    },
+    {
+      "id": "block_on_off",
+      "index_intent": "Block on/off",
+      "user_messages": ["Turn delay1 on for me to try"],
+      "first_cli": {"match": "patch enable delay1", "require_live": true, "require_verify": true, "timeout": 20}
+    },
+    {
+      "id": "effect_type_change",
+      "index_intent": "Effect type change",
+      "user_messages": ["Change dist1 to T-SCREAM on the temp patch"],
+      "first_cli": {"match": "patch type dist1", "require_live": true, "require_verify": true, "timeout": 20}
+    },
+    {
+      "id": "move_block_in_chain",
+      "index_intent": "Move block in chain",
+      "user_messages": ["Move delay1 before chorus"],
+      "first_cli": {"match": "patch move delay1", "require_live": true, "require_verify": true, "timeout": 20}
+    },
+    {
+      "id": "cleanup_unreachable_blocks",
+      "index_intent": "Cleanup unreachable blocks",
+      "user_messages": ["Clean up unreachable blocks on the temp patch"],
+      "first_cli": {"match": "patch cleanup", "require_live": true, "require_verify": true, "timeout": 20}
+    },
+    {
+      "id": "map_parameter_to_cc",
+      "index_intent": "Map parameter to CC",
+      "user_messages": ["Map delay1 switch to CC 80 momentary"],
+      "first_cli": {"match": "patch assign-cc", "require_live": true, "require_verify": true, "timeout": 20}
+    },
+    {
+      "id": "patch_bpm",
+      "index_intent": "Patch BPM",
+      "user_messages": ["Set patch tempo to 120 BPM"],
+      "first_cli": {"match": "patch set-bpm", "require_live": true, "require_verify": true, "timeout": 20}
+    },
+    {
+      "id": "validated_plan_template_write",
+      "index_intent": "Validated plan / template write",
+      "user_messages": ["Apply the default template to the temp patch"],
+      "first_cli": {"match": "patch plan default"}
+    },
+    {
+      "id": "typed_parameter_write",
+      "index_intent": "Typed parameter write",
+      "user_messages": ["Set delay1 time to 380 on the temp patch"],
+      "first_cli": {"match": "patch set delay1 time", "require_live": true, "require_verify": true, "timeout": 20}
+    },
+    {
+      "id": "usb_audio_first_use",
+      "index_intent": "USB audio first use",
+      "user_messages": ["Run compare-branches for my session"],
+      "first_cli": {"match": "audio ports"},
+      "notes": "Agent should read skill-audio-setup.md before first audio command if deps missing; not expressible as gt1000-agent tail"
+    },
+    {
+      "id": "cli_maintenance_tests",
+      "index_intent": "CLI maintenance / tests",
+      "user_messages": ["How do I run encoding validation?"],
+      "first_cli": {"match": "patch encoding-status"},
+      "notes": "Musician skill should redirect maintainers to skill-developer.md; first_cli is indicative only"
+    },
+    {
+      "id": "consent_harness_continue",
+      "index_intent": "(workflow)",
+      "user_messages": ["yes"],
+      "forbidden_after_harness": [{"pattern": "--user-slot"}],
+      "notes": "Harness 'Please continue' is not persist consent"
+    }
+  ]
+}

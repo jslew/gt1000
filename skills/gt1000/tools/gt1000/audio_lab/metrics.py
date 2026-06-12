@@ -1,0 +1,1352 @@
+"""Audio analysis metrics (stdlib only)."""
+
+from __future__ import annotations
+
+import math
+from pathlib import Path
+from typing import Any
+
+from .wav_io import read_wav
+
+SIGNAL_RMS_FLOOR_DBFS = -96.0
+DEFAULT_REFERENCE_BANDS: tuple[tuple[float, float], ...] = (
+    (80.0, 160.0),
+    (160.0, 320.0),
+    (320.0, 640.0),
+    (640.0, 1250.0),
+    (1250.0, 2500.0),
+    (2500.0, 5000.0),
+    (5000.0, 8000.0),
+)
+BAND_EMPHASIS_PRESETS: dict[str, dict[tuple[float, float], float]] = {
+    "balanced": {},
+    "mids": {
+        (640.0, 1250.0): 2.0,
+        (1250.0, 2500.0): 2.5,
+    },
+    "low": {
+        (80.0, 160.0): 2.0,
+        (160.0, 320.0): 2.0,
+        (320.0, 640.0): 1.5,
+    },
+    "high": {
+        (2500.0, 5000.0): 2.0,
+        (5000.0, 8000.0): 2.5,
+    },
+}
+BAND_EMPHASIS_CHOICES = tuple(BAND_EMPHASIS_PRESETS)
+SPECTRAL_FLOOR = 1.0e-12
+SPACE_FRAME_SECONDS = 0.05
+SPACE_HOP_SECONDS = 0.025
+HIGH_END_WINDOW_FRAMES = 8192
+HIGH_END_WINDOW_COUNT = 9
+LOW_BODY_WINDOW_FRAMES = 8192
+LOW_BODY_WINDOW_COUNT = 9
+LEAD_MID_FOCUS_WINDOW_FRAMES = 8192
+LEAD_MID_FOCUS_WINDOW_COUNT = 9
+ENVELOPE_FRAME_SECONDS = 0.025
+ENVELOPE_HOP_SECONDS = 0.0125
+ENVELOPE_ACTIVE_RANGE_DB = 24.0
+ENVELOPE_ATTACK_SECONDS = 0.15
+
+
+def band_emphasis_multipliers(emphasis: str) -> dict[tuple[float, float], float]:
+    preset = BAND_EMPHASIS_PRESETS.get(emphasis)
+    if preset is None:
+        raise ValueError(f"unknown band emphasis {emphasis!r}; expected one of {', '.join(BAND_EMPHASIS_CHOICES)}")
+    return dict(preset)
+
+
+def score_weights_for_emphasis(emphasis: str) -> dict[str, float]:
+    """Return reference_match_score keyword weights for a named band-emphasis preset."""
+    weights = {
+        "band_weight": 1.0,
+        "rms_weight": 0.05,
+        "space_weight": 0.15,
+        "high_end_weight": 0.25,
+        "low_body_weight": 0.25,
+        "envelope_weight": 0.2,
+        "lead_mid_weight": 0.25,
+        "band_multipliers": band_emphasis_multipliers(emphasis),
+    }
+    if emphasis == "mids":
+        weights["lead_mid_weight"] = 0.45
+    elif emphasis == "low":
+        weights["low_body_weight"] = 0.45
+    elif emphasis == "high":
+        weights["high_end_weight"] = 0.45
+    return weights
+
+
+def _rms_dbfs(samples: list[float]) -> float | None:
+    if not samples:
+        return None
+    mean_square = sum(sample * sample for sample in samples) / len(samples)
+    if mean_square <= 0.0:
+        return None
+    return 20.0 * math.log10(math.sqrt(mean_square))
+
+
+def _peak_dbfs(samples: list[float]) -> float | None:
+    if not samples:
+        return None
+    peak = max(abs(sample) for sample in samples)
+    if peak <= 0.0:
+        return None
+    return 20.0 * math.log10(peak)
+
+
+def _median(values: list[float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) * 0.5
+
+
+def _percentile(values: list[float], percentile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = int(round((max(0.0, min(100.0, percentile)) / 100.0) * (len(ordered) - 1)))
+    return ordered[index]
+
+
+def _ratio_db(numerator: float, denominator: float) -> float | None:
+    if numerator <= 0.0 or denominator <= 0.0:
+        return None
+    return 10.0 * math.log10(numerator / denominator)
+
+
+def _mono_samples(per_channel: list[list[float]], channels: int) -> list[float]:
+    if channels == 1:
+        return list(per_channel[0])
+    if channels >= 2:
+        return [(l_sample + r_sample) * 0.5 for l_sample, r_sample in zip(per_channel[0], per_channel[1])]
+    return []
+
+
+def _window_samples(samples: list[float], *, max_frames: int = 8192) -> list[float]:
+    if not samples:
+        return []
+    if len(samples) <= max_frames:
+        selected = list(samples)
+    else:
+        start = max(0, (len(samples) - max_frames) // 2)
+        selected = samples[start : start + max_frames]
+    count = len(selected)
+    if count < 2:
+        return selected
+    return [
+        sample * (0.5 - 0.5 * math.cos((2.0 * math.pi * index) / (count - 1)))
+        for index, sample in enumerate(selected)
+    ]
+
+
+def _single_frequency_energy(samples: list[float], sample_rate: int, frequency: float) -> float:
+    if not samples or frequency <= 0.0:
+        return 0.0
+    angular = 2.0 * math.pi * frequency / float(sample_rate)
+    real = 0.0
+    imag = 0.0
+    for index, sample in enumerate(samples):
+        phase = angular * index
+        real += sample * math.cos(phase)
+        imag -= sample * math.sin(phase)
+    scale = max(1, len(samples))
+    return ((real * real) + (imag * imag)) / float(scale * scale)
+
+
+def _band_energy(samples: list[float], sample_rate: int, low_hz: float, high_hz: float) -> float:
+    nyquist = sample_rate / 2.0
+    low = max(1.0, min(low_hz, nyquist - 1.0))
+    high = max(low + 1.0, min(high_hz, nyquist - 1.0))
+    probe_count = 7
+    ratio = high / low
+    probes = [low * (ratio ** (index / (probe_count - 1))) for index in range(probe_count)]
+    return sum(_single_frequency_energy(samples, sample_rate, frequency) for frequency in probes) / len(probes)
+
+
+def _stereo_metrics(left: list[float], right: list[float]) -> dict[str, Any]:
+    mono = [(l_sample + r_sample) * 0.5 for l_sample, r_sample in zip(left, right)]
+    left_rms = _rms_dbfs(left)
+    right_rms = _rms_dbfs(right)
+    mono_rms = _rms_dbfs(mono)
+    return {
+        "peakDbfs": _peak_dbfs(mono),
+        "rmsDbfs": mono_rms,
+        "leftRmsDbfs": left_rms,
+        "rightRmsDbfs": right_rms,
+        "stereoDeltaDb": None if left_rms is None or right_rms is None else left_rms - right_rms,
+        "frameCount": len(left),
+        "note": "rmsDbfs is broadband RMS in dBFS; not broadcast LUFS.",
+    }
+
+
+def _stereo_correlation(left: list[float], right: list[float]) -> float | None:
+    if not left or not right:
+        return None
+    left_mean = sum(left) / len(left)
+    right_mean = sum(right) / len(right)
+    numerator = sum((l_sample - left_mean) * (r_sample - right_mean) for l_sample, r_sample in zip(left, right))
+    left_power = math.sqrt(sum((sample - left_mean) * (sample - left_mean) for sample in left))
+    right_power = math.sqrt(sum((sample - right_mean) * (sample - right_mean) for sample in right))
+    if left_power <= 0.0 or right_power <= 0.0:
+        return None
+    return numerator / (left_power * right_power)
+
+
+def _side_to_mid_db(left: list[float], right: list[float]) -> float | None:
+    if not left or not right:
+        return None
+    mid = [(l_sample + r_sample) * 0.5 for l_sample, r_sample in zip(left, right)]
+    side = [(l_sample - r_sample) * 0.5 for l_sample, r_sample in zip(left, right)]
+    mid_energy = sum(sample * sample for sample in mid) / len(mid)
+    side_energy = sum(sample * sample for sample in side) / len(side)
+    if mid_energy <= 0.0:
+        return None
+    if side_energy <= 0.0:
+        return SIGNAL_RMS_FLOOR_DBFS
+    return _ratio_db(side_energy, mid_energy)
+
+
+def _frame_space_metrics(
+    left: list[float],
+    right: list[float],
+    *,
+    sample_rate: int,
+) -> list[dict[str, Any]]:
+    frame_count = int(round(SPACE_FRAME_SECONDS * sample_rate))
+    hop_count = int(round(SPACE_HOP_SECONDS * sample_rate))
+    if frame_count <= 0 or hop_count <= 0:
+        return []
+    mono = [(l_sample + r_sample) * 0.5 for l_sample, r_sample in zip(left, right)]
+    frames: list[dict[str, Any]] = []
+    for start in range(0, len(mono) - frame_count + 1, hop_count):
+        end = start + frame_count
+        mono_frame = mono[start:end]
+        left_frame = left[start:end]
+        right_frame = right[start:end]
+        frames.append(
+            {
+                "startSeconds": start / float(sample_rate),
+                "rmsDbfs": _rms_dbfs(mono_frame),
+                "stereoCorrelation": _stereo_correlation(left_frame, right_frame),
+                "sideToMidDb": _side_to_mid_db(left_frame, right_frame),
+                "left": left_frame,
+                "right": right_frame,
+                "mono": mono_frame,
+            }
+        )
+    return frames
+
+
+def _median_field(frames: list[dict[str, Any]], field: str) -> float | None:
+    return _median([float(frame[field]) for frame in frames if frame.get(field) is not None])
+
+
+def _frames_between_rms(
+    frames: list[dict[str, Any]],
+    *,
+    low_dbfs: float,
+    high_dbfs: float,
+) -> list[dict[str, Any]]:
+    return [
+        frame
+        for frame in frames
+        if frame.get("rmsDbfs") is not None and low_dbfs <= float(frame["rmsDbfs"]) <= high_dbfs
+    ]
+
+
+def _concat_mono_frames(frames: list[dict[str, Any]], *, max_frames: int = 160) -> list[float]:
+    samples: list[float] = []
+    for frame in frames[:max_frames]:
+        samples.extend(frame["mono"])
+    return samples
+
+
+def _brightness_db(samples: list[float], sample_rate: int) -> float | None:
+    windowed = _window_samples(samples, max_frames=8192)
+    if not windowed:
+        return None
+    body = _band_energy(windowed, sample_rate, 160.0, 2500.0)
+    high = _band_energy(windowed, sample_rate, 2500.0, 8000.0)
+    return _ratio_db(high, body)
+
+
+def _analysis_windows(samples: list[float], *, window_frames: int, count: int) -> list[list[float]]:
+    if not samples:
+        return []
+    if len(samples) <= window_frames:
+        return [_window_samples(samples, max_frames=window_frames)]
+    usable = len(samples) - window_frames
+    if count <= 1:
+        starts = [usable // 2]
+    else:
+        starts = [int(round((usable * index) / float(count - 1))) for index in range(count)]
+    windows: list[list[float]] = []
+    for start in starts:
+        segment = samples[start : start + window_frames]
+        windows.append(_window_samples(segment, max_frames=window_frames))
+    return windows
+
+
+def _energy_db(energy: float) -> float:
+    return 10.0 * math.log10(max(SPECTRAL_FLOOR, energy))
+
+
+def _window_high_end_metrics(window: list[float], sample_rate: int) -> dict[str, Any]:
+    low_mid = max(SPECTRAL_FLOOR, _band_energy(window, sample_rate, 160.0, 1250.0))
+    lead_mid = max(SPECTRAL_FLOOR, _band_energy(window, sample_rate, 1250.0, 2500.0))
+    presence = max(SPECTRAL_FLOOR, _band_energy(window, sample_rate, 2500.0, 5000.0))
+    fizz = max(SPECTRAL_FLOOR, _band_energy(window, sample_rate, 5000.0, 8000.0))
+    air = max(SPECTRAL_FLOOR, _band_energy(window, sample_rate, 8000.0, 12000.0))
+    return {
+        "rmsDbfs": _rms_dbfs(window),
+        "lowMidEnergyDb": _energy_db(low_mid),
+        "leadMidEnergyDb": _energy_db(lead_mid),
+        "presenceEnergyDb": _energy_db(presence),
+        "fizzEnergyDb": _energy_db(fizz),
+        "airEnergyDb": _energy_db(air),
+        "presenceToLeadMidDb": _ratio_db(presence, lead_mid),
+        "fizzToPresenceDb": _ratio_db(fizz, presence),
+        "fizzToLeadMidDb": _ratio_db(fizz, lead_mid),
+        "airToLeadMidDb": _ratio_db(air, lead_mid),
+        "airToPresenceDb": _ratio_db(air, presence),
+        "lowMidToLeadMidDb": _ratio_db(low_mid, lead_mid),
+    }
+
+
+def _field_values(rows: list[dict[str, Any]], field: str) -> list[float]:
+    return [float(row[field]) for row in rows if row.get(field) is not None]
+
+
+def _active_windows(samples: list[float], *, window_frames: int, count: int) -> tuple[list[list[float]], int, float | None]:
+    windows = _analysis_windows(samples, window_frames=window_frames, count=count)
+    if not windows:
+        return [], 0, None
+    rows = [(rms, window) for window in windows if (rms := _rms_dbfs(window)) is not None]
+    if not rows:
+        return windows, len(windows), None
+    floor = _percentile([rms for rms, _window in rows], 35.0)
+    active = [window for rms, window in rows if floor is None or rms >= floor]
+    return active or [window for _rms, window in rows], len(windows), floor
+
+
+def _concat_windows(windows: list[list[float]], *, max_frames: int) -> list[float]:
+    samples: list[float] = []
+    for window in windows:
+        samples.extend(window)
+    return _window_samples(samples, max_frames=max_frames)
+
+
+def low_body_profile(
+    per_channel: list[list[float]],
+    channels: int,
+    *,
+    sample_rate: int,
+) -> dict[str, Any]:
+    mono = _mono_samples(per_channel, channels)
+    active_windows, window_count, active_floor = _active_windows(
+        mono,
+        window_frames=LOW_BODY_WINDOW_FRAMES,
+        count=LOW_BODY_WINDOW_COUNT,
+    )
+    if not active_windows:
+        return {"available": False, "reason": "no active analysis windows"}
+    active = _concat_windows(active_windows, max_frames=32768)
+    if not active:
+        return {"available": False, "reason": "no active samples"}
+    sub = max(SPECTRAL_FLOOR, _band_energy(active, sample_rate, 80.0, 160.0))
+    body = max(SPECTRAL_FLOOR, _band_energy(active, sample_rate, 160.0, 320.0))
+    low_mid = max(SPECTRAL_FLOOR, _band_energy(active, sample_rate, 320.0, 640.0))
+    mid = max(SPECTRAL_FLOOR, _band_energy(active, sample_rate, 640.0, 1250.0))
+    lead_mid = max(SPECTRAL_FLOOR, _band_energy(active, sample_rate, 1250.0, 2500.0))
+    body_low_mid = max(SPECTRAL_FLOOR, body + low_mid)
+    mid_lead = max(SPECTRAL_FLOOR, mid + lead_mid)
+    return {
+        "available": True,
+        "windowFrames": LOW_BODY_WINDOW_FRAMES,
+        "windowCount": window_count,
+        "activeWindowCount": len(active_windows),
+        "activeWindowFloorDbfs": active_floor,
+        "subEnergyDb": _energy_db(sub),
+        "bodyEnergyDb": _energy_db(body),
+        "lowMidEnergyDb": _energy_db(low_mid),
+        "bodyLowMidEnergyDb": _energy_db(body_low_mid),
+        "midEnergyDb": _energy_db(mid),
+        "leadMidEnergyDb": _energy_db(lead_mid),
+        "midLeadEnergyDb": _energy_db(mid_lead),
+        "subToBodyDb": _ratio_db(sub, body),
+        "subToBodyLowMidDb": _ratio_db(sub, body_low_mid),
+        "bodyToLowMidDb": _ratio_db(body, low_mid),
+        "bodyToLeadMidDb": _ratio_db(body, lead_mid),
+        "lowMidToLeadMidDb": _ratio_db(low_mid, lead_mid),
+        "bodyLowMidToMidLeadDb": _ratio_db(body_low_mid, mid_lead),
+        "subToMidLeadDb": _ratio_db(sub, mid_lead),
+        "bodyToMidLeadDb": _ratio_db(body, mid_lead),
+        "note": "Low-end body descriptors from active windows; body is 160-320 Hz, flub risk is excess 80-160 Hz relative to body/mids.",
+    }
+
+
+def _window_lead_mid_metrics(window: list[float], sample_rate: int) -> dict[str, Any]:
+    low_mid = max(SPECTRAL_FLOOR, _band_energy(window, sample_rate, 320.0, 640.0))
+    upper_low_mid = max(SPECTRAL_FLOOR, _band_energy(window, sample_rate, 640.0, 1250.0))
+    lead_mid = max(SPECTRAL_FLOOR, _band_energy(window, sample_rate, 1250.0, 2500.0))
+    presence = max(SPECTRAL_FLOOR, _band_energy(window, sample_rate, 2500.0, 5000.0))
+    fizz = max(SPECTRAL_FLOOR, _band_energy(window, sample_rate, 5000.0, 8000.0))
+    low_mid_region = max(SPECTRAL_FLOOR, (low_mid + upper_low_mid) * 0.5)
+    surrounding = max(SPECTRAL_FLOOR, (low_mid + upper_low_mid + presence + fizz) * 0.25)
+    return {
+        "rmsDbfs": _rms_dbfs(window),
+        "leadMidEnergyDb": _energy_db(lead_mid),
+        "lowMidEnergyDb": _energy_db(low_mid),
+        "upperLowMidEnergyDb": _energy_db(upper_low_mid),
+        "presenceEnergyDb": _energy_db(presence),
+        "fizzEnergyDb": _energy_db(fizz),
+        "leadMidToLowMidDb": _ratio_db(lead_mid, low_mid_region),
+        "leadMidToUpperLowMidDb": _ratio_db(lead_mid, upper_low_mid),
+        "leadMidToPresenceDb": _ratio_db(lead_mid, presence),
+        "leadMidToFizzDb": _ratio_db(lead_mid, fizz),
+        "leadFocusIndexDb": _ratio_db(lead_mid, surrounding),
+    }
+
+
+def lead_mid_profile(
+    per_channel: list[list[float]],
+    channels: int,
+    *,
+    sample_rate: int,
+) -> dict[str, Any]:
+    mono = _mono_samples(per_channel, channels)
+    windows = _analysis_windows(mono, window_frames=LEAD_MID_FOCUS_WINDOW_FRAMES, count=LEAD_MID_FOCUS_WINDOW_COUNT)
+    if not windows:
+        return {"available": False, "reason": "no analysis windows"}
+    all_rows = [_window_lead_mid_metrics(window, sample_rate) for window in windows if window]
+    rms_values = _field_values(all_rows, "rmsDbfs")
+    active_floor = _percentile(rms_values, 35.0)
+    rows = [
+        row
+        for row in all_rows
+        if active_floor is None or row.get("rmsDbfs") is not None and float(row["rmsDbfs"]) >= active_floor
+    ]
+    if not rows:
+        rows = all_rows
+    fields = (
+        "leadMidToLowMidDb",
+        "leadMidToUpperLowMidDb",
+        "leadMidToPresenceDb",
+        "leadMidToFizzDb",
+        "leadFocusIndexDb",
+    )
+    summary: dict[str, Any] = {
+        "available": True,
+        "windowFrames": LEAD_MID_FOCUS_WINDOW_FRAMES,
+        "windowCount": len(all_rows),
+        "activeWindowCount": len(rows),
+        "activeWindowFloorDbfs": active_floor,
+        "note": "Lead-mid descriptors from active windows; lead-mid band is 1250-2500 Hz, compared to neighboring low mids, presence, and fizz.",
+    }
+    for energy_field in ("leadMidEnergyDb", "lowMidEnergyDb", "upperLowMidEnergyDb", "presenceEnergyDb", "fizzEnergyDb"):
+        values = _field_values(rows, energy_field)
+        summary[energy_field] = _median(values)
+    for field in fields:
+        values = _field_values(rows, field)
+        summary[field] = _median(values)
+        summary[f"{field}P10"] = _percentile(values, 10.0)
+        summary[f"{field}P90"] = _percentile(values, 90.0)
+    return {
+        **summary,
+    }
+
+
+def _frame_envelope_metrics(
+    samples: list[float],
+    *,
+    sample_rate: int,
+) -> list[dict[str, Any]]:
+    frame_count = int(round(ENVELOPE_FRAME_SECONDS * sample_rate))
+    hop_count = int(round(ENVELOPE_HOP_SECONDS * sample_rate))
+    if frame_count <= 0 or hop_count <= 0:
+        return []
+    frames: list[dict[str, Any]] = []
+    for start in range(0, len(samples) - frame_count + 1, hop_count):
+        frame = samples[start : start + frame_count]
+        rms = _rms_dbfs(frame)
+        peak = _peak_dbfs(frame)
+        frames.append(
+            {
+                "startSeconds": start / float(sample_rate),
+                "rmsDbfs": rms,
+                "peakDbfs": peak,
+                "crestDb": None if rms is None or peak is None else peak - rms,
+            }
+        )
+    return frames
+
+
+def _linear_slope(values: list[float], *, step_seconds: float) -> float | None:
+    if len(values) < 2:
+        return None
+    count = len(values)
+    x_mean = ((count - 1) * step_seconds) * 0.5
+    y_mean = sum(values) / count
+    denominator = sum(((index * step_seconds) - x_mean) ** 2 for index in range(count))
+    if denominator <= 0.0:
+        return None
+    numerator = sum(((index * step_seconds) - x_mean) * (value - y_mean) for index, value in enumerate(values))
+    return numerator / denominator
+
+
+def envelope_profile(
+    per_channel: list[list[float]],
+    channels: int,
+    *,
+    sample_rate: int,
+) -> dict[str, Any]:
+    mono = _mono_samples(per_channel, channels)
+    frames = _frame_envelope_metrics(mono, sample_rate=sample_rate)
+    rms_values = [float(frame["rmsDbfs"]) for frame in frames if frame.get("rmsDbfs") is not None]
+    if not rms_values:
+        return {"available": False, "reason": "no measurable envelope frames"}
+    peak_rms = _percentile(rms_values, 95.0)
+    active_floor = None if peak_rms is None else peak_rms - ENVELOPE_ACTIVE_RANGE_DB
+    active_frames = [
+        frame
+        for frame in frames
+        if active_floor is not None and frame.get("rmsDbfs") is not None and float(frame["rmsDbfs"]) >= active_floor
+    ]
+    if len(active_frames) < 8:
+        return {"available": False, "reason": "not enough active envelope frames"}
+    active_rms = [float(frame["rmsDbfs"]) for frame in active_frames if frame.get("rmsDbfs") is not None]
+    active_crest = [float(frame["crestDb"]) for frame in active_frames if frame.get("crestDb") is not None]
+    attack_count = max(3, int(round(ENVELOPE_ATTACK_SECONDS / ENVELOPE_HOP_SECONDS)))
+    attack_count = min(attack_count, max(3, int(math.ceil(len(active_frames) * 0.15))))
+    attack_frames = active_frames[:attack_count]
+    sustain_frames = active_frames[attack_count:]
+    if len(sustain_frames) < 4:
+        sustain_frames = active_frames[max(1, len(active_frames) // 3):]
+    sustain_rms = [float(frame["rmsDbfs"]) for frame in sustain_frames if frame.get("rmsDbfs") is not None]
+    attack_rms = [float(frame["rmsDbfs"]) for frame in attack_frames if frame.get("rmsDbfs") is not None]
+    attack_crest = [float(frame["crestDb"]) for frame in attack_frames if frame.get("crestDb") is not None]
+    sustain_p10 = _percentile(sustain_rms, 10.0)
+    sustain_p90 = _percentile(sustain_rms, 90.0)
+    early_sustain = sustain_rms[: max(1, len(sustain_rms) // 3)]
+    late_sustain = sustain_rms[-max(1, len(sustain_rms) // 3):]
+    early_median = _median(early_sustain)
+    late_median = _median(late_sustain)
+    sustain_median = _median(sustain_rms)
+    peak_to_sustain = None
+    attack_peak = _percentile([float(frame["peakDbfs"]) for frame in attack_frames if frame.get("peakDbfs") is not None], 90.0)
+    if attack_peak is not None and sustain_median is not None:
+        peak_to_sustain = attack_peak - sustain_median
+    attack_to_sustain = None
+    attack_rms_p90 = _percentile(attack_rms, 90.0)
+    if attack_rms_p90 is not None and sustain_median is not None:
+        attack_to_sustain = attack_rms_p90 - sustain_median
+    sustain_drop = None if early_median is None or late_median is None else early_median - late_median
+    within_12 = None
+    if peak_rms is not None and sustain_rms:
+        within_12 = sum(1 for value in sustain_rms if value >= peak_rms - 12.0) / len(sustain_rms)
+    return {
+        "available": True,
+        "frameSeconds": ENVELOPE_FRAME_SECONDS,
+        "hopSeconds": ENVELOPE_HOP_SECONDS,
+        "frameCount": len(frames),
+        "activeFrameCount": len(active_frames),
+        "attackFrameCount": len(attack_frames),
+        "sustainFrameCount": len(sustain_frames),
+        "peakRmsDbfs": peak_rms,
+        "activeFrameFloorDbfs": active_floor,
+        "activeDurationSeconds": len(active_frames) * ENVELOPE_HOP_SECONDS,
+        "activeRmsMedianDbfs": _median(active_rms),
+        "activeCrestMedianDb": _median(active_crest),
+        "attackToSustainDb": attack_to_sustain,
+        "peakToSustainDb": peak_to_sustain,
+        "attackCrestP90Db": _percentile(attack_crest, 90.0),
+        "sustainDropDb": sustain_drop,
+        "sustainSlopeDbPerSecond": _linear_slope(sustain_rms, step_seconds=ENVELOPE_HOP_SECONDS),
+        "sustainRangeDb": None if sustain_p10 is None or sustain_p90 is None else sustain_p90 - sustain_p10,
+        "sustainFractionWithin12Db": within_12,
+        "note": "Frame-level attack/sustain descriptors; lower attack/crest/drop and higher within-12dB fraction indicate smoother sustain.",
+    }
+
+
+def high_end_profile(
+    per_channel: list[list[float]],
+    channels: int,
+    *,
+    sample_rate: int,
+) -> dict[str, Any]:
+    mono = _mono_samples(per_channel, channels)
+    windows = _analysis_windows(
+        mono,
+        window_frames=HIGH_END_WINDOW_FRAMES,
+        count=HIGH_END_WINDOW_COUNT,
+    )
+    if not windows:
+        return {"available": False, "reason": "no audio samples"}
+    all_rows = [_window_high_end_metrics(window, sample_rate) for window in windows if window]
+    if not all_rows:
+        return {"available": False, "reason": "no analysis windows"}
+    rms_values = _field_values(all_rows, "rmsDbfs")
+    active_floor = _percentile(rms_values, 35.0)
+    rows = [
+        row
+        for row in all_rows
+        if active_floor is None or row.get("rmsDbfs") is not None and float(row["rmsDbfs"]) >= active_floor
+    ]
+    if not rows:
+        rows = all_rows
+    fields = (
+        "presenceToLeadMidDb",
+        "fizzToPresenceDb",
+        "fizzToLeadMidDb",
+        "airToLeadMidDb",
+        "airToPresenceDb",
+        "lowMidToLeadMidDb",
+    )
+    summary: dict[str, Any] = {
+        "available": True,
+        "windowFrames": HIGH_END_WINDOW_FRAMES,
+        "windowCount": len(all_rows),
+        "activeWindowCount": len(rows),
+        "activeWindowFloorDbfs": active_floor,
+        "note": "High-end rolloff/fizz descriptors sampled across active windows; more-negative fizz ratios mean less high-end hash.",
+    }
+    for field in fields:
+        values = _field_values(rows, field)
+        summary[field] = _median(values)
+        summary[f"{field}P90"] = _percentile(values, 90.0)
+    return summary
+
+
+def _repeat_hint(frames: list[dict[str, Any]]) -> dict[str, Any]:
+    envelope_db = [
+        float(frame["rmsDbfs"])
+        for frame in frames
+        if frame.get("rmsDbfs") is not None
+    ]
+    if len(envelope_db) < 16:
+        return {"tailEnvelopeModulationDb": None, "repeatPeakLagMs": None, "repeatPeakStrength": None}
+    modulation = None
+    p10 = _percentile(envelope_db, 10.0)
+    p90 = _percentile(envelope_db, 90.0)
+    if p10 is not None and p90 is not None:
+        modulation = p90 - p10
+    count = len(envelope_db)
+    x_mean = (count - 1) * 0.5
+    y_mean = sum(envelope_db) / count
+    denominator = sum((index - x_mean) * (index - x_mean) for index in range(count))
+    slope = 0.0 if denominator <= 0.0 else sum((index - x_mean) * (value - y_mean) for index, value in enumerate(envelope_db)) / denominator
+    intercept = y_mean - slope * x_mean
+    centered_envelope = [value - (intercept + slope * index) for index, value in enumerate(envelope_db)]
+    centered = [
+        centered_envelope[index + 1] - centered_envelope[index]
+        for index in range(len(centered_envelope) - 1)
+    ]
+    energy = sum(value * value for value in centered)
+    if energy <= 0.0:
+        return {"tailEnvelopeModulationDb": modulation, "repeatPeakLagMs": None, "repeatPeakStrength": None}
+    min_lag = max(1, int(round(0.08 / SPACE_HOP_SECONDS)))
+    max_lag = min(len(centered) - 1, int(round(0.9 / SPACE_HOP_SECONDS)))
+    best_lag = None
+    best_strength = None
+    for lag in range(min_lag, max_lag + 1):
+        correlation = sum(centered[index] * centered[index + lag] for index in range(len(centered) - lag))
+        strength = correlation / energy
+        if best_strength is None or strength > best_strength:
+            best_strength = strength
+            best_lag = lag
+    return {
+        "tailEnvelopeModulationDb": modulation,
+        "repeatPeakLagMs": None if best_lag is None else best_lag * SPACE_HOP_SECONDS * 1000.0,
+        "repeatPeakStrength": best_strength,
+    }
+
+
+def space_profile(
+    per_channel: list[list[float]],
+    channels: int,
+    *,
+    sample_rate: int,
+) -> dict[str, Any]:
+    if channels == 1:
+        left = per_channel[0]
+        right = per_channel[0]
+    elif channels >= 2:
+        left = per_channel[0]
+        right = per_channel[1]
+    else:
+        return {"available": False, "reason": "no audio channels"}
+    frames = _frame_space_metrics(left, right, sample_rate=sample_rate)
+    rms_values = [float(frame["rmsDbfs"]) for frame in frames if frame.get("rmsDbfs") is not None]
+    if not rms_values:
+        return {"available": False, "reason": "no measurable audio frames"}
+    tail_low = _percentile(rms_values, 10.0)
+    tail_high = _percentile(rms_values, 35.0)
+    active_low = _percentile(rms_values, 60.0)
+    active_high = _percentile(rms_values, 95.0)
+    tail_frames = [] if tail_low is None or tail_high is None else _frames_between_rms(frames, low_dbfs=tail_low, high_dbfs=tail_high)
+    active_frames = [] if active_low is None or active_high is None else _frames_between_rms(frames, low_dbfs=active_low, high_dbfs=active_high)
+    tail_rms = _median_field(tail_frames, "rmsDbfs")
+    active_rms = _median_field(active_frames, "rmsDbfs")
+    return {
+        "available": True,
+        "frameSeconds": SPACE_FRAME_SECONDS,
+        "hopSeconds": SPACE_HOP_SECONDS,
+        "frameCount": len(frames),
+        "rmsPercentilesDbfs": {
+            "p10": tail_low,
+            "p35": tail_high,
+            "p60": active_low,
+            "p95": active_high,
+        },
+        "tailRmsDbfs": tail_rms,
+        "activeRmsDbfs": active_rms,
+        "tailToActiveDeltaDb": None if tail_rms is None or active_rms is None else tail_rms - active_rms,
+        "stereoCorrelationMedian": _median_field(frames, "stereoCorrelation"),
+        "sideToMidDbMedian": _median_field(frames, "sideToMidDb"),
+        "tailStereoCorrelationMedian": _median_field(tail_frames, "stereoCorrelation"),
+        "tailSideToMidDbMedian": _median_field(tail_frames, "sideToMidDb"),
+        "activeStereoCorrelationMedian": _median_field(active_frames, "stereoCorrelation"),
+        "activeSideToMidDbMedian": _median_field(active_frames, "sideToMidDb"),
+        "tailBrightnessDb": _brightness_db(_concat_mono_frames(tail_frames), sample_rate),
+        "activeBrightnessDb": _brightness_db(_concat_mono_frames(active_frames), sample_rate),
+        **_repeat_hint(tail_frames),
+        "note": "Low-level frame and stereo-width descriptors for ambience/reverb matching; descriptive only in the MVP score.",
+    }
+
+
+def analyze_multichannel_peaks(path: Path) -> dict[str, Any]:
+    """Per-channel peak/RMS for multichannel captures (e.g. 6-ch GT-1000 USB)."""
+    sample_rate, channels, per_channel = read_wav(path)
+    channel_metrics: list[dict[str, Any]] = []
+    for index, samples in enumerate(per_channel):
+        channel_metrics.append(
+            {
+                "channel": index + 1,
+                "peakDbfs": _peak_dbfs(samples),
+                "rmsDbfs": _rms_dbfs(samples),
+            }
+        )
+    any_signal = any(
+        rms is not None and rms > SIGNAL_RMS_FLOOR_DBFS
+        for rms in (item.get("rmsDbfs") for item in channel_metrics)
+    )
+    return {
+        "path": str(path),
+        "sampleRate": sample_rate,
+        "channels": channels,
+        "channelMetrics": channel_metrics,
+        "anySignal": any_signal,
+    }
+
+
+def capture_silence_troubleshooting(*, bus: str | None = None) -> list[str]:
+    tips = [
+        "Install Core Audio capture: pip install -r skills/gt1000/requirements-audio.txt "
+        "(sounddevice + numpy). This is the default capture path on macOS.",
+        "macOS: System Settings > Privacy & Security > Microphone > allow the app running gt1000-agent "
+        "(Codex, Terminal, Ghostty, Cursor, or iTerm), then restart that app.",
+        "Quit GarageBand, Logic, or any other app using the GT-1000 USB audio device, then retry.",
+        "Play guitar during the capture window; silence produces zero waveforms.",
+    ]
+    if bus == "dry":
+        tips.append(
+            "record-dry saves USB channels 3–4. GarageBand inputs 1–2 (MAIN/wet) are a different bus; "
+            "use `audio record-dry --bus main` or `audio probe` to verify channels 1–2."
+        )
+    elif bus == "main":
+        tips.append("This capture uses USB channels 1–2 (MAIN / processed path).")
+    return tips
+
+
+def reamp_silence_error_message(*, playback_role: str, capture_path: Path) -> str:
+    tips = [
+        "GT-1000 USB re-amp captured digital silence on all input channels after playing a non-silent dry WAV.",
+        f"Playback role was {playback_role!r}; six-channel capture path: {capture_path}.",
+        "Most likely cause: macOS Microphone permission is missing for the app running gt1000-agent "
+        "(Codex, Terminal, Ghostty, Cursor, or iTerm). Grant it, restart that app, then retry.",
+        "Also quit GarageBand, Logic, Tone Studio, or any other app using the GT-1000 USB audio device.",
+        "If permissions are correct, verify the GT-1000 USB audio routing: USB DIR MON OFF for re-amp, "
+        "USB TO EFX/EFX OUT levels up, and any physical send/return loop used by the patch closed.",
+    ]
+    return " ".join(tips)
+
+
+def _trim_channels(
+    per_channel: list[list[float]],
+    *,
+    sample_rate: int,
+    trim_start_seconds: float,
+    trim_end_seconds: float,
+) -> tuple[list[list[float]], dict[str, Any]]:
+    if trim_start_seconds < 0 or trim_end_seconds < 0:
+        raise ValueError("trim seconds must be non-negative")
+    frame_count = len(per_channel[0]) if per_channel else 0
+    start = min(frame_count, int(round(trim_start_seconds * sample_rate)))
+    end = max(start, frame_count - int(round(trim_end_seconds * sample_rate)))
+    if end <= start:
+        raise ValueError("trim removes entire file; use shorter trim or longer capture")
+    trimmed = [channel[start:end] for channel in per_channel]
+    return trimmed, {
+        "trimStartSeconds": trim_start_seconds,
+        "trimEndSeconds": trim_end_seconds,
+        "trimStartFrame": start,
+        "trimEndFrame": end,
+        "analyzedFrames": end - start,
+        "totalFrames": frame_count,
+        "analyzedDurationSeconds": (end - start) / float(sample_rate),
+    }
+
+
+def analyze_file(path: Path) -> dict[str, Any]:
+    sample_rate, channels, per_channel = read_wav(path)
+    if channels == 1:
+        metrics = _stereo_metrics(per_channel[0], per_channel[0])
+    elif channels >= 2:
+        metrics = _stereo_metrics(per_channel[0], per_channel[1])
+    else:
+        raise ValueError(f"no audio channels in {path}")
+    return {
+        "path": str(path),
+        "sampleRate": sample_rate,
+        "channels": channels,
+        **metrics,
+    }
+
+
+def analyze_file_trimmed(
+    path: Path,
+    *,
+    trim_start_seconds: float = 0.0,
+    trim_end_seconds: float = 0.0,
+) -> dict[str, Any]:
+    """Measure RMS/peak on the middle of a file, dropping head/tail (reamp settle/tail)."""
+    sample_rate, channels, per_channel = read_wav(path)
+    trimmed, trim_info = _trim_channels(
+        per_channel,
+        sample_rate=sample_rate,
+        trim_start_seconds=trim_start_seconds,
+        trim_end_seconds=trim_end_seconds,
+    )
+    if channels == 1:
+        metrics = _stereo_metrics(trimmed[0], trimmed[0])
+    elif channels >= 2:
+        metrics = _stereo_metrics(trimmed[0], trimmed[1])
+    else:
+        raise ValueError(f"no audio channels in {path}")
+    return {
+        "path": str(path),
+        "sampleRate": sample_rate,
+        "channels": channels,
+        **metrics,
+        **trim_info,
+        "note": "Metrics computed on trimmed region only (excludes head/tail).",
+    }
+
+
+def reference_profile(
+    path: Path,
+    *,
+    trim_start_seconds: float = 0.0,
+    trim_end_seconds: float = 0.0,
+) -> dict[str, Any]:
+    """Create a lightweight spectral profile for Phase 4 reference-tone scoring."""
+    sample_rate, channels, per_channel = read_wav(path)
+    if trim_start_seconds or trim_end_seconds:
+        per_channel, trim_info = _trim_channels(
+            per_channel,
+            sample_rate=sample_rate,
+            trim_start_seconds=trim_start_seconds,
+            trim_end_seconds=trim_end_seconds,
+        )
+    else:
+        frame_count = len(per_channel[0]) if per_channel else 0
+        trim_info = {
+            "trimStartSeconds": 0.0,
+            "trimEndSeconds": 0.0,
+            "trimStartFrame": 0,
+            "trimEndFrame": frame_count,
+            "analyzedFrames": frame_count,
+            "totalFrames": frame_count,
+            "analyzedDurationSeconds": frame_count / float(sample_rate) if sample_rate else 0.0,
+        }
+    mono = _window_samples(_mono_samples(per_channel, channels))
+    if not mono:
+        raise ValueError(f"no audio channels in {path}")
+
+    bands: list[dict[str, Any]] = []
+    total_energy = 0.0
+    weighted_frequency = 0.0
+    for low_hz, high_hz in DEFAULT_REFERENCE_BANDS:
+        energy = max(SPECTRAL_FLOOR, _band_energy(mono, sample_rate, low_hz, high_hz))
+        center = math.sqrt(low_hz * high_hz)
+        total_energy += energy
+        weighted_frequency += center * energy
+        bands.append(
+            {
+                "lowHz": low_hz,
+                "highHz": high_hz,
+                "centerHz": center,
+                "energy": energy,
+                "logEnergy": math.log(energy),
+            }
+        )
+
+    broadband = analyze_file_trimmed(
+        path,
+        trim_start_seconds=trim_start_seconds,
+        trim_end_seconds=trim_end_seconds,
+    ) if (trim_start_seconds or trim_end_seconds) else analyze_file(path)
+    peak_dbfs = broadband.get("peakDbfs")
+    rms_dbfs = broadband.get("rmsDbfs")
+    return {
+        "path": str(path),
+        "sampleRate": sample_rate,
+        "channels": channels,
+        "profileVersion": 1,
+        "bands": bands,
+        "space": space_profile(per_channel, channels, sample_rate=sample_rate),
+        "highEnd": high_end_profile(per_channel, channels, sample_rate=sample_rate),
+        "lowBody": low_body_profile(per_channel, channels, sample_rate=sample_rate),
+        "leadMid": lead_mid_profile(per_channel, channels, sample_rate=sample_rate),
+        "envelope": envelope_profile(per_channel, channels, sample_rate=sample_rate),
+        "spectralCentroidHz": None if total_energy <= 0.0 else weighted_frequency / total_energy,
+        "rmsDbfs": rms_dbfs,
+        "peakDbfs": peak_dbfs,
+        "crestDb": None if peak_dbfs is None or rms_dbfs is None else peak_dbfs - rms_dbfs,
+        **trim_info,
+        "note": "Lightweight stdlib-only Phase 4 profile; band scores are approximate, not a tone-match guarantee.",
+    }
+
+
+def reference_match_score(
+    reference: dict[str, Any],
+    candidate: dict[str, Any],
+    *,
+    band_weight: float = 1.0,
+    rms_weight: float = 0.05,
+    space_weight: float = 0.15,
+    high_end_weight: float = 0.25,
+    low_body_weight: float = 0.25,
+    envelope_weight: float = 0.2,
+    lead_mid_weight: float = 0.25,
+    band_multipliers: dict[tuple[float, float], float] | None = None,
+) -> dict[str, Any]:
+    ref_bands = reference.get("bands") or []
+    candidate_bands = candidate.get("bands") or []
+    if len(ref_bands) != len(candidate_bands):
+        raise ValueError("reference and candidate profiles use different band counts")
+    band_error = 0.0
+    band_errors: list[dict[str, Any]] = []
+    for ref_band, candidate_band in zip(ref_bands, candidate_bands):
+        ref_log = float(ref_band["logEnergy"])
+        candidate_log = float(candidate_band["logEnergy"])
+        error = candidate_log - ref_log
+        band_key = (float(ref_band["lowHz"]), float(ref_band["highHz"]))
+        multiplier = 1.0 if band_multipliers is None else band_multipliers.get(band_key, 1.0)
+        squared = error * error * multiplier
+        band_error += squared
+        band_errors.append(
+            {
+                "lowHz": ref_band["lowHz"],
+                "highHz": ref_band["highHz"],
+                "logEnergyError": error,
+                "squaredError": squared,
+                "weight": multiplier,
+            }
+        )
+    ref_rms = reference.get("rmsDbfs")
+    candidate_rms = candidate.get("rmsDbfs")
+    rms_delta = None
+    rms_error = 0.0
+    if ref_rms is not None and candidate_rms is not None:
+        rms_delta = float(candidate_rms) - float(ref_rms)
+        rms_error = rms_delta * rms_delta
+    space_error = _space_match_error(reference.get("space"), candidate.get("space"))
+    high_end_error = _high_end_match_error(reference.get("highEnd"), candidate.get("highEnd"))
+    low_body_error = _low_body_match_error(reference.get("lowBody"), candidate.get("lowBody"))
+    envelope_error = _envelope_match_error(reference.get("envelope"), candidate.get("envelope"))
+    lead_mid_error = _lead_mid_match_error(reference.get("leadMid"), candidate.get("leadMid"))
+    score = (
+        band_weight * band_error
+        + rms_weight * rms_error
+        + space_weight * space_error
+        + high_end_weight * high_end_error
+        + low_body_weight * low_body_error
+        + envelope_weight * envelope_error
+        + lead_mid_weight * lead_mid_error
+    )
+    return {
+        "score": score,
+        "bandError": band_error,
+        "rmsError": rms_error,
+        "spaceError": space_error,
+        "highEndError": high_end_error,
+        "lowBodyError": low_body_error,
+        "envelopeError": envelope_error,
+        "leadMidError": lead_mid_error,
+        "rmsDeltaDb": rms_delta,
+        "bandWeight": band_weight,
+        "rmsWeight": rms_weight,
+        "spaceWeight": space_weight,
+        "highEndWeight": high_end_weight,
+        "lowBodyWeight": low_body_weight,
+        "envelopeWeight": envelope_weight,
+        "leadMidWeight": lead_mid_weight,
+        "bandErrors": band_errors,
+        "bandEmphasis": {
+            f"{low:g}-{high:g}": value
+            for (low, high), value in (band_multipliers or {}).items()
+        },
+        "note": "Lower score is closer to the stored reference profile; descriptor errors are low-weight tone-shape terms.",
+    }
+
+
+def reference_match_report(
+    reference: dict[str, Any],
+    candidate: dict[str, Any],
+    score: dict[str, Any],
+    *,
+    max_items: int = 5,
+) -> dict[str, Any]:
+    components = [
+        _score_component("broad bands", score.get("bandError"), score.get("bandWeight")),
+        _score_component("level", score.get("rmsError"), score.get("rmsWeight")),
+        _score_component("space / reverb", score.get("spaceError"), score.get("spaceWeight")),
+        _score_component("upper end / fizz", score.get("highEndError"), score.get("highEndWeight")),
+        _score_component("low body / flub", score.get("lowBodyError"), score.get("lowBodyWeight")),
+        _score_component("attack / sustain", score.get("envelopeError"), score.get("envelopeWeight")),
+        _score_component("lead-mid focus", score.get("leadMidError"), score.get("leadMidWeight")),
+    ]
+    components = [component for component in components if component is not None]
+    descriptor_deltas = _descriptor_deltas(reference, candidate)
+    band_deltas = _band_deltas(score)
+    strongest = sorted(
+        descriptor_deltas + band_deltas,
+        key=lambda item: abs(float(item.get("delta") or 0.0)),
+        reverse=True,
+    )[:max_items]
+    return {
+        "score": score.get("score"),
+        "rmsDeltaDb": score.get("rmsDeltaDb"),
+        "weightedComponents": components,
+        "descriptorDeltas": descriptor_deltas,
+        "largestBandDeltas": band_deltas[:max_items],
+        "strongestDifferences": strongest,
+        "plainSummary": _plain_match_summary(score, components, strongest),
+    }
+
+
+def _score_component(name: str, error_value: Any, weight_value: Any) -> dict[str, Any] | None:
+    if error_value is None or weight_value is None:
+        return None
+    try:
+        error = float(error_value)
+        weight = float(weight_value)
+    except (TypeError, ValueError):
+        return None
+    return {
+        "name": name,
+        "error": error,
+        "weight": weight,
+        "weighted": error * weight,
+    }
+
+
+def _descriptor_deltas(reference: dict[str, Any], candidate: dict[str, Any]) -> list[dict[str, Any]]:
+    specs = (
+        ("space", "tailToActiveDeltaDb", "ambience tail level", "dB"),
+        ("space", "tailSideToMidDbMedian", "ambience width", "dB"),
+        ("space", "repeatPeakStrength", "repeat strength", ""),
+        ("highEnd", "fizzToLeadMidDb", "fizz vs lead mids", "dB"),
+        ("highEnd", "presenceToLeadMidDb", "presence vs lead mids", "dB"),
+        ("lowBody", "subToBodyLowMidDb", "sub-bass vs body", "dB"),
+        ("lowBody", "bodyLowMidToMidLeadDb", "body/low mids vs lead range", "dB"),
+        ("envelope", "attackToSustainDb", "attack vs sustain", "dB"),
+        ("envelope", "sustainDropDb", "sustain drop", "dB"),
+        ("envelope", "sustainFractionWithin12Db", "stable sustain fraction", ""),
+        ("leadMid", "leadFocusIndexDb", "lead-mid focus", "dB"),
+        ("leadMid", "leadMidToLowMidDb", "lead mids vs low mids", "dB"),
+        ("leadMid", "leadMidToPresenceDb", "lead mids vs presence", "dB"),
+    )
+    rows: list[dict[str, Any]] = []
+    for section, field, label, unit in specs:
+        ref_section = reference.get(section)
+        candidate_section = candidate.get(section)
+        if not isinstance(ref_section, dict) or not isinstance(candidate_section, dict):
+            continue
+        if not ref_section.get("available") or not candidate_section.get("available"):
+            continue
+        ref_value = ref_section.get(field)
+        candidate_value = candidate_section.get(field)
+        if ref_value is None or candidate_value is None:
+            continue
+        try:
+            ref_float = float(ref_value)
+            candidate_float = float(candidate_value)
+        except (TypeError, ValueError):
+            continue
+        delta = candidate_float - ref_float
+        rows.append(
+            {
+                "section": section,
+                "field": field,
+                "label": label,
+                "reference": ref_float,
+                "candidate": candidate_float,
+                "delta": delta,
+                "unit": unit,
+                "direction": _delta_direction(delta),
+            }
+        )
+    return rows
+
+
+def _band_deltas(score: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for band in score.get("bandErrors") or []:
+        try:
+            low = float(band["lowHz"])
+            high = float(band["highHz"])
+            delta = float(band["logEnergyError"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        rows.append(
+            {
+                "section": "bands",
+                "field": f"{low:g}-{high:g}Hz",
+                "label": f"{low:g}-{high:g} Hz energy",
+                "delta": delta,
+                "unit": "log energy",
+                "direction": _delta_direction(delta),
+            }
+        )
+    return sorted(rows, key=lambda item: abs(float(item["delta"])), reverse=True)
+
+
+def _delta_direction(delta: float) -> str:
+    if delta > 0.1:
+        return "higher than reference"
+    if delta < -0.1:
+        return "lower than reference"
+    return "near reference"
+
+
+def _plain_match_summary(
+    score: dict[str, Any],
+    components: list[dict[str, Any]],
+    strongest: list[dict[str, Any]],
+) -> str:
+    if not components:
+        return "Candidate scored against the reference, but no component breakdown was available."
+    largest_component = max(components, key=lambda item: float(item["weighted"]))
+    summary = f"Main score pressure: {largest_component['name']}."
+    rms_delta = score.get("rmsDeltaDb")
+    if rms_delta is not None:
+        try:
+            summary += f" Candidate level is {float(rms_delta):+.1f} dB versus the reference."
+        except (TypeError, ValueError):
+            pass
+    if strongest:
+        first = strongest[0]
+        summary += f" Largest measured difference: {first['label']} is {first['direction']}."
+    return summary
+
+
+def _space_match_error(reference_space: Any, candidate_space: Any) -> float:
+    if not isinstance(reference_space, dict) or not isinstance(candidate_space, dict):
+        return 0.0
+    if not reference_space.get("available") or not candidate_space.get("available"):
+        return 0.0
+    weighted_fields = (
+        ("tailToActiveDeltaDb", 1.0, 6.0),
+        ("tailSideToMidDbMedian", 0.8, 6.0),
+        ("tailBrightnessDb", 0.7, 12.0),
+        ("tailEnvelopeModulationDb", 0.4, 8.0),
+        ("stereoCorrelationMedian", 0.5, 0.5),
+    )
+    error = 0.0
+    used = 0.0
+    for field, weight, scale in weighted_fields:
+        ref_value = reference_space.get(field)
+        candidate_value = candidate_space.get(field)
+        if ref_value is None or candidate_value is None:
+            continue
+        normalized = (float(candidate_value) - float(ref_value)) / scale
+        error += weight * normalized * normalized
+        used += weight
+    return 0.0 if used <= 0.0 else error / used
+
+
+def _asymmetric_db_error(candidate_value: float, reference_value: float, *, scale: float, excess_multiplier: float = 2.5) -> float:
+    delta = candidate_value - reference_value
+    multiplier = excess_multiplier if delta > 0.0 else 1.0
+    normalized = delta / scale
+    return multiplier * normalized * normalized
+
+
+def _high_end_match_error(reference_high: Any, candidate_high: Any) -> float:
+    if not isinstance(reference_high, dict) or not isinstance(candidate_high, dict):
+        return 0.0
+    if not reference_high.get("available") or not candidate_high.get("available"):
+        return 0.0
+    weighted_fields = (
+        ("fizzToLeadMidDb", 1.0, 8.0, 3.0),
+        ("fizzToLeadMidDbP90", 0.8, 8.0, 3.0),
+        ("fizzToPresenceDb", 0.8, 6.0, 2.5),
+        ("airToLeadMidDb", 0.4, 12.0, 2.0),
+        ("presenceToLeadMidDb", 0.5, 8.0, 1.5),
+    )
+    error = 0.0
+    used = 0.0
+    for field, weight, scale, excess_multiplier in weighted_fields:
+        ref_value = reference_high.get(field)
+        candidate_value = candidate_high.get(field)
+        if ref_value is None or candidate_value is None:
+            continue
+        error += weight * _asymmetric_db_error(
+            float(candidate_value),
+            float(ref_value),
+            scale=scale,
+            excess_multiplier=excess_multiplier,
+        )
+        used += weight
+    return 0.0 if used <= 0.0 else error / used
+
+
+def _low_body_match_error(reference_low: Any, candidate_low: Any) -> float:
+    if not isinstance(reference_low, dict) or not isinstance(candidate_low, dict):
+        return 0.0
+    if not reference_low.get("available") or not candidate_low.get("available"):
+        return 0.0
+    weighted_fields = (
+        ("subToBodyLowMidDb", 1.0, 5.0, 3.0),
+        ("subToMidLeadDb", 0.8, 6.0, 2.5),
+        ("bodyLowMidToMidLeadDb", 0.9, 4.0, 1.5),
+        ("bodyToMidLeadDb", 0.5, 5.0, 1.5),
+        ("bodyToLowMidDb", 0.4, 6.0, 1.5),
+    )
+    error = 0.0
+    used = 0.0
+    for field, weight, scale, excess_multiplier in weighted_fields:
+        ref_value = reference_low.get(field)
+        candidate_value = candidate_low.get(field)
+        if ref_value is None or candidate_value is None:
+            continue
+        # Positive deltas in sub ratios mean more boom/flub than the reference, so they hurt more.
+        multiplier = excess_multiplier if field.startswith("subTo") else 1.0
+        normalized = (float(candidate_value) - float(ref_value)) / scale
+        error += weight * multiplier * normalized * normalized
+        used += weight
+    return 0.0 if used <= 0.0 else error / used
+
+
+def _lead_mid_match_error(reference_lead: Any, candidate_lead: Any) -> float:
+    if not isinstance(reference_lead, dict) or not isinstance(candidate_lead, dict):
+        return 0.0
+    if not reference_lead.get("available") or not candidate_lead.get("available"):
+        return 0.0
+    weighted_fields = (
+        ("leadFocusIndexDb", 1.0, 4.0, 1.0, 1.0),
+        ("leadFocusIndexDbP10", 0.4, 5.0, 1.5, 1.0),
+        ("leadMidToLowMidDb", 0.9, 4.0, 1.5, 1.0),
+        ("leadMidToUpperLowMidDb", 0.7, 4.0, 1.5, 1.0),
+        ("leadMidToPresenceDb", 0.6, 5.0, 1.0, 1.0),
+        ("leadMidToFizzDb", 0.6, 6.0, 1.5, 1.0),
+    )
+    error = 0.0
+    used = 0.0
+    for field, weight, scale, deficit_multiplier, excess_multiplier in weighted_fields:
+        ref_value = reference_lead.get(field)
+        candidate_value = candidate_lead.get(field)
+        if ref_value is None or candidate_value is None:
+            continue
+        if field == "leadMidToFizzDb":
+            ref_fizz = reference_lead.get("fizzEnergyDb")
+            candidate_fizz = candidate_lead.get("fizzEnergyDb")
+            if (
+                ref_fizz is not None
+                and candidate_fizz is not None
+                and float(ref_fizz) <= _energy_db(SPECTRAL_FLOOR) + 0.5
+                and float(candidate_fizz) <= _energy_db(SPECTRAL_FLOOR) + 0.5
+            ):
+                continue
+        delta = float(candidate_value) - float(ref_value)
+        multiplier = deficit_multiplier if delta < 0.0 else excess_multiplier
+        normalized = delta / scale
+        error += weight * multiplier * normalized * normalized
+        used += weight
+    return 0.0 if used <= 0.0 else error / used
+
+
+def _envelope_match_error(reference_envelope: Any, candidate_envelope: Any) -> float:
+    if not isinstance(reference_envelope, dict) or not isinstance(candidate_envelope, dict):
+        return 0.0
+    if not reference_envelope.get("available") or not candidate_envelope.get("available"):
+        return 0.0
+    weighted_fields = (
+        ("attackToSustainDb", 0.9, 6.0, 2.0),
+        ("peakToSustainDb", 0.9, 8.0, 2.0),
+        ("attackCrestP90Db", 0.6, 5.0, 1.5),
+        ("sustainDropDb", 1.0, 6.0, 2.5),
+        ("sustainSlopeDbPerSecond", 0.8, 8.0, 2.0),
+        ("sustainRangeDb", 0.6, 6.0, 1.5),
+    )
+    error = 0.0
+    used = 0.0
+    for field, weight, scale, excess_multiplier in weighted_fields:
+        ref_value = reference_envelope.get(field)
+        candidate_value = candidate_envelope.get(field)
+        if ref_value is None or candidate_value is None:
+            continue
+        ref_float = float(ref_value)
+        candidate_float = float(candidate_value)
+        if field == "sustainSlopeDbPerSecond":
+            delta = candidate_float - ref_float
+            multiplier = excess_multiplier if delta < 0.0 else 1.0
+            normalized = delta / scale
+            error += weight * multiplier * normalized * normalized
+        else:
+            error += weight * _asymmetric_db_error(
+                candidate_float,
+                ref_float,
+                scale=scale,
+                excess_multiplier=excess_multiplier,
+            )
+        used += weight
+    ref_fraction = reference_envelope.get("sustainFractionWithin12Db")
+    candidate_fraction = candidate_envelope.get("sustainFractionWithin12Db")
+    if ref_fraction is not None and candidate_fraction is not None:
+        delta = float(candidate_fraction) - float(ref_fraction)
+        normalized = delta / 0.25
+        multiplier = 2.0 if delta < 0.0 else 1.0
+        error += 0.8 * multiplier * normalized * normalized
+        used += 0.8
+    return 0.0 if used <= 0.0 else error / used
+
+
+def rms_delta_db(metrics_a: dict[str, Any], metrics_b: dict[str, Any]) -> float | None:
+    """Return B minus A in dB RMS (broadband), or None if either side is missing."""
+    rms_a = metrics_a.get("rmsDbfs")
+    rms_b = metrics_b.get("rmsDbfs")
+    if rms_a is None or rms_b is None:
+        return None
+    return rms_b - rms_a
+
+
+def compare_files(paths: list[Path]) -> dict[str, Any]:
+    reports = [analyze_file(path) for path in paths]
+    reference_rms = reports[0].get("rmsDbfs") if reports else None
+    comparisons: list[dict[str, Any]] = []
+    for report in reports[1:]:
+        other_rms = report.get("rmsDbfs")
+        delta = None
+        if reference_rms is not None and other_rms is not None:
+            delta = other_rms - reference_rms
+        comparisons.append({"path": report["path"], "deltaRmsDbVsFirst": delta})
+    return {"files": reports, "comparisons": comparisons}

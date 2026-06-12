@@ -67,7 +67,7 @@ Status legend:
 | P2 | User patch backup and restore | Partial | `patch dump` can save a diagnostic JSON dump for the current patch, slot/bank reads can inspect persistent patches, and `patch export` / `patch import` can back up and restore known full user-patch records with optional read-back verification. | Add richer archive metadata, diff, selective restore, and coverage for any future verified records outside the known patch-record set. |
 | P2 | Librarian livesets and `.tsl` files | Partial | CLI-native JSON livesets can export, list, move, copy, rename, remove, and import full known user-patch records with import read-back verification. `patch tsl-export` writes a JSON `.tsl` envelope around those records, `patch tsl-list` inspects JSON `.tsl` patch metadata including nested `data`/`paramSet` patch entries, and `patch tsl-import` imports envelopes that contain either the embedded native record payload or supported GT-1000 Tone Studio `paramSet` records. Unknown GT-1000 `paramSet` keys are reported and rejected instead of silently ignored. | Add future proprietary Tone Studio `.tsl` keys only after mapping them to verified GT-1000 user-memory addresses. |
 | P2 | STOMPBOX editing and `.stx` backup/restore | Partial | `patch stompbox` decodes patch-local STOMPBOX selections. | Add shared STOMPBOX data read/edit/write, backup to file, restore from file, and warnings when patch edits affect shared STOMPBOX data. |
-| P3 | System/global setting writes | Partial | `system common`, `system midi`, `system inout`, `system effects`, `system pitch`, `system controls`, `system manual`, `system pcmap`, and `system inputs` inspect key global sections. | Add typed write validators for MIDI, in/out, play option, hardware, tuner, metronome, control mode, manual mode, input settings, and program map edits. |
+| P3 | System/global setting writes | Partial | Read views for all major system sections. Typed writes: `system inout-set` (USB + routing enums), `system inputs-set`, `system common-set` (metronome BPM), `system midi-set`, `system effects-set`, `system pitch-set`, `system setup-efct-set` (DIR MON), plus `patch system-control-set`. | Add manual-mode control-set, program-map edits, per-channel output EQ fields, and MIDI CC assignment bytes; expand live verification under `GT1000_ALLOW_GLOBAL_SETTINGS=1`. |
 | P3 | All-data backup and restore (`.alb`) | Planned | No all-device backup workflow. | Add all-data export/restore only after the lower-level patch, global, STOMPBOX, and library record coverage is well understood and verified. |
 | P3 | Tone Central integration | Planned | No catalog, download, or import workflow. | Add Tone Central liveset discovery/download/import if licensing and file-format handling are acceptable. |
 | P3 | Pedalboard mode model | Planned | Current workflows are memory/user-slot oriented. | Model GT-1000 pedalboard mode, including mode-specific edit limits and backup behavior. GT-1000CORE does not have pedalboard mode. |
@@ -75,13 +75,14 @@ Status legend:
 
 ### Near-Term Priority
 
-Focus implementation on the first three P1 rows:
+The first three P1 rows are implemented as supported CLI workflows. Keep tightening labels, edge-case live verification, and timeout behavior as maintenance work, but new feature work should move to the remaining gaps:
 
-1. Expand full effect parameter schemas and editors.
-2. Add general CTL/EXP, Assign, Patch MIDI, and LED editing.
-3. Add library and patch-management operations.
+1. Add richer user patch backup/restore metadata, diff, and selective restore.
+2. Extend librarian workflows only after future proprietary Tone Studio `.tsl` keys are mapped to verified GT-1000 user-memory addresses.
+3. Add shared STOMPBOX data read/edit/write plus `.stx` backup/restore, with clear warnings for edits that affect shared data.
+4. Add typed validators for selected system/global writes, starting with the safest high-value settings and preserving read-back verification.
 
-These unlock the highest-value Tone Studio editing workflows while preserving the repo's core safety rule: writes must go through typed, validated commands with read-back verification where practical.
+The audio-lab roadmap is separate: Phases 1–4 are complete ([audio-lab-roadmap.md](audio-lab-roadmap.md)). MIDI/SysEx correctness and verification work is tracked in [midi-cli-roadmap.md](midi-cli-roadmap.md) (gap-closure sprint complete as of 2026-06-10, commit `ad23dd0`).
 
 ## Current MIDI Findings To Preserve
 

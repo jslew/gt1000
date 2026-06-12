@@ -1,0 +1,11 @@
+{
+  "scenario_id": "signal_chain_divider_mixer_detail",
+  "expect_fail": true,
+  "notes": "Anti-pattern: chained live MIDI in one shell",
+  "events": [
+    {
+      "type": "shell",
+      "command": "/proj/gt1000-agent --pretty patch block divider1 --live --timeout 15 && /proj/gt1000-agent --pretty patch block mixer1 --live --timeout 15"
+    }
+  ]
+}

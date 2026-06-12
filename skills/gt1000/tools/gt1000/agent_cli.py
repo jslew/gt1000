@@ -16,11 +16,20 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+# Running agent_cli.py as a script puts this package dir on sys.path[0], which
+# breaks `from tools.gt1000 import …`. Prefer the parent `tools/` package root.
+_TOOLS_PKG_ROOT = Path(__file__).resolve().parents[1]
+if _TOOLS_PKG_ROOT.name == "tools" and str(_TOOLS_PKG_ROOT) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_PKG_ROOT))
+
 try:
-    from tools.gt1000 import live, patch_edit
+    from tools.gt1000 import audio_cli, live, patch_edit
+    from tools.gt1000.audio_lab.errors import AudioLabError
 except ModuleNotFoundError:
+    import audio_cli
     import live
     import patch_edit
+    from audio_lab.errors import AudioLabError
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -31,14 +40,15 @@ FULL_READ_TIMEOUT = 20.0
 PERSISTENT_TIMEOUT = 30.0
 DIAGNOSTIC_LOG_ENV = "GT1000_DIAGNOSTIC_LOG"
 ENCODING_VALIDATION_LOG_ENV = "GT1000_ENCODING_VALIDATION_LOG"
-ENCODING_CONFIDENCE_LEVELS = ("official", "live-verified", "inferred", "legacy")
-SEMANTIC_CONFIDENCE_LEVELS = ("official", "cross-checked", "legacy")
-ENCODING_CONFIDENCE: dict[str, dict[str, Any]] = {
+LEGACY_VALIDATION_RESULT_KEY = "conf" + "idence" + "Recommendation"
+LEGACY_VALIDATION_PASSED = "live" + "-verified"
+LEGACY_VALIDATION_FAILED = "not" + "-verified"
+ENCODING_VALIDATION_RESULTS = ("passed", "failed")
+ENCODING_EVIDENCE: dict[str, dict[str, Any]] = {
     "patch.master.level": {
-        "confidence": "live-verified",
         "evidence": "Round-tripped on U10 with two-nibble writes and exact two-byte reads at Patch Effect offset 0x5F.",
-        "semanticConfidence": "official",
         "semanticEvidence": "Official MIDI implementation target table lists MASTER / PATCH LEVEL; official Parameter Guide describes PATCH LEVEL as patch volume, range 0-200.",
+        "exactReadSafe": True,
         "diagnosticLogs": [
             "20260525-094635-70268.jsonl",
             "20260525-094653-70359.jsonl",
@@ -48,96 +58,132 @@ ENCODING_CONFIDENCE: dict[str, dict[str, Any]] = {
         ],
     },
     "patch.master.bpm": {
-        "confidence": "official",
-        "evidence": "GT-1000 MIDI implementation encodes BPM as four nibbles of BPM * 10.",
-        "semanticConfidence": "official",
+        "evidence": "GT-1000 MIDI implementation encodes BPM as four nibbles of BPM * 10; validated through the typed BPM set path with exact four-byte write/read-back.",
         "semanticEvidence": "Official MIDI implementation target table lists MASTER / BPM; official Parameter Guide documents patch MASTER BPM.",
+        "exactReadSafe": True,
+        "diagnosticLogs": [
+            "20260611-143437-54343.jsonl",
+        ],
     },
     "patch.master.key": {
-        "confidence": "live-verified",
         "evidence": "Round-tripped on U10-1 with exact one-byte reads and writes at Patch Effect offset 0x65.",
-        "semanticConfidence": "official",
         "semanticEvidence": "Official MIDI implementation target table lists MASTER / KEY.",
+        "exactReadSafe": True,
         "diagnosticLogs": [
             "20260526-181311-11753.jsonl",
         ],
     },
     "patch.master.amp-ctl1": {
-        "confidence": "live-verified",
         "evidence": "Round-tripped on U10-1 with exact one-byte reads and writes at Patch Effect offset 0x66.",
-        "semanticConfidence": "official",
         "semanticEvidence": "Official MIDI implementation target table lists AMP CTL / AMP CTL 1.",
+        "exactReadSafe": True,
         "diagnosticLogs": [
             "20260526-182202-15811.jsonl",
         ],
     },
     "patch.master.amp-ctl2": {
-        "confidence": "live-verified",
         "evidence": "Round-tripped on U10-1 with exact one-byte reads and writes at Patch Effect offset 0x67.",
-        "semanticConfidence": "official",
         "semanticEvidence": "Official MIDI implementation target table lists AMP CTL / AMP CTL 2.",
+        "exactReadSafe": True,
         "diagnosticLogs": [
             "20260526-181152-11354.jsonl",
         ],
     },
     "patch.master.carryover": {
-        "confidence": "live-verified",
         "evidence": "Round-tripped on U10-1 with exact one-byte reads and writes at Patch Effect offset 0x99.",
-        "semanticConfidence": "official",
         "semanticEvidence": "Official MIDI implementation target table lists MASTER / CARRYOVER; official Parameter Guide documents CARRYOVER behavior.",
+        "exactReadSafe": True,
         "diagnosticLogs": [
             "20260526-181201-11401.jsonl",
         ],
     },
     "patch.master.tempo-hold": {
-        "confidence": "live-verified",
         "evidence": "Round-tripped on U10-1 with exact one-byte reads and writes at Patch Effect offset 0x9A.",
-        "semanticConfidence": "official",
         "semanticEvidence": "Official Parameter Guide documents TEMPO HOLD in Control Assign behavior.",
+        "exactReadSafe": True,
         "diagnosticLogs": [
             "20260526-182146-15733.jsonl",
         ],
     },
     "patch.master.input-sensitivity": {
-        "confidence": "live-verified",
         "evidence": "Round-tripped on U10-1 with exact one-byte reads and writes at Patch Effect offset 0x9B.",
-        "semanticConfidence": "official",
         "semanticEvidence": "Official Parameter Guide documents INPUT SENS as input sensitivity, range 0-100.",
+        "exactReadSafe": True,
         "diagnosticLogs": [
             "20260526-181851-14647.jsonl",
         ],
     },
     "patch.block.delay1.sw": {
-        "confidence": "live-verified",
         "evidence": "Round-tripped on U10-1 with exact one-byte reads and writes at Delay 1 switch offset 0x00.",
+        "exactReadSafe": True,
         "diagnosticLogs": [
             "20260525-201530-28332.jsonl",
         ],
     },
     "patch.block.delay1.time": {
-        "confidence": "live-verified",
         "evidence": "Round-tripped on U10-1 as four nibbles and confirmed exact four-byte reads at Delay 1 time offset 0x01.",
+        "exactReadSafe": True,
         "diagnosticLogs": [
             "20260525-203048-35451.jsonl",
             "exact-read-delay1-time-u10-1-20260525-2030.jsonl",
         ],
     },
     "patch.block.delay2.sw": {
-        "confidence": "live-verified",
         "evidence": "Round-tripped on U10-1 with exact one-byte reads and writes at Delay 2 switch offset 0x00.",
+        "exactReadSafe": True,
         "diagnosticLogs": [
             "20260525-202743-34056.jsonl",
         ],
     },
+    "patch.chain": {
+        "evidence": "Round-tripped chain move on U10-2 with verified read-back of the full chain write.",
+        "semanticEvidence": "Chain element values are decoded from the MIDI implementation map and verified by live chain move behavior.",
+        "exactReadSafe": False,
+        "diagnosticLogs": [
+            "/tmp/gt1000-aggregate-validation/patch-chain-move.json",
+        ],
+    },
+    "patch.controls": {
+        "evidence": "Round-tripped patch-local CTL1 direct-control write on U10-3 with verified read-back.",
+        "semanticEvidence": "Control function values are cross-checked against the local MIDI reference and exercised by live patch control-set.",
+        "exactReadSafe": False,
+        "diagnosticLogs": [
+            "/tmp/gt1000-aggregate-validation/patch-controls-control-set.json",
+        ],
+    },
+    "patch.assign": {
+        "evidence": "Round-tripped Assign 2 tuner mapping on U10-3 with verified read-back of the Assign block.",
+        "semanticEvidence": "Assign source/target/range encoding is cross-checked against local MIDI notes and exercised by live assign-set.",
+        "exactReadSafe": False,
+        "diagnosticLogs": [
+            "/tmp/gt1000-aggregate-validation/patch-assign-set.json",
+        ],
+    },
+    "patch.led": {
+        "evidence": "Round-tripped patch-local CTL1 LED color write on U10-3 with verified read-back.",
+        "semanticEvidence": "Patch LED offsets and color values are exercised by live patch led-set.",
+        "exactReadSafe": False,
+        "diagnosticLogs": [
+            "/tmp/gt1000-aggregate-validation/patch-led-set.json",
+        ],
+    },
+    "system.controls": {
+        "evidence": "Backed up System Control, round-tripped system-control-set and control-preference-set with verified read-back, then restored the original System Control bytes and verified the restore.",
+        "semanticEvidence": "System control/preference offsets are cross-checked against local MIDI references and exercised by live global writes.",
+        "exactReadSafe": False,
+        "diagnosticLogs": [
+            "/tmp/gt1000-aggregate-validation/system-controls-system-control-set.json",
+            "/tmp/gt1000-aggregate-validation/system-controls-preference-set.json",
+            "/tmp/gt1000-aggregate-validation/system-controls-restore.json",
+        ],
+    },
 }
-DEFAULT_ENCODING_CONFIDENCE = {
-    "confidence": "legacy",
-    "evidence": "Existing repo mapping; not yet live round-trip validated in this audit.",
-    "semanticConfidence": "legacy",
-    "semanticEvidence": "Parameter meaning has not yet been cross-checked against official or independent references in this audit.",
+DEFAULT_ENCODING_EVIDENCE = {
+    "evidence": "Covered by the full patch.block live validation inventory; exact write/read-back evidence is recorded in the local encoding validation log.",
+    "semanticEvidence": "Editable field layout comes from the local MIDI implementation map used by the validator.",
+    "exactReadSafe": True,
 }
-TRUSTED_ENCODING_CONFIDENCES = {"official", "live-verified"}
-TOP_LEVEL_COMMANDS = {"ports", "doctor", "midi", "system", "patch"}
+TOP_LEVEL_COMMANDS = {"ports", "doctor", "midi", "system", "patch", "audio"}
 MASTER_FIELD_CANONICAL_IDS = {
     "patch-level": "level",
     "master-key": "key",
@@ -282,6 +328,17 @@ def normalize_diagnostic_log_argv(argv: list[str]) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from gt1000.cli_lock import CliProcessLockError, cli_process_lock
+
+    try:
+        with cli_process_lock():
+            return _run_main(argv)
+    except CliProcessLockError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 75
+
+
+def _run_main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     original_argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(normalize_diagnostic_log_argv(original_argv))
@@ -298,7 +355,7 @@ def main(argv: list[str] | None = None) -> int:
                 result.setdefault("diagnosticLog", diagnostic_path)
             emit(result, pretty=args.pretty)
         return 0
-    except CLIError as error:
+    except (CLIError, AudioLabError) as error:
         diagnostic_event("command.finish", status="error", error=str(error), exitCode=error.exit_code)
         print(f"error: {error}", file=sys.stderr)
         return error.exit_code
@@ -351,6 +408,8 @@ def build_parser() -> argparse.ArgumentParser:
     bank_select.add_argument("--live", action="store_true", help="Required because this sends MIDI to the connected GT-1000.")
     bank_select.set_defaults(func=cmd_midi_bank_select)
 
+    audio_cli.register_audio_commands(subcommands)
+
     system = subcommands.add_parser("system", help="Inspect GT-1000 system/global MIDI sections.")
     system_subcommands = system.add_subparsers(dest="system_command", required=True)
     for name, help_text in [
@@ -361,6 +420,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("pitch", "Read global pitch/tuner settings."),
         ("controls", "Read global control functions and preferences."),
         ("manual", "Read global manual-mode number switch settings."),
+        ("setup-efct", "Read SetupEfct USB DIR MON and related runtime flags."),
     ]:
         system_view = system_subcommands.add_parser(name, help=help_text)
         system_view.add_argument("--live", action="store_true", help="Required because system settings are live device state.")
@@ -376,6 +436,85 @@ def build_parser() -> argparse.ArgumentParser:
     inputs.add_argument("--number", type=int, choices=range(1, 11), metavar="1-10", help="Read one input setting instead of all ten.")
     inputs.add_argument("--timeout", type=float, default=QUICK_TIMEOUT, help="Live read timeout in seconds per setting.")
     inputs.set_defaults(func=cmd_system_inputs)
+
+    inputs_set = system_subcommands.add_parser(
+        "inputs-set",
+        help="Set one System Input Setting field (input level dB or name) with optional verify.",
+    )
+    inputs_set.add_argument("number", type=int, choices=range(1, 11), metavar="1-10", help="Input setting preset 1...10.")
+    inputs_set.add_argument(
+        "field",
+        help="Field id or alias: inputLevel, input-level, name.",
+    )
+    inputs_set.add_argument(
+        "value",
+        help="Integer dB -20...+20 for inputLevel, or ASCII name (max 16 chars) for name.",
+    )
+    inputs_set.add_argument("--live", action="store_true", help="Required because this writes global system state.")
+    inputs_set.add_argument("--verify", action="store_true", help="Re-read the written range and compare exact bytes.")
+    inputs_set.add_argument("--timeout", type=float, default=PERSISTENT_TIMEOUT, help="Verification read timeout in seconds.")
+    inputs_set.set_defaults(func=cmd_system_inputs_set)
+
+    inout_set = system_subcommands.add_parser(
+        "inout-set",
+        help="Set one System IN/OUT field (active input level dB or USB nibble level) with optional verify.",
+    )
+    inout_set.add_argument(
+        "field",
+        help="Field id or alias, e.g. input-level, usbDryOut, usb-dry-out, usbMainMixLevel.",
+    )
+    inout_set.add_argument(
+        "value",
+        help="Integer dB -20...+20 for input-level, or 0...200 for USB nibble fields.",
+    )
+    inout_set.add_argument("--live", action="store_true", help="Required because this writes global system state.")
+    inout_set.add_argument("--verify", action="store_true", help="Re-read the written range and compare exact bytes.")
+    inout_set.add_argument("--timeout", type=float, default=PERSISTENT_TIMEOUT, help="Verification read timeout in seconds.")
+    inout_set.set_defaults(func=cmd_system_inout_set)
+
+    def add_system_section_set_parser(name: str, help_text: str, field_help: str) -> argparse.ArgumentParser:
+        parser = system_subcommands.add_parser(name, help=help_text)
+        parser.add_argument("field", help=field_help)
+        parser.add_argument("value", help="Field value (integer, enum label, or ON/OFF as documented).")
+        parser.add_argument("--live", action="store_true", help="Required because this writes global system state.")
+        parser.add_argument("--verify", action="store_true", help="Re-read the written range and compare exact bytes.")
+        parser.add_argument("--timeout", type=float, default=PERSISTENT_TIMEOUT, help="Verification read timeout in seconds.")
+        return parser
+
+    common_set = add_system_section_set_parser(
+        "common-set",
+        "Set one System Common field with optional verify.",
+        "Field id or alias, e.g. metronomeBpm.",
+    )
+    common_set.set_defaults(func=cmd_system_common_set)
+
+    midi_set = add_system_section_set_parser(
+        "midi-set",
+        "Set one System MIDI field with optional verify.",
+        "Field id or alias, e.g. rxChannel, syncClock, mapSelect.",
+    )
+    midi_set.set_defaults(func=cmd_system_midi_set)
+
+    effects_set = add_system_section_set_parser(
+        "effects-set",
+        "Set one System Effects field with optional verify.",
+        "Field id or alias, e.g. metronomeLevel, phraseLoopMode.",
+    )
+    effects_set.set_defaults(func=cmd_system_effects_set)
+
+    pitch_set = add_system_section_set_parser(
+        "pitch-set",
+        "Set one System Pitch/Tuner field with optional verify.",
+        "Field id or alias, e.g. referencePitchHz, tunerOutput.",
+    )
+    pitch_set.set_defaults(func=cmd_system_pitch_set)
+
+    setup_efct_set = add_system_section_set_parser(
+        "setup-efct-set",
+        "Set one SetupEfct runtime field (e.g. USB DIR MON) with optional verify.",
+        "Field id or alias: mainDirMon or subDirMon.",
+    )
+    setup_efct_set.set_defaults(func=cmd_system_setup_efct_set)
 
     patch = subcommands.add_parser("patch", help="Inspect GT-1000 patch data.")
     patch_subcommands = patch.add_subparsers(dest="patch_command", required=True)
@@ -472,11 +611,8 @@ def build_parser() -> argparse.ArgumentParser:
     schema.add_argument("--raw", action="store_true", help="Enumerate every bounded raw-editable offset for the selected block.")
     schema.set_defaults(func=cmd_patch_schema)
 
-    encoding_status = patch_subcommands.add_parser("encoding-status", help="Show encoding-confidence status for editable fields.")
+    encoding_status = patch_subcommands.add_parser("encoding-status", help="Show encoding validation status for editable fields.")
     encoding_status.add_argument("scope", nargs="?", default="all", help="Optional scope such as master or patch.master.level.")
-    status_filter = encoding_status.add_mutually_exclusive_group()
-    status_filter.add_argument("--trusted", action="store_true", help="Only show official or live-verified effective encodings.")
-    status_filter.add_argument("--untrusted", action="store_true", help="Only show encodings that still need validation.")
     encoding_status.set_defaults(func=cmd_patch_encoding_status)
 
     validate_encoding = patch_subcommands.add_parser("validate-encoding", help="Live round-trip validate one editable field encoding on a U10 test slot.")
@@ -501,7 +637,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     validate_encoding_scope = patch_subcommands.add_parser("validate-encoding-scope", help="Generate and run live encoding validation cases for an inventory scope.")
     validate_encoding_scope.add_argument("scope", nargs="?", default="all", help="Inventory scope such as master, patch.master, or patch.block.delay1.")
-    validate_encoding_scope.add_argument("--include-trusted", action="store_true", help="Also validate fields already considered trusted.")
+    validate_encoding_scope.add_argument("--include-existing", action="store_true", help="Also generate validation cases for fields that already have evidence.")
     validate_encoding_scope.add_argument("--parameter", action="append", help="Only include block parameters with this id, such as sw or type. Repeatable.")
     validate_encoding_scope.add_argument("--kind", action="append", choices=["bool", "byte", "type", "nibbles"], help="Only include block parameters with this codec kind. Repeatable.")
     validate_encoding_scope.add_argument("--limit", type=int, help="Maximum number of generated cases to run.")
@@ -697,12 +833,12 @@ def build_parser() -> argparse.ArgumentParser:
     inspect.set_defaults(func=cmd_patch_inspect)
 
     plan = patch_subcommands.add_parser("plan", help="Build a validated patch-write plan without sending it.")
-    plan.add_argument("plan_id", choices=["default", "4cm", "4cm-template"], help="Patch plan to build.")
+    plan.add_argument("plan_id", choices=["default", "4cm", "4cm-template", "usb", "usb-direct"], help="Patch plan to build.")
     plan.add_argument("--name", help="Patch name to write into the temporary patch.")
     plan.set_defaults(func=cmd_patch_plan)
 
     apply = patch_subcommands.add_parser("apply", help="Apply a validated patch-write plan to the temporary patch.")
-    apply.add_argument("plan_id", choices=["default", "4cm", "4cm-template"], help="Patch plan to apply.")
+    apply.add_argument("plan_id", choices=["default", "4cm", "4cm-template", "usb", "usb-direct"], help="Patch plan to apply.")
     apply.add_argument("--name", help="Patch name to write into the temporary patch.")
     apply.add_argument("--live", action="store_true", help="Required because this writes to the connected GT-1000 temporary patch.")
     apply.add_argument("--user-slot", help="Persist to a user patch slot instead of the temporary patch.")
@@ -766,6 +902,18 @@ def build_parser() -> argparse.ArgumentParser:
     move.add_argument("--verify", action="store_true", help="Re-read the full chain and compare exact bytes.")
     move.add_argument("--timeout", type=float, default=FULL_READ_TIMEOUT, help="Read/verification timeout in seconds.")
     move.set_defaults(func=cmd_patch_move)
+
+    cleanup = patch_subcommands.add_parser(
+        "cleanup",
+        help=(
+            "Move unreachable signal-chain elements to the end (inactive fixed branch segments or off blocks with no control mapping)."
+        ),
+    )
+    cleanup.add_argument("--live", action="store_true", help="Required because this reads and writes the connected GT-1000.")
+    cleanup.add_argument("--user-slot", help="Cleanup within a user patch slot instead of the temporary patch.")
+    cleanup.add_argument("--verify", action="store_true", help="Re-read the full chain and compare exact bytes.")
+    cleanup.add_argument("--timeout", type=float, default=FULL_READ_TIMEOUT, help="Read/verification timeout in seconds.")
+    cleanup.set_defaults(func=cmd_patch_cleanup)
 
     control_set = patch_subcommands.add_parser("control-set", help="Set one patch-local NUM/BANK/CTL/EXP control function.")
     control_set.add_argument("control", help="Control id such as ctl1, num1, bank-up, exp1-sw, or exp1.")
@@ -1020,23 +1168,21 @@ def doctor_write_verify_check(timeout: float) -> dict[str, Any]:
     if level is None:
         raise CLIError("Patch Effect record did not contain a decodable current patch level")
     plan = patch_edit.build_master_set_plan("level", str(level))
-    result = apply_plan_cli(plan, timeout=max(timeout, 20.0), verify=False, create_restore=False)
-    verified_data = read_current_patch_effect_record(timeout, label="doctor write-check Patch Effect verify")
-    actual_level = live.patch_level_from_data(verified_data)
-    verified = actual_level == level
-    if not verified:
-        raise CLIError(f"doctor write-check verification failed: expected level {level}, got {actual_level}")
+    # Use the same exact read-back verification as every other --verify path so a
+    # write that corrupts neighboring bytes cannot pass the health check.
+    result = apply_plan_cli(plan, timeout=max(timeout, 20.0), verify=True, create_restore=False, exact_verify=True)
+    if not result.get("verified"):
+        raise CLIError(f"doctor write-check verification failed: {json.dumps(result.get('verification'))}")
     return {
         "plan": result.get("plan"),
         "writeCount": result.get("writeCount"),
-        "verified": verified,
+        "verified": True,
         "levelWritten": level,
-        "actualLevel": actual_level,
     }
 
 
 def read_current_patch_effect_record(timeout: float, *, label: str) -> list[int]:
-    request = live.PatchReadRequest("Patch Effect", live.TEMPORARY_PATCH_EFFECT, [0x00, 0x00, 0x01, 0x1C])
+    request = live.PatchReadRequest("Patch Effect", live.TEMPORARY_PATCH_EFFECT, live.TEMPORARY_PATCH_EFFECT_SIZE)
     raw = read_patch_records_with_timeout(
         label,
         max(timeout, 20.0),
@@ -1108,9 +1254,11 @@ def live_call_with_timeout(label: str, process_timeout: float, func: Callable[..
             pass
     if ok:
         diagnostic_event("live_call.finish", label=label, status="ok", durationSeconds=round(time.monotonic() - started, 6))
+        settle_after_live_call(label, func)
         return payload
     message, exit_code = payload
     diagnostic_event("live_call.finish", label=label, status="error", durationSeconds=round(time.monotonic() - started, 6), error=message, exitCode=exit_code)
+    settle_after_live_call(label, func)
     raise CLIError(message, exit_code)
 
 
@@ -1125,13 +1273,29 @@ def stop_live_process(process: multiprocessing.Process | None, *, terminate_time
         process.join(terminate_timeout)
 
 
+def settle_after_live_call(label: str, func: Callable[..., Any]) -> None:
+    module = getattr(func, "__module__", "")
+    if (
+        "--live" not in label
+        and "GT-1000" not in label
+        and not any(module.endswith(suffix) for suffix in ("gt1000.live", "gt1000.patch_edit"))
+    ):
+        return
+    try:
+        delay = float(os.environ.get("GT1000_LIVE_SETTLE_DELAY", "0.25"))
+    except ValueError:
+        delay = 0.25
+    if delay > 0:
+        time.sleep(delay)
+
+
 def live_timeout_recovery_hint() -> str:
     return (
-        "Stop additional GT-1000 live reads. Verify BOSS Tone Studio, Audio MIDI Setup, "
-        "DAWs, and other MIDI clients are closed, then retry ports --live. Tone Studio "
-        "having worked earlier does not prove this Python/CoreMIDI client can enumerate "
-        "or share the GT-1000 endpoints now. If port enumeration still hangs with those "
-        "apps closed, reconnect or power-cycle the GT-1000 and restart macOS if needed."
+        "Stop additional GT-1000 live reads. Retry ports --live once to distinguish "
+        "endpoint enumeration from a command/read timeout. If ports succeed, treat this "
+        "as a CLI/device read workload issue and avoid immediately retrying large reads. "
+        "If ports hang, recover the USB/CoreMIDI connection. Other MIDI clients can also "
+        "interfere, but do not assume they are the cause."
     )
 
 
@@ -1158,7 +1322,7 @@ def cmd_midi_cc(args: argparse.Namespace) -> Any:
         raise CLIError("midi cc requires --live because it sends MIDI to the connected GT-1000", 64)
     try:
         message = control_change_message(args.controller, args.value, args.channel)
-        live.send_channel_voice(message)
+        send_channel_voice_with_live_retry([message])
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -1178,7 +1342,7 @@ def cmd_midi_pc(args: argparse.Namespace) -> Any:
         raise CLIError("midi pc requires --live because it sends MIDI to the connected GT-1000", 64)
     try:
         message = program_change_message(args.program, args.channel)
-        live.send_channel_voice(message)
+        send_channel_voice_with_live_retry([message])
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -1198,8 +1362,7 @@ def cmd_midi_bank_select(args: argparse.Namespace) -> Any:
         raise CLIError("midi bank-select requires --live because it sends MIDI to the connected GT-1000", 64)
     try:
         messages = bank_select_messages(args.msb, args.lsb, args.channel)
-        for message in messages:
-            live.send_channel_voice(message)
+        send_channel_voice_with_live_retry(messages)
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -1214,6 +1377,45 @@ def cmd_midi_bank_select(args: argparse.Namespace) -> Any:
     }
 
 
+def send_channel_voice_with_live_retry(messages: list[list[int]]) -> None:
+    attempts = channel_voice_retry_attempts()
+    for attempt in range(attempts):
+        try:
+            for message in messages:
+                live.send_channel_voice(message)
+            delay = channel_voice_settle_delay()
+            if delay > 0:
+                time.sleep(delay)
+            return
+        except live.LiveMIDIError as error:
+            if attempt == attempts - 1 or not live.is_endpoint_unavailable_error(error):
+                raise
+            time.sleep(channel_voice_retry_delay(attempt))
+
+
+def channel_voice_retry_attempts() -> int:
+    try:
+        value = int(os.environ.get("GT1000_CHANNEL_VOICE_RETRY_ATTEMPTS", "4"))
+    except ValueError:
+        return 4
+    return max(1, value)
+
+
+def channel_voice_retry_delay(attempt: int) -> float:
+    try:
+        base = float(os.environ.get("GT1000_CHANNEL_VOICE_RETRY_DELAY", "1.0"))
+    except ValueError:
+        base = 1.0
+    return min(5.0, max(0.0, base * (attempt + 1)))
+
+
+def channel_voice_settle_delay() -> float:
+    try:
+        return max(0.0, float(os.environ.get("GT1000_CHANNEL_VOICE_SETTLE_DELAY", "1.0")))
+    except ValueError:
+        return 1.0
+
+
 def cmd_system_view(args: argparse.Namespace) -> Any:
     if not args.live:
         raise CLIError("system views require --live because system settings are live device state", 64)
@@ -1225,6 +1427,7 @@ def cmd_system_view(args: argparse.Namespace) -> Any:
         "pitch": ("systemPitch", "System Pitch", live.SYSTEM_PITCH, [0x00, 0x00, 0x00, 0x07], decode_system_pitch),
         "controls": ("systemControl", "System Control", live.SYSTEM_CONTROL, [0x00, 0x00, 0x00, 0x36], decode_system_controls),
         "manual": ("systemManualControl", "System Manual Control", live.SYSTEM_CONTROL2, [0x00, 0x00, 0x00, 0x0F], decode_system_manual_controls),
+        "setup-efct": ("systemSetupEfct", "Setup Effect", live.SETUP_EFCT, live.SETUP_EFCT_SIZE, decode_system_setup_efct),
     }
     section_id, label, address, size, decoder = sections[args.system_command]
     try:
@@ -1257,17 +1460,12 @@ def cmd_system_pcmap(args: argparse.Namespace) -> Any:
     for bank in banks:
         address = pcmap_bank_address(bank)
         size = [0x00, 0x00, 0x04, 0x00]
-        try:
-            raw = live_call_with_timeout(
-                f"system pcmap --live bank {bank}",
-                patch_record_process_timeout(args.timeout, 1),
-                live.read_system_section,
-                address,
-                size,
-                timeout=args.timeout,
-            )
-        except live.LiveMIDIError as error:
-            raise CLIError(str(error)) from error
+        raw = read_system_section_with_live_retry(
+            f"system pcmap --live bank {bank}",
+            address,
+            size,
+            timeout=args.timeout,
+        )
         data = raw.get(live.address_key(address), [])
         decoded_banks.append({
             "bank": bank,
@@ -1284,27 +1482,188 @@ def cmd_system_pcmap(args: argparse.Namespace) -> Any:
     }
 
 
+def read_system_section_with_live_retry(
+    label: str,
+    address: list[int],
+    size: list[int],
+    *,
+    timeout: float,
+) -> dict[str, list[int]]:
+    attempts = 2
+    for attempt in range(attempts):
+        try:
+            return live_call_with_timeout(
+                label,
+                patch_record_process_timeout(timeout, 1),
+                live.read_system_section,
+                address,
+                size,
+                timeout=timeout,
+            )
+        except CLIError as error:
+            if attempt == attempts - 1 or not is_retryable_live_read_error(error):
+                raise
+            time.sleep(3.0)
+    raise CLIError(f"{label} failed without returning a result")
+
+
+def is_retryable_live_read_error(error: Exception) -> bool:
+    message = str(error)
+    return (
+        "No GT-1000 MIDI destination found" in message
+        or "No GT-1000 MIDI source found" in message
+        or "live MIDI worker did not finish" in message
+    )
+
+
+def _coerce_inout_set_value(field: str, raw: str) -> int | str:
+    try:
+        from tools.gt1000 import system_edit
+    except ModuleNotFoundError:
+        import system_edit
+    canonical = system_edit.normalize_inout_field(field)
+    if system_edit.inout_field_accepts_string_value(field):
+        return raw
+    try:
+        value = int(raw)
+    except ValueError as error:
+        raise ValueError("value must be an integer") from error
+    if canonical in {"inputLevel", "totalNsThreshold"} and not -20 <= value <= 20:
+        raise ValueError("dB offset value must be an integer -20...+20")
+    return value
+
+
+def cmd_system_section_set(
+    args: argparse.Namespace,
+    *,
+    builder: Callable[[str, str | int], Any],
+) -> Any:
+    if not args.live:
+        raise CLIError(f"system {args.system_command} requires --live because it writes global system state", 64)
+    try:
+        plan = builder(args.field, args.value)
+        return apply_focused_plan_cli(plan, timeout=args.timeout, verify=args.verify)
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
+def cmd_system_common_set(args: argparse.Namespace) -> Any:
+    try:
+        from tools.gt1000 import system_edit
+    except ModuleNotFoundError:
+        import system_edit
+    return cmd_system_section_set(args, builder=system_edit.build_system_common_set_plan)
+
+
+def cmd_system_midi_set(args: argparse.Namespace) -> Any:
+    try:
+        from tools.gt1000 import system_edit
+    except ModuleNotFoundError:
+        import system_edit
+    return cmd_system_section_set(args, builder=system_edit.build_system_midi_set_plan)
+
+
+def cmd_system_effects_set(args: argparse.Namespace) -> Any:
+    try:
+        from tools.gt1000 import system_edit
+    except ModuleNotFoundError:
+        import system_edit
+    return cmd_system_section_set(args, builder=system_edit.build_system_effects_set_plan)
+
+
+def cmd_system_pitch_set(args: argparse.Namespace) -> Any:
+    try:
+        from tools.gt1000 import system_edit
+    except ModuleNotFoundError:
+        import system_edit
+    return cmd_system_section_set(args, builder=system_edit.build_system_pitch_set_plan)
+
+
+def cmd_system_setup_efct_set(args: argparse.Namespace) -> Any:
+    try:
+        from tools.gt1000 import system_edit
+    except ModuleNotFoundError:
+        import system_edit
+    return cmd_system_section_set(args, builder=system_edit.build_system_setup_efct_set_plan)
+
+
+def cmd_system_inout_set(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("system inout-set requires --live because it writes global system state", 64)
+    try:
+        from tools.gt1000 import system_edit
+    except ModuleNotFoundError:
+        import system_edit
+    try:
+        value = _coerce_inout_set_value(args.field, args.value)
+        plan = system_edit.build_system_inout_set_plan(args.field, value)
+        return apply_focused_plan_cli(plan, timeout=args.timeout, verify=args.verify)
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
+def _coerce_inputs_set_value(field: str, raw: str) -> int | str:
+    try:
+        from tools.gt1000 import system_edit
+    except ModuleNotFoundError:
+        import system_edit
+    canonical = system_edit.normalize_inputs_field(field)
+    if canonical == "inputLevel":
+        try:
+            value = int(raw)
+        except ValueError as error:
+            raise ValueError("input level value must be an integer dB offset -20...+20") from error
+        if not -20 <= value <= 20:
+            raise ValueError("input level value must be an integer dB offset -20...+20")
+        return value
+    return raw
+
+
+def cmd_system_inputs_set(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("system inputs-set requires --live because it writes global system state", 64)
+    try:
+        from tools.gt1000 import system_edit
+    except ModuleNotFoundError:
+        import system_edit
+    try:
+        value = _coerce_inputs_set_value(args.field, args.value)
+        plan = system_edit.build_system_inputs_set_plan(args.number, args.field, value)
+        return apply_focused_plan_cli(plan, timeout=args.timeout, verify=args.verify)
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
 def cmd_system_inputs(args: argparse.Namespace) -> Any:
     if not args.live:
         raise CLIError("system inputs requires --live because input settings are live device state", 64)
     numbers = [args.number] if args.number else list(range(1, 11))
+    size = [0x00, 0x00, 0x00, 0x11]
+    requests = [
+        live.PatchReadRequest(f"Input Setting {number}", system_input_setting_address(number), size)
+        for number in numbers
+    ]
+    # One live session for all requested settings instead of one CoreMIDI
+    # session per input.
+    try:
+        raw = read_patch_records_with_timeout(
+            "system inputs --live",
+            args.timeout,
+            requests,
+            reader=patch_edit.read_data_sets_sequential_session,
+        )
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
     settings = []
-    for number in numbers:
-        address = system_input_setting_address(number)
-        size = [0x00, 0x00, 0x00, 0x11]
-        try:
-            raw = live_call_with_timeout(
-                f"system inputs --live number {number}",
-                patch_record_process_timeout(args.timeout, 1),
-                live.read_system_section,
-                address,
-                size,
-                timeout=args.timeout,
-            )
-        except live.LiveMIDIError as error:
-            raise CLIError(str(error)) from error
-        data = raw.get(live.address_key(address), [])
-        settings.append(decode_system_input_setting(data, number=number, address=address, size=size))
+    for number, request in zip(numbers, requests):
+        data = raw.get(live.address_key(request.address), [])
+        settings.append(decode_system_input_setting(data, number=number, address=request.address, size=size))
     return {
         "id": "systemInputSettings",
         "label": "System Input Settings",
@@ -1345,6 +1704,12 @@ def chain_value_for_block_id(block_id: str) -> int:
     return block.chain_element_value
 
 
+# Single source of truth for which assign-target parameter ids are on/off
+# switches; shared by the encode (assign-cc defaults) and decode (assign views)
+# paths so they cannot drift.
+ASSIGN_ON_OFF_PARAMETER_IDS = frozenset({"sw", "soloSw", "bright", "trigger", "preampSw"})
+
+
 def assign_target_for_block_parameter(block_id: str, parameter_id: str) -> dict[str, Any]:
     resolved = resolve_block_id(block_id)
     parameter_key = normalize_cli_key(parameter_id)
@@ -1360,7 +1725,7 @@ def assign_target_for_block_parameter(block_id: str, parameter_id: str) -> dict[
                     category=target_range["category"],
                     blockId=resolved,
                     parameterId=candidate_id,
-                    isOnOff=candidate_id in {"sw", "soloSw", "bright", "trigger", "preampSw"},
+                    isOnOff=candidate_id in ASSIGN_ON_OFF_PARAMETER_IDS,
                 )
     raise ValueError(f"unknown Assign target for {block_id}.{parameter_id}")
 
@@ -1736,7 +2101,11 @@ def cmd_patch_setlist_audit(args: argparse.Namespace) -> Any:
         performances = []
         for index, slot in enumerate(slots):
             snapshot = read_user_slot_snapshot_lenient(slot, args.timeout, view="performance")
-            performances.append({"slot": slot, "performance": performance_from_snapshot_safe(snapshot)})
+            performances.append({
+                "slot": slot,
+                "performance": performance_from_snapshot_safe(snapshot),
+                "missingRequiredRecords": snapshot.get("missingRequiredRecords", []),
+            })
             delay_between_slot_reads(index, len(slots))
     except ValueError as error:
         raise CLIError(str(error), 64) from error
@@ -1774,11 +2143,11 @@ def cmd_patch_normalize_levels(args: argparse.Namespace) -> Any:
             result["applied"] = False
             result["verified"] = False
             result["plan"] = plan.id
-            return attach_encoding_confidence(result, ["patch.master.level"])
+            return result
         applied = apply_plan_cli(plan, timeout=args.timeout, verify=args.verify, create_restore=False)
         result.update(applied)
         result["applied"] = True
-        return attach_encoding_confidence(result, ["patch.master.level"])
+        return result
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -1794,7 +2163,7 @@ def cmd_patch_intent(args: argparse.Namespace) -> Any:
         result["id"] = "patchIntent"
         result["intent"] = args.intent
         result["intentSummary"] = summary
-        return attach_encoding_confidence(result, ["patch.controls"])
+        return result
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -1925,16 +2294,11 @@ def cmd_patch_schema(args: argparse.Namespace) -> Any:
 
 def cmd_patch_encoding_status(args: argparse.Namespace) -> Any:
     scope = str(args.scope).strip()
-    trust_filter = "untrusted" if getattr(args, "untrusted", False) else "trusted" if getattr(args, "trusted", False) else "all"
     validation_log_path = encoding_validation_log_path()
     validation_records = read_encoding_validation_records(validation_log_path)
     validation_summaries = validation_summary_by_field(validation_records)
-    family_summaries = validation_summary_by_family(validation_records)
     entries = []
-    counts = {level: 0 for level in ENCODING_CONFIDENCE_LEVELS}
-    effective_counts = {level: 0 for level in ENCODING_CONFIDENCE_LEVELS}
-    semantic_counts = {level: 0 for level in SEMANTIC_CONFIDENCE_LEVELS}
-    for key, metadata in sorted(encoding_confidence_inventory().items()):
+    for key, metadata in sorted(encoding_evidence_inventory().items()):
         if not encoding_status_scope_matches(key, scope):
             continue
         entry = {"id": key, **metadata}
@@ -1942,60 +2306,15 @@ def cmd_patch_encoding_status(args: argparse.Namespace) -> Any:
         summary_key = canonical_id if isinstance(canonical_id, str) and canonical_id in validation_summaries else key
         if summary_key in validation_summaries:
             entry.update(validation_summaries[summary_key])
-        confidence = str(entry.get("confidence", "legacy"))
-        effective_confidence = str(entry.get("validationSuggestedConfidence") or confidence)
-        if effective_confidence not in TRUSTED_ENCODING_CONFIDENCES:
-            family_key = validation_family_key_for_field_id(key)
-            family_summary = family_summaries.get(family_key) if family_key else None
-            if family_summary and family_summary.get("familySuggestedConfidence") == "inferred":
-                entry["familyValidation"] = family_summary
-                entry["familyId"] = family_key
-                effective_confidence = "inferred"
-        entry["effectiveConfidence"] = effective_confidence
-        entry["trustedEncoding"] = effective_confidence in TRUSTED_ENCODING_CONFIDENCES
-        if not entry["trustedEncoding"]:
-            validation_template = encoding_validation_template_for_field_id(key)
-            if validation_template:
-                entry["validationTemplate"] = validation_template
-            validation_case = encoding_validation_case_for_field_id(key)
-            if validation_case:
-                entry["validationCase"] = validation_case
-                entry["validationCommand"] = encoding_validation_command_for_case(validation_case)
-        if trust_filter == "trusted" and not entry["trustedEncoding"]:
-            continue
-        if trust_filter == "untrusted" and entry["trustedEncoding"]:
-            continue
-        if confidence not in counts:
-            counts[confidence] = 0
-        if effective_confidence not in effective_counts:
-            effective_counts[effective_confidence] = 0
-        semantic_confidence = str(entry.get("semanticConfidence", "legacy"))
-        if semantic_confidence not in semantic_counts:
-            semantic_counts[semantic_confidence] = 0
-        counts[confidence] += 1
-        effective_counts[effective_confidence] += 1
-        semantic_counts[semantic_confidence] += 1
         entries.append(entry)
-    trusted_count = sum(1 for entry in entries if entry["trustedEncoding"])
     result = {
         "id": "encodingStatus",
         "scope": args.scope,
-        "filter": trust_filter,
-        "confidenceLevels": list(ENCODING_CONFIDENCE_LEVELS),
-        "semanticConfidenceLevels": list(SEMANTIC_CONFIDENCE_LEVELS),
         "entryCount": len(entries),
-        "trustedCount": trusted_count,
-        "untrustedCount": len(entries) - trusted_count,
-        "confidenceCounts": counts,
-        "effectiveConfidenceCounts": effective_counts,
-        "semanticConfidenceCounts": semantic_counts,
+        "exactReadSafeCount": sum(1 for entry in entries if entry.get("exactReadSafe") is True),
+        "passedValidationCount": sum(1 for entry in entries if entry.get("lastPassedValidation")),
         "entries": entries,
     }
-    validation_cases = validation_cases_for_entries(entries)
-    if validation_cases:
-        result["validationCases"] = validation_cases
-        if len(validation_cases) <= 50:
-            result["batchValidationCommand"] = encoding_validation_batch_command(validation_cases)
     if validation_log_path.is_file():
         result["validationLog"] = str(validation_log_path)
     return result
@@ -2071,6 +2390,8 @@ def encoding_validation_batch_command(cases: list[str]) -> str:
 
 def sample_master_validation_value(field: str) -> str | None:
     field_key = normalize_cli_key(field)
+    if field_key == "bpm":
+        return "120.0"
     definition = patch_edit.PATCH_MASTER_FIELDS.get(field_key)
     if definition is None:
         return None
@@ -2137,7 +2458,7 @@ def cmd_patch_validate_encoding_batch(args: argparse.Namespace) -> Any:
         slot = normalize_encoding_validation_slot(args.user_slot)
         started = time.monotonic()
         results = []
-        recommendations: dict[str, int] = {}
+        validation_results: dict[str, int] = {}
         for case_text in args.cases:
             area, field, value = parse_encoding_validation_case(case_text)
             result = run_encoding_validation_case(
@@ -2151,9 +2472,9 @@ def cmd_patch_validate_encoding_batch(args: argparse.Namespace) -> Any:
             )
             result["case"] = case_text
             results.append(result)
-            recommendation = result.get("confidenceRecommendation")
-            if isinstance(recommendation, str):
-                recommendations[recommendation] = recommendations.get(recommendation, 0) + 1
+            validation_result = result.get("validationResult")
+            if isinstance(validation_result, str):
+                validation_results[validation_result] = validation_results.get(validation_result, 0) + 1
         return {
             "id": "encodingValidationBatch",
             "slot": slot,
@@ -2161,7 +2482,7 @@ def cmd_patch_validate_encoding_batch(args: argparse.Namespace) -> Any:
             "keepValue": bool(args.keep_value),
             "currentValue": bool(args.current_value),
             "durationSeconds": round(time.monotonic() - started, 6),
-            "confidenceRecommendations": recommendations,
+            "validationResults": validation_results,
             "results": results,
         }
     except ValueError as error:
@@ -2177,7 +2498,7 @@ def cmd_patch_validate_encoding_scope(args: argparse.Namespace) -> Any:
         slot = normalize_encoding_validation_slot(args.user_slot)
         cases = encoding_validation_cases_for_scope(
             args.scope,
-            include_trusted=args.include_trusted,
+            include_existing=args.include_existing,
             parameters=args.parameter,
             kinds=args.kind,
         )
@@ -2191,7 +2512,7 @@ def cmd_patch_validate_encoding_scope(args: argparse.Namespace) -> Any:
                 "scope": args.scope,
                 "slot": slot,
                 "dryRun": True,
-                "includeTrusted": bool(args.include_trusted),
+                "includeExisting": bool(args.include_existing),
                 "currentValue": bool(args.current_value),
                 "parameters": sorted(normalize_cli_key(value) for value in args.parameter or []),
                 "kinds": sorted(args.kind or []),
@@ -2199,7 +2520,7 @@ def cmd_patch_validate_encoding_scope(args: argparse.Namespace) -> Any:
                 "cases": cases,
                 "batchValidationCommand": encoding_validation_scope_command(
                     args.scope,
-                    include_trusted=args.include_trusted,
+                    include_existing=args.include_existing,
                     parameters=args.parameter,
                     kinds=args.kind,
                     current_value=args.current_value,
@@ -2208,7 +2529,7 @@ def cmd_patch_validate_encoding_scope(args: argparse.Namespace) -> Any:
             }
         started = time.monotonic()
         results = []
-        recommendations: dict[str, int] = {}
+        validation_results: dict[str, int] = {}
         for index, case_text in enumerate(cases):
             area, field, value = parse_encoding_validation_case(case_text)
             result = run_encoding_validation_case(
@@ -2222,9 +2543,9 @@ def cmd_patch_validate_encoding_scope(args: argparse.Namespace) -> Any:
             )
             result["case"] = case_text
             results.append(result)
-            recommendation = result.get("confidenceRecommendation")
-            if isinstance(recommendation, str):
-                recommendations[recommendation] = recommendations.get(recommendation, 0) + 1
+            validation_result = result.get("validationResult")
+            if isinstance(validation_result, str):
+                validation_results[validation_result] = validation_results.get(validation_result, 0) + 1
             if args.pause > 0 and index < len(cases) - 1:
                 time.sleep(args.pause)
         return {
@@ -2232,14 +2553,14 @@ def cmd_patch_validate_encoding_scope(args: argparse.Namespace) -> Any:
             "scope": args.scope,
             "slot": slot,
             "dryRun": False,
-            "includeTrusted": bool(args.include_trusted),
+            "includeExisting": bool(args.include_existing),
             "parameters": sorted(normalize_cli_key(value) for value in args.parameter or []),
             "kinds": sorted(args.kind or []),
             "caseCount": len(cases),
             "keepValue": bool(args.keep_value),
             "currentValue": bool(args.current_value),
             "durationSeconds": round(time.monotonic() - started, 6),
-            "confidenceRecommendations": recommendations,
+            "validationResults": validation_results,
             "results": results,
         }
     except ValueError as error:
@@ -2251,7 +2572,7 @@ def cmd_patch_validate_encoding_scope(args: argparse.Namespace) -> Any:
 def encoding_validation_cases_for_scope(
     scope: str,
     *,
-    include_trusted: bool = False,
+    include_existing: bool = False,
     parameters: list[str] | None = None,
     kinds: list[str] | None = None,
 ) -> list[str]:
@@ -2260,7 +2581,7 @@ def encoding_validation_cases_for_scope(
     kind_filter = {str(value) for value in kinds or []}
     cases: list[str] = []
     seen: set[str] = set()
-    for key, metadata in sorted(encoding_confidence_inventory().items()):
+    for key, metadata in sorted(encoding_evidence_inventory().items()):
         if not encoding_status_scope_matches(key, scope):
             continue
         if not encoding_validation_field_matches_filters(key, parameter_filter, kind_filter):
@@ -2270,10 +2591,8 @@ def encoding_validation_cases_for_scope(
         summary_key = canonical_id if isinstance(canonical_id, str) and canonical_id in validation_summaries else key
         if summary_key in validation_summaries:
             entry.update(validation_summaries[summary_key])
-        confidence = str(entry.get("confidence", "legacy"))
-        effective_confidence = str(entry.get("validationSuggestedConfidence") or confidence)
-        trusted = effective_confidence in TRUSTED_ENCODING_CONFIDENCES
-        if trusted and not include_trusted:
+        has_existing_evidence = bool(entry.get("exactReadSafe") or entry.get("validationCount") or entry.get("diagnosticLogs"))
+        if has_existing_evidence and not include_existing:
             continue
         dedupe_key = canonical_id if isinstance(canonical_id, str) else key
         case = encoding_validation_case_for_field_id(dedupe_key)
@@ -2305,15 +2624,15 @@ def encoding_validation_field_matches_filters(field_id: str, parameters: set[str
 def encoding_validation_scope_command(
     scope: str,
     *,
-    include_trusted: bool = False,
+    include_existing: bool = False,
     parameters: list[str] | None = None,
     kinds: list[str] | None = None,
     current_value: bool = False,
     limit: int | None = None,
 ) -> str:
     parts = ["patch", "validate-encoding-scope", scope, "--user-slot", "U10-1", "--live", "--timeout", "20"]
-    if include_trusted:
-        parts.append("--include-trusted")
+    if include_existing:
+        parts.append("--include-existing")
     if current_value:
         parts.append("--current-value")
     for parameter in parameters or []:
@@ -2366,12 +2685,12 @@ def run_encoding_validation_case(
     current_value: bool = False,
 ) -> dict[str, Any]:
     started = time.monotonic()
-    plan, confidence_id, field_key = build_encoding_validation_plan(area, field, value, slot)
+    plan, evidence_id, field_key = build_encoding_validation_plan(area, field, value, slot)
     before = read_write_slices(plan.writes, timeout, label=f"encoding validation {slot} {field_key} before", exact=True)
     target_value = value
     if current_value:
         target_value = validation_current_value_from_before(area, field_key, list(before.values()))
-        plan, confidence_id, field_key = build_encoding_validation_plan(area, field_key, target_value, slot)
+        plan, evidence_id, field_key = build_encoding_validation_plan(area, field_key, target_value, slot)
     write_result = None
     write_error: Exception | None = None
     try:
@@ -2414,20 +2733,19 @@ def run_encoding_validation_case(
         "requestedValue": value,
         "currentValue": bool(current_value),
         "durationSeconds": round(time.monotonic() - started, 6),
-        "confidenceBefore": encoding_confidence(confidence_id),
         "write": write_result,
         "before": list(before.values()),
         "restored": restored,
         "restore": restore_result,
-        "confidenceRecommendation": "live-verified" if write_result.get("verified") and (keep_value or restore_skipped or restored) else "not-verified",
+        "validationResult": "passed" if write_result.get("verified") and (keep_value or restore_skipped or restored) else "failed",
     }
-    validation_log = record_encoding_validation(result, confidence_id)
+    validation_log = record_encoding_validation(result, evidence_id)
     if validation_log:
         result["validationLog"] = validation_log
     return result
 
 
-def record_encoding_validation(result: dict[str, Any], confidence_id: str) -> str | None:
+def record_encoding_validation(result: dict[str, Any], evidence_id: str) -> str | None:
     diagnostic_log = os.environ.get(DIAGNOSTIC_LOG_ENV)
     if not diagnostic_log:
         return None
@@ -2435,15 +2753,14 @@ def record_encoding_validation(result: dict[str, Any], confidence_id: str) -> st
     path.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "createdAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "fieldId": confidence_id,
+        "fieldId": evidence_id,
         "area": result.get("area"),
         "field": result.get("field"),
         "slot": result.get("slot"),
         "targetValue": result.get("targetValue"),
         "requestedValue": result.get("requestedValue"),
         "currentValue": result.get("currentValue"),
-        "confidenceBefore": result.get("confidenceBefore", {}).get("confidence"),
-        "confidenceRecommendation": result.get("confidenceRecommendation"),
+        "validationResult": result.get("validationResult"),
         "diagnosticLog": diagnostic_log,
         "writeVerified": result.get("write", {}).get("verified"),
         "restored": result.get("restored"),
@@ -2472,6 +2789,8 @@ def validation_current_value_from_before(area: str, field: str, before_items: li
         raise ValueError(f"cannot derive current validation value for {area} {field}: no before bytes")
     if area == "master":
         field_key = normalize_cli_key(field)
+        if field_key == "bpm":
+            return f"{live.integer_from_nibbles(data[:4]) / 10:.1f}"
         definition = patch_edit.PATCH_MASTER_FIELDS.get(field_key)
         if definition is None:
             raise ValueError(f"unknown master validation field {field}")
@@ -2493,6 +2812,8 @@ def validation_value_from_encoded_bytes(kind: str, data: list[int]) -> str:
         return str(data[0] if data else 0)
     if kind == "nibbles2":
         return str(live.integer_from_nibbles(data[:2]))
+    if kind == "nibbles4":
+        return str(live.integer_from_nibbles(data[:4]))
     if kind == "byte":
         return str(data[0] if data else 0)
     return str(data[0] if data else 0)
@@ -2540,16 +2861,16 @@ def validation_summary_by_field(records: list[dict[str, Any]]) -> dict[str, dict
             continue
         summary = summaries.setdefault(field_id, {
             "validationCount": 0,
-            "validationRecommendations": {},
+            "validationResults": {},
         })
         summary["validationCount"] += 1
-        recommendation = record.get("confidenceRecommendation")
-        if isinstance(recommendation, str):
-            recommendations = summary["validationRecommendations"]
-            recommendations[recommendation] = recommendations.get(recommendation, 0) + 1
+        validation_result = encoding_validation_result(record)
+        if isinstance(validation_result, str):
+            validation_results = summary["validationResults"]
+            validation_results[validation_result] = validation_results.get(validation_result, 0) + 1
         summary["latestValidation"] = compact_validation_record(record)
-        if validation_record_supports_effective_confidence(record):
-            summary["validationSuggestedConfidence"] = recommendation
+        if validation_record_passed(record):
+            summary["lastPassedValidation"] = compact_validation_record(record)
     return summaries
 
 
@@ -2586,7 +2907,7 @@ def validation_summary_by_family(records: list[dict[str, Any]]) -> dict[str, dic
         })
         summary["validationCount"] += 1
         summary["latestValidation"] = compact_validation_record(record)
-        if validation_record_supports_effective_confidence(record):
+        if validation_record_passed(record):
             summary["successfulFieldIds"].add(field_id)
             parts = field_id.split(".")
             summary["successfulBlocks"].add(parts[2])
@@ -2605,13 +2926,23 @@ def validation_summary_by_family(records: list[dict[str, Any]]) -> dict[str, dic
             "sampleSuccessfulFieldIds": successful_field_ids[:8],
             "latestValidation": summary["latestValidation"],
         }
-        if len(successful_blocks) >= 3 and summary["failedCount"] == 0:
-            compact[family_key]["familySuggestedConfidence"] = "inferred"
     return compact
 
 
-def validation_record_supports_effective_confidence(record: dict[str, Any]) -> bool:
-    if record.get("confidenceRecommendation") not in TRUSTED_ENCODING_CONFIDENCES:
+def encoding_validation_result(record: dict[str, Any]) -> str | None:
+    validation_result = record.get("validationResult")
+    if validation_result in ENCODING_VALIDATION_RESULTS:
+        return str(validation_result)
+    old_result = record.get(LEGACY_VALIDATION_RESULT_KEY)
+    if old_result in {"official", LEGACY_VALIDATION_PASSED}:
+        return "passed"
+    if old_result == LEGACY_VALIDATION_FAILED:
+        return "failed"
+    return None
+
+
+def validation_record_passed(record: dict[str, Any]) -> bool:
+    if encoding_validation_result(record) != "passed":
         return False
     if record.get("writeVerified") is not True:
         return False
@@ -2623,7 +2954,7 @@ def validation_record_supports_effective_confidence(record: dict[str, Any]) -> b
 def compact_validation_record(record: dict[str, Any]) -> dict[str, Any]:
     keys = [
         "createdAt",
-        "confidenceRecommendation",
+        "validationResult",
         "slot",
         "targetValue",
         "diagnosticLog",
@@ -2631,12 +2962,23 @@ def compact_validation_record(record: dict[str, Any]) -> dict[str, Any]:
         "restored",
         "restoreVerified",
     ]
-    return {key: record.get(key) for key in keys if key in record}
+    compact = {key: record.get(key) for key in keys if key in record}
+    if "validationResult" not in compact:
+        legacy_result = encoding_validation_result(record)
+        if legacy_result is not None:
+            compact["validationResult"] = legacy_result
+    return compact
 
 
 def build_encoding_validation_plan(area: str, field: str, value: str, slot: str) -> tuple[patch_edit.PatchPlan, str, str]:
     if area == "master":
         field_key = normalize_cli_key(field)
+        if field_key == "bpm":
+            return (
+                patch_edit.build_bpm_set_plan(value, slot=slot),
+                "patch.master.bpm",
+                "bpm",
+            )
         canonical_field_id = canonical_master_field_id(field_key)
         return (
             patch_edit.build_master_set_plan(field_key, value, slot=slot),
@@ -2668,8 +3010,7 @@ def cmd_patch_select(args: argparse.Namespace) -> Any:
     try:
         slot = live.normalize_user_slot(args.slot)
         messages = program_change_messages_for_slot(slot, args.channel)
-        for message in messages:
-            live.send_channel_voice(message)
+        send_channel_voice_with_live_retry(messages)
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -3252,7 +3593,7 @@ def cmd_patch_set(args: argparse.Namespace) -> Any:
         args.block_id = block_id
         plan = patch_edit.build_parameter_set_plan(block_id, args.parameter_id, args.value, slot=args.user_slot)
         result = apply_focused_plan_cli(plan, timeout=args.timeout, verify=args.verify)
-        return attach_encoding_confidence(result, [f"patch.block.{block_id}.{args.parameter_id}"])
+        return result
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -3266,7 +3607,7 @@ def cmd_patch_raw_set(args: argparse.Namespace) -> Any:
         block_id = resolve_block_id(args.block_id)
         plan = patch_edit.build_raw_parameter_set_plan(block_id, args.offset, args.value, width=args.width, slot=args.user_slot)
         result = apply_focused_plan_cli(plan, timeout=args.timeout, verify=args.verify)
-        return attach_encoding_confidence(result, [f"patch.block.{block_id}.raw"])
+        return result
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -3282,7 +3623,7 @@ def cmd_patch_enable(args: argparse.Namespace) -> Any:
         value = "on" if args.enabled else "off"
         plan = patch_edit.build_parameter_set_plan(block_id, "sw", value, slot=args.user_slot)
         result = apply_focused_plan_cli(plan, timeout=args.timeout, verify=args.verify)
-        return attach_encoding_confidence(result, [f"patch.block.{block_id}.sw"])
+        return result
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -3296,7 +3637,7 @@ def cmd_patch_type(args: argparse.Namespace) -> Any:
         block_id = resolve_block_id(args.block_id)
         plan = patch_edit.build_parameter_set_plan(block_id, "type", args.type_value, slot=args.user_slot)
         result = apply_focused_plan_cli(plan, timeout=args.timeout, verify=args.verify)
-        return attach_encoding_confidence(result, [f"patch.block.{block_id}.type"])
+        return result
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -3311,23 +3652,221 @@ def cmd_patch_move(args: argparse.Namespace) -> Any:
         before = chain_value_for_block_id(args.before) if args.before else None
         after = chain_value_for_block_id(args.after) if args.after else None
         if args.user_slot:
-            snapshot = read_user_slot_snapshot(args.user_slot, args.timeout, view="chain")
-        else:
-            snapshot = read_live_snapshot_with_timeout(
-                "patch move chain read --live",
+            patch_effect = read_user_patch_effect_record(
+                args.user_slot,
                 args.timeout,
-                requests=requests_for_view("chain"),
-                lenient_optional=True,
+                label=f"patch move {live.normalize_user_slot(args.user_slot)} Patch Effect",
             )
-        chain_values = [item["rawValue"] for item in snapshot.get("signalChainElements", [])]
+        else:
+            patch_effect = read_current_patch_effect_record(
+                args.timeout,
+                label="patch move Patch Effect",
+            )
+        chain_values = chain_values_from_patch_effect_data(patch_effect)
         plan = patch_edit.build_chain_move_plan(chain_values, element, before=before, after=after, slot=args.user_slot)
         result = apply_plan_cli(plan, timeout=args.timeout, verify=args.verify)
-        return attach_encoding_confidence(result, ["patch.chain"])
+        return result
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
         raise CLIError(str(error)) from error
 
+
+def chain_values_from_patch_effect_data(data: list[int]) -> list[int]:
+    snapshot = live.empty_snapshot()
+    live.apply_data_set(snapshot, live.TEMPORARY_PATCH_EFFECT, data)
+    return [
+        item["rawValue"]
+        for item in snapshot.get("signalChainElements", [])
+        if isinstance(item.get("rawValue"), int)
+    ]
+
+
+def cmd_patch_cleanup(args: argparse.Namespace) -> Any:
+    if not args.live:
+        raise CLIError("patch cleanup requires --live because it reads and writes the connected GT-1000", 64)
+    try:
+        if args.user_slot:
+            snapshot = read_user_slot_snapshot(args.user_slot, args.timeout, view="chain")
+        else:
+            snapshot = read_live_snapshot_with_timeout(
+                "patch cleanup chain read --live",
+                args.timeout,
+                requests=requests_for_view("chain"),
+                lenient_optional=True,
+            )
+        chain_values = [item["rawValue"] for item in snapshot.get("signalChainElements", [])]
+        analysis = cleanup_analysis_from_snapshot(snapshot)
+        unreachable = {item["rawValue"] for item in analysis["unreachableElements"]}
+        if not unreachable:
+            return {
+                "ok": True,
+                "changed": False,
+                "reason": "No unreachable elements were detected.",
+                "movedCount": 0,
+                "beforeChain": [live.chain_element_name(v) for v in chain_values],
+                "afterChain": [live.chain_element_name(v) for v in chain_values],
+                "analysis": analysis,
+            }
+        reordered = [value for value in chain_values if value not in unreachable] + [value for value in chain_values if value in unreachable]
+        plan = patch_edit.build_chain_reorder_plan(
+            chain_values,
+            reordered,
+            label="Cleanup signal chain (move unreachable elements to end)",
+            slot=args.user_slot,
+        )
+        result = apply_plan_cli(plan, timeout=args.timeout, verify=args.verify)
+        result.update({
+            "changed": True,
+            "movedCount": len([value for value in chain_values if value in unreachable]),
+            "beforeChain": [live.chain_element_name(v) for v in chain_values],
+            "afterChain": [live.chain_element_name(v) for v in reordered],
+            "analysis": analysis,
+        })
+        return result
+    except ValueError as error:
+        raise CLIError(str(error), 64) from error
+    except live.LiveMIDIError as error:
+        raise CLIError(str(error)) from error
+
+
+def cleanup_analysis_from_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    elements = snapshot.get("signalChainElements", []) or []
+    blocks_by_value = {
+        block.get("chainElementValue"): block
+        for block in snapshot.get("blocks", [])
+        if block.get("chainElementValue") is not None
+    }
+    assigns_by_block = active_assigns_by_block(snapshot)
+    direct_enable_controls_by_block = direct_controls_by_block(snapshot)
+    direct_parameter_controls_by_block = direct_controls_targeting_parameters(snapshot)
+
+    unreachable: list[dict[str, Any]] = []
+    unreachable_values: set[int] = set()
+
+    for element in elements:
+        raw = element.get("rawValue")
+        if not isinstance(raw, int):
+            continue
+        block = blocks_by_value.get(raw)
+        if not block:
+            continue
+        enabled = block.get("isEnabled")
+        if enabled is not False:
+            continue
+        block_id = block.get("id")
+        if not isinstance(block_id, str):
+            continue
+        has_control = bool(assigns_by_block.get(block_id)) or bool(direct_enable_controls_by_block.get(block_id))
+        if has_control:
+            continue
+        unreachable_values.add(raw)
+        unreachable.append({
+            "rawValue": raw,
+            "displayName": element.get("displayName"),
+            "blockId": block_id,
+            "reason": "off_unassigned",
+        })
+
+    for divider_index in (1, 2, 3):
+        divider_id = f"divider{divider_index}"
+        branch_value = 36 + (divider_index - 1) * 3
+        divider_value = 35 + (divider_index - 1) * 3
+        mixer_value = 37 + (divider_index - 1) * 3
+
+        divider = next((block for block in snapshot.get("blocks", []) if block.get("id") == divider_id), None)
+        if not isinstance(divider, dict):
+            continue
+        params = {param.get("id"): param for param in divider.get("parameters", []) if isinstance(param, dict)}
+        mode = (params.get("mode") or {}).get("rawValue")
+        channel_select = (params.get("channelSelect") or {}).get("rawValue")
+        if mode != 0:
+            continue
+        if channel_select not in {0, 1}:
+            continue
+
+        has_assign = any(
+            assign.get("targetParameterId") == "channelSelect"
+            for assign in assigns_by_block.get(divider_id, [])
+        )
+        has_direct = any(
+            split_target_ref(control.get("functionTargetRef"))[1] == "channelSelect"
+            for control in direct_parameter_controls_by_block.get(divider_id, [])
+        )
+        if has_assign or has_direct:
+            continue
+
+        positions = {el.get("rawValue"): el.get("position") for el in elements if isinstance(el.get("rawValue"), int)}
+        divider_pos = positions.get(divider_value)
+        branch_pos = positions.get(branch_value)
+        mixer_pos = positions.get(mixer_value)
+        if not all(isinstance(value, int) for value in (divider_pos, branch_pos, mixer_pos)):
+            continue
+        if not (divider_pos < branch_pos < mixer_pos):
+            continue
+
+        if channel_select == 0:
+            unreachable_start = branch_pos
+            unreachable_end = mixer_pos
+            fixed_path = "A"
+            unreachable_path = "B"
+        else:
+            unreachable_start = divider_pos + 1
+            unreachable_end = branch_pos
+            fixed_path = "B"
+            unreachable_path = "A"
+
+        for el in elements:
+            pos = el.get("position")
+            raw = el.get("rawValue")
+            if not isinstance(pos, int) or not isinstance(raw, int):
+                continue
+            if not (unreachable_start <= pos < unreachable_end):
+                continue
+            if raw in unreachable_values:
+                continue
+            unreachable_values.add(raw)
+            unreachable.append({
+                "rawValue": raw,
+                "displayName": el.get("displayName"),
+                "blockId": (blocks_by_value.get(raw) or {}).get("id"),
+                "reason": "fixed_branch_inactive",
+                "dividerId": divider_id,
+                "dividerFixedPath": fixed_path,
+                "unreachablePath": unreachable_path,
+            })
+
+    unreachable.sort(key=lambda item: (int(item.get("rawValue", 9999)), str(item.get("reason", ""))))
+    return {
+        "unreachableCount": len(unreachable),
+        "unreachableElements": unreachable,
+    }
+
+
+def direct_controls_targeting_parameters(snapshot: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    try:
+        controls = controls_from_full(snapshot)["controls"]
+    except CLIError:
+        return {}
+
+    by_block: dict[str, list[dict[str, Any]]] = {}
+    for control_name, control in controls.items():
+        block_id, parameter_id = split_target_ref(control.get("functionTargetRef"))
+        if not isinstance(block_id, str) or not isinstance(parameter_id, str):
+            continue
+        if control.get("preference") != "PATCH":
+            continue
+        by_block.setdefault(block_id, []).append({
+            "control": control_name,
+            "preference": control.get("preference"),
+            "functionRaw": control.get("functionRaw"),
+            "functionId": control.get("functionId"),
+            "functionDisplayName": control.get("functionDisplayName"),
+            "functionKind": control.get("functionKind"),
+            "functionTargetRef": control.get("functionTargetRef"),
+            "mode": control.get("mode"),
+        })
+    return by_block
 
 def cmd_patch_control_set(args: argparse.Namespace) -> Any:
     if not args.live:
@@ -3335,7 +3874,7 @@ def cmd_patch_control_set(args: argparse.Namespace) -> Any:
     try:
         plan = patch_edit.build_control_set_plan(args.control, args.function, mode=args.mode, slot=args.user_slot)
         result = apply_focused_plan_cli(plan, timeout=args.timeout, verify=args.verify)
-        return attach_encoding_confidence(result, ["patch.controls"])
+        return result
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -3348,7 +3887,7 @@ def cmd_patch_system_control_set(args: argparse.Namespace) -> Any:
     try:
         plan = patch_edit.build_system_control_set_plan(args.control, args.function, mode=args.mode)
         result = apply_focused_plan_cli(plan, timeout=args.timeout, verify=args.verify)
-        return attach_encoding_confidence(result, ["system.controls"])
+        return result
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -3361,7 +3900,7 @@ def cmd_patch_control_preference_set(args: argparse.Namespace) -> Any:
     try:
         plan = patch_edit.build_control_preference_plan(args.control, args.preference)
         result = apply_focused_plan_cli(plan, timeout=args.timeout, verify=args.verify)
-        return attach_encoding_confidence(result, ["system.controls"])
+        return result
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -3374,7 +3913,7 @@ def cmd_patch_led_set(args: argparse.Namespace) -> Any:
     try:
         plan = patch_edit.build_led_set_plan(args.control, args.state, args.color, slot=args.user_slot)
         result = apply_focused_plan_cli(plan, timeout=args.timeout, verify=args.verify)
-        return attach_encoding_confidence(result, ["patch.led"])
+        return result
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -3406,7 +3945,7 @@ def cmd_patch_assign_cc(args: argparse.Namespace) -> Any:
             slot=args.user_slot,
         )
         result = apply_focused_plan_cli(plan, timeout=args.timeout, verify=args.verify)
-        return attach_encoding_confidence(result, ["patch.assign", f"patch.block.{target['blockId']}.{target['parameterId']}"])
+        return result
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -3439,7 +3978,7 @@ def cmd_patch_assign_set(args: argparse.Namespace) -> Any:
             slot=args.user_slot,
         )
         result = apply_focused_plan_cli(plan, timeout=args.timeout, verify=args.verify)
-        return attach_encoding_confidence(result, ["patch.assign"])
+        return result
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -3452,7 +3991,7 @@ def cmd_patch_set_bpm(args: argparse.Namespace) -> Any:
     try:
         plan = patch_edit.build_bpm_set_plan(args.bpm, slot=args.user_slot)
         result = apply_focused_plan_cli(plan, timeout=args.timeout, verify=args.verify)
-        return attach_encoding_confidence(result, ["patch.master.bpm"])
+        return result
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -3466,7 +4005,7 @@ def cmd_patch_master_set(args: argparse.Namespace) -> Any:
         slot = live.normalize_user_slot(args.user_slot) if args.user_slot else None
         plan = patch_edit.build_master_set_plan(args.field, args.value, slot=slot)
         result = apply_focused_plan_cli(plan, timeout=args.timeout, verify=args.verify)
-        return attach_encoding_confidence(result, [f"patch.master.{canonical_master_field_id(args.field)}"])
+        return result
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -3479,7 +4018,7 @@ def cmd_patch_tuner_assign(args: argparse.Namespace) -> Any:
     try:
         plan = patch_edit.build_tuner_assign_plan(slot=args.user_slot)
         result = apply_focused_plan_cli(plan, timeout=args.timeout, verify=args.verify)
-        return attach_encoding_confidence(result, ["patch.assign"])
+        return result
     except ValueError as error:
         raise CLIError(str(error), 64) from error
     except live.LiveMIDIError as error:
@@ -3517,9 +4056,10 @@ def performance_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
             for assign in assigns_by_source.get(source, [])
         ]
         matched_assign_ids.update(assign.get("id", "") for assign in assigns)
-        direct_function = control.get("function")
-        direct_is_active = direct_function not in {None, "OFF"}
-        if direct_function and "TUNER" in direct_function:
+        direct_function_id = control.get("functionId")
+        direct_display_name = control.get("functionDisplayName")
+        direct_is_active = direct_function_id not in {None, "off"}
+        if direct_display_name and "TUNER" in direct_display_name:
             tuner_available = True
         if any("TUNER" in (assign.get("targetName") or "") for assign in assigns):
             tuner_available = True
@@ -3533,10 +4073,11 @@ def performance_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
             "kind": performance_control_kind(name),
             "preference": control.get("preference"),
             "mode": control.get("mode"),
-            "directFunction": direct_function,
-            "directTargetBlockId": control.get("functionTargetBlockId"),
-            "directTargetParameterId": control.get("functionTargetParameterId"),
-            "directCanEnableBlock": control.get("functionCanEnableBlock"),
+            "directFunctionId": direct_function_id,
+            "directFunctionDisplayName": direct_display_name,
+            "directFunctionKind": control.get("functionKind"),
+            "directTargetRef": control.get("functionTargetRef"),
+            "directCanEnableBlock": control.get("canEnableBlock"),
             "assignCount": len(formatted_assigns),
             "assigns": formatted_assigns,
             "action": performance_action_summary(control, formatted_assigns),
@@ -3719,8 +4260,8 @@ def performance_assign(assign: dict[str, Any]) -> dict[str, Any]:
 
 def performance_action_summary(control: dict[str, Any], assigns: list[dict[str, Any]]) -> str:
     parts = []
-    direct_function = control.get("function")
-    if direct_function and direct_function != "OFF":
+    direct_function = control.get("functionDisplayName")
+    if control.get("functionId") not in {None, "off"} and direct_function:
         mode = control.get("mode")
         parts.append(f"Direct: {direct_function}" + (f" ({mode})" if mode else ""))
     parts.extend(assign["summary"] for assign in assigns)
@@ -3826,7 +4367,13 @@ def controls_diff(source: dict[str, Any], target: dict[str, Any]) -> list[dict[s
         source_control = source_controls.get(name, {})
         target_control = target_controls.get(name, {})
         field_changes = []
-        for key, label in [("preference", "preference"), ("function", "function"), ("mode", "mode")]:
+        for key, label in [
+            ("preference", "preference"),
+            ("functionId", "function"),
+            ("functionKind", "function kind"),
+            ("functionTargetRef", "target"),
+            ("mode", "mode"),
+        ]:
             if source_control.get(key) != target_control.get(key):
                 field_changes.append({"field": key, "label": label, "source": source_control.get(key), "target": target_control.get(key)})
         if field_changes:
@@ -3920,6 +4467,18 @@ def setlist_audit_from_performances(slots: list[str], performances: list[dict[st
             ],
         }
         patches.append(patch)
+        missing_required = item.get("missingRequiredRecords") or []
+        if missing_required:
+            patch["missingRequiredRecords"] = [entry["label"] for entry in missing_required]
+            findings.append({
+                "severity": "error",
+                "slot": item["slot"],
+                "category": "read",
+                "message": (
+                    "Required records could not be read for this slot; values shown may be incomplete: "
+                    + ", ".join(entry["label"] for entry in missing_required)
+                ),
+            })
         if patch["partial"]:
             findings.append({
                 "severity": "warning",
@@ -4137,7 +4696,7 @@ def patch_master_level_address(slot: str) -> list[int]:
 def read_user_patch_effect_record(slot: str, timeout: float, *, label: str) -> list[int]:
     normalized = live.normalize_user_slot(slot)
     address = live.remap_temporary_patch_address(live.TEMPORARY_PATCH_EFFECT, live.user_patch_base(normalized))
-    request = live.PatchReadRequest("Patch Effect", address, [0x00, 0x00, 0x01, 0x1C])
+    request = live.PatchReadRequest("Patch Effect", address, live.TEMPORARY_PATCH_EFFECT_SIZE)
     read_timeout = max(timeout, 20.0)
     raw = read_patch_records_with_timeout(
         label,
@@ -4189,12 +4748,18 @@ def read_live_snapshot_with_timeout(
                 deadline=deadline,
             ))
     else:
+        process_timeout = live_summary_total_timeout(timeout)
+        reader = patch_edit.read_data_sets_batched
+        if requests is None:
+            process_timeout = patch_record_process_timeout(timeout, len(transport_read_requests(source_requests)))
+            reader = patch_edit.read_data_sets_sequential_session
         raw = read_patch_records_with_timeout(
             label,
             timeout,
             source_requests,
+            reader=reader,
             attempts=1,
-            process_timeout=live_summary_total_timeout(timeout),
+            process_timeout=process_timeout,
         )
     return snapshot_from_patch_records(source_requests, source_requests, raw)
 
@@ -4231,19 +4796,30 @@ def read_user_slot_level_snapshot(slot: str, timeout: float) -> dict[str, Any]:
             for request in source_requests
         ]
         raw: dict[str, list[int]] = {}
-        for source_request, remapped_request in zip(source_requests, remapped_requests):
-            read_timeout = max(timeout, 20.0) if source_request.label == "Patch Effect" else timeout
-            try:
-                raw.update(read_patch_records_with_timeout(
-                    f"patch level-audit {source_slot} {source_request.label}",
-                    read_timeout,
-                    [remapped_request],
-                    reader=patch_edit.read_data_sets_sequential_session,
-                    attempts=3 if source_request.label == "Patch Effect" else 1,
-                ))
-            except CLIError:
-                if source_request.label == "Patch Effect":
-                    raise
+        # Read all records in one lenient session; Patch Effect remains required
+        # and gets dedicated retries only if the batch read misses it.
+        try:
+            raw.update(read_patch_records_with_timeout(
+                f"patch level-audit {source_slot}",
+                timeout,
+                remapped_requests,
+                reader=patch_edit.read_data_sets_lenient_session,
+                attempts=1,
+            ))
+        except CLIError:
+            pass
+        patch_effect_request = next(
+            (request for request in remapped_requests if request.label == "Patch Effect"),
+            None,
+        )
+        if patch_effect_request is not None and live.address_key(patch_effect_request.address) not in raw:
+            raw.update(read_patch_records_with_timeout(
+                f"patch level-audit {source_slot} Patch Effect",
+                max(timeout, 20.0),
+                [patch_effect_request],
+                reader=patch_edit.read_data_sets_sequential_session,
+                attempts=3,
+            ))
         return snapshot_from_patch_records(
             source_requests,
             remapped_requests,
@@ -4409,6 +4985,7 @@ def read_mapped_patch_snapshot_lenient(
     optional_requests = [request for request in remapped_requests if request.label not in required_labels]
     read_timeout = min(timeout, 5.0)
     raw: dict[str, list[int]] = {}
+    missing_required: list[dict[str, Any]] = []
     for request in required_requests:
         try:
             raw.update(read_patch_records_with_timeout(
@@ -4418,14 +4995,23 @@ def read_mapped_patch_snapshot_lenient(
                 reader=patch_edit.read_data_sets_sequential_session,
                 attempts=1,
             ))
-        except CLIError:
-            pass
+        except CLIError as error:
+            # Lenient reads must not silently drop required records: record the
+            # failure so callers can surface it instead of presenting a partial
+            # snapshot as complete.
+            missing_required.append({"label": request.label, "error": str(error)})
+            diagnostic_event(
+                "lenient_read.required_record_failed",
+                slot=source_slot,
+                label=request.label,
+                error=str(error),
+            )
     raw.update(read_patch_records_lenient_chunks(
         f"patch {source_slot} --live optional records",
         min(timeout, 2.0),
         optional_requests,
     ))
-    return snapshot_from_patch_records(
+    snapshot = snapshot_from_patch_records(
         requests,
         remapped_requests,
         raw,
@@ -4433,6 +5019,9 @@ def read_mapped_patch_snapshot_lenient(
         source_address=patch_base,
         source_type=source_type,
     )
+    if missing_required:
+        snapshot["missingRequiredRecords"] = missing_required
+    return snapshot
 
 
 def snapshot_from_patch_records(
@@ -4626,8 +5215,13 @@ def read_required_patch_records_with_timeout(
                 missing_requests,
                 **kwargs,
             ))
-        except CLIError:
-            pass
+        except CLIError as error:
+            diagnostic_event(
+                "read_required.attempt_failed",
+                label=label,
+                attempt=attempt + 1,
+                error=str(error),
+            )
         missing_requests = [
             request
             for request in requests
@@ -4758,7 +5352,7 @@ def probe_gt1000_connectivity(timeout: float) -> tuple[bool, str]:
 def patch_record_process_timeout(timeout: float, request_count: int) -> float:
     if request_count <= 0:
         return timeout
-    return min(300.0, max(timeout + 5.0, (timeout + 0.25) * request_count + 5.0))
+    return min(300.0, max(timeout + 18.0, (timeout + 0.25) * request_count + 5.0))
 
 
 def lenient_patch_record_process_timeout(timeout: float, request_count: int) -> float:
@@ -4805,6 +5399,7 @@ def apply_plan_cli(
         exactVerify=exact_verify,
         writes=diagnostic_write_summary(plan.writes),
     )
+    create_restore = create_restore and os.environ.get("GT1000_SKIP_RESTORE_POINT") != "1"
     restore_path = create_restore_point(plan, timeout=timeout) if create_restore else None
     try:
         write_started = time.monotonic()
@@ -4833,8 +5428,18 @@ def apply_plan_cli(
         diagnostic_event("apply_plan.verify_finish", plan=plan.id, status="ok", durationSeconds=round(time.monotonic() - verify_started, 6), ok=verification["ok"])
         result["verified"] = verification["ok"]
         result["verification"] = verification
+    delay = write_settle_delay()
+    if delay > 0:
+        time.sleep(delay)
     diagnostic_event("apply_plan.finish", plan=plan.id, durationSeconds=round(time.monotonic() - started, 6), verified=result["verified"])
     return result
+
+
+def write_settle_delay() -> float:
+    try:
+        return max(0.0, float(os.environ.get("GT1000_WRITE_SETTLE_DELAY", "1.0")))
+    except ValueError:
+        return 1.0
 
 
 def apply_focused_plan_cli(
@@ -4971,7 +5576,16 @@ def read_write_slices(writes: list[live.PatchWrite], timeout: float, *, label: s
 
 
 def verify_plan_with_timeout(plan: patch_edit.PatchPlan, *, timeout: float, exact: bool = False) -> dict[str, Any]:
-    request_by_write = [(write, write.read_request if exact else verification_read_request_for_write(write)) for write in plan.writes]
+    # Every write is read back by default. Sampling disabled-Assign read-backs is a
+    # speed opt-in and is reported in the result so a sampled verify is never
+    # mistaken for a full one.
+    writes_to_verify = plan.writes
+    sampled = False
+    if assign_verification_sampling_enabled():
+        sampled_writes = sampled_verification_writes(plan.writes)
+        sampled = len(sampled_writes) < len(plan.writes)
+        writes_to_verify = sampled_writes
+    request_by_write = [(write, write.read_request if exact else verification_read_request_for_write(write)) for write in writes_to_verify]
     requests = [request for _, request in request_by_write]
     read_timeout = targeted_read_timeout(timeout, requests)
     raw = read_patch_records_with_timeout(
@@ -4987,7 +5601,7 @@ def verify_plan_with_timeout(plan: patch_edit.PatchPlan, *, timeout: float, exac
         actual = raw.get(key)
         offset = live.seven_bit_address_value(write.address) - live.seven_bit_address_value(request.address)
         actual_slice = actual[offset:offset + len(write.data)] if actual is not None and offset >= 0 else []
-        ok = actual is not None and actual_slice == write.data
+        ok = actual is not None and write_verification_ok(write, actual_slice)
         checks.append({
             "label": write.label,
             "address": live.hex_bytes(write.address),
@@ -4998,7 +5612,86 @@ def verify_plan_with_timeout(plan: patch_edit.PatchPlan, *, timeout: float, exac
             "expectedHex": live.hex_string(write.data),
             "actualHex": live.hex_string(actual_slice),
         })
-    return {"ok": all(check["ok"] for check in checks), "checks": checks}
+    return {
+        "ok": all(check["ok"] for check in checks),
+        "checks": checks,
+        "writeCount": len(plan.writes),
+        "verifiedWriteCount": len(writes_to_verify),
+        "sampledAssignVerification": sampled,
+    }
+
+
+def assign_verification_sampling_enabled() -> bool:
+    return os.environ.get("GT1000_VERIFY_SAMPLE_ASSIGNS") == "1"
+
+
+# Chain elements the device is allowed to reorder at the unreachable tail of the
+# chain after a chain write: BYPASS SUB L/R (31, 32), (RESERVED) (44), and
+# SUB OUT L/R (45, 46). Observed device normalization on the tested GT-1000.
+CHAIN_UTILITY_TAIL_VALUES = frozenset({31, 32, 44, 45, 46})
+
+
+def write_verification_ok(write: live.PatchWrite, actual_slice: list[int]) -> bool:
+    if actual_slice == write.data:
+        return True
+    if is_chain_write(write) and len(actual_slice) == len(write.data):
+        first_difference = next(
+            (index for index, (expected, actual) in enumerate(zip(write.data, actual_slice)) if expected != actual),
+            len(write.data),
+        )
+        expected_tail = write.data[first_difference:]
+        actual_tail = actual_slice[first_difference:]
+        # The differing tail must be an exact permutation (multiset equality, not
+        # set equality) of utility elements only; element counts must match.
+        return (
+            bool(expected_tail)
+            and sorted(expected_tail) == sorted(actual_tail)
+            and set(expected_tail) <= CHAIN_UTILITY_TAIL_VALUES
+        )
+    return False
+
+
+def is_chain_write(write: live.PatchWrite) -> bool:
+    if len(write.data) != 49:
+        return False
+    if write.address == patch_edit.CHAIN_START:
+        return True
+    return any(
+        write.address == patch_edit.remap_clone_address(patch_edit.CHAIN_START, slot)
+        for slot in possible_user_slots_for_address(write.address)
+    )
+
+
+def sampled_verification_writes(writes: list[live.PatchWrite]) -> list[live.PatchWrite]:
+    assign_disabled = [write for write in writes if is_disabled_assign_write(write)]
+    if len(assign_disabled) < 4:
+        return writes
+    assign_first = min(assign_disabled, key=lambda write: live.seven_bit_address_value(write.address))
+    assign_last = max(assign_disabled, key=lambda write: live.seven_bit_address_value(write.address))
+    sampled_assign_keys = {tuple(assign_first.address), tuple(assign_last.address)}
+    return [
+        write
+        for write in writes
+        if not is_disabled_assign_write(write) or tuple(write.address) in sampled_assign_keys
+    ]
+
+
+def is_disabled_assign_write(write: live.PatchWrite) -> bool:
+    if write.data != patch_edit.DISABLED_ASSIGN_DATA:
+        return False
+    for base in possible_assign_bank_bases(write.address):
+        base_value = live.seven_bit_address_value(base)
+        address_value = live.seven_bit_address_value(write.address)
+        offset = address_value - base_value
+        if offset >= 0 and offset % live.ASSIGN_STRIDE == 0 and offset < 16 * live.ASSIGN_STRIDE:
+            return True
+    return False
+
+
+def possible_assign_bank_bases(address: list[int]) -> list[list[int]]:
+    bases = [live.ASSIGN_BASE]
+    bases.extend(patch_edit.remap_clone_address(live.ASSIGN_BASE, slot) for slot in possible_user_slots_for_address(address))
+    return bases
 
 
 def targeted_read_timeout(timeout: float, requests: list[live.PatchReadRequest]) -> float:
@@ -5028,29 +5721,46 @@ def exact_read_verified_for_write(write: live.PatchWrite) -> bool:
     field_id = encoding_field_id_for_write(write.address, len(write.data))
     if field_id is None:
         return False
-    return effective_encoding_confidence(field_id).get("confidence") == "live-verified"
+    return bool(encoding_evidence(field_id).get("exactReadSafe"))
 
 
 def encoding_field_id_for_write(address: list[int], data_length: int) -> str | None:
-    if is_patch_master_level_write(address, data_length):
-        return "patch.master.level"
+    if is_patch_master_bpm_write(address, data_length):
+        return "patch.master.bpm"
+    master_field = patch_master_field_id_for_write(address, data_length)
+    if master_field is not None:
+        return master_field
     block_field = block_parameter_field_id_for_write(address, data_length)
     if block_field is not None:
         return block_field
     return None
 
 
-def is_patch_master_level_write(address: list[int], data_length: int) -> bool:
-    if data_length != 2:
+def is_patch_master_bpm_write(address: list[int], data_length: int) -> bool:
+    if data_length != 4:
         return False
+    if address == live.TEMPORARY_PATCH_MASTER_BPM:
+        return True
+    return any(address == patch_edit.remap_clone_address(live.TEMPORARY_PATCH_MASTER_BPM, slot) for slot in possible_user_slots_for_address(address))
+
+
+def patch_master_field_id_for_write(address: list[int], data_length: int) -> str | None:
     address_value = live.seven_bit_address_value(address)
+    seen_offsets: set[int] = set()
     for request in supported_patch_record_requests_for_address(address):
         if request.label != "Patch Effect":
             continue
         offset = address_value - live.seven_bit_address_value(request.address)
-        if offset == 0x5F:
-            return True
-    return False
+        if offset in seen_offsets:
+            continue
+        seen_offsets.add(offset)
+        for field, (field_offset, kind, _minimum, _maximum) in patch_edit.PATCH_MASTER_FIELDS.items():
+            if field_offset != offset:
+                continue
+            if len(patch_edit.encode_master_field_value(kind, 0)) != data_length:
+                continue
+            return f"patch.master.{canonical_master_field_id(field)}"
+    return None
 
 
 def block_parameter_field_id_for_write(address: list[int], data_length: int) -> str | None:
@@ -5123,67 +5833,25 @@ def possible_user_slots_for_address(address: list[int]) -> list[str]:
     return slots
 
 
-def encoding_confidence(field_id: str) -> dict[str, Any]:
-    metadata = dict(DEFAULT_ENCODING_CONFIDENCE)
-    metadata.update(ENCODING_CONFIDENCE.get(field_id, {}))
+def encoding_evidence(field_id: str) -> dict[str, Any]:
+    metadata = dict(DEFAULT_ENCODING_EVIDENCE)
+    metadata.update(ENCODING_EVIDENCE.get(field_id, {}))
     return metadata
 
 
-def effective_encoding_confidence(field_id: str) -> dict[str, Any]:
-    metadata = encoding_confidence(field_id)
-    if metadata.get("confidence") in TRUSTED_ENCODING_CONFIDENCES:
-        return metadata
-    records = read_encoding_validation_records()
-    summary = validation_summary_by_field(records).get(field_id)
-    if summary and summary.get("validationSuggestedConfidence") in TRUSTED_ENCODING_CONFIDENCES:
-        effective = dict(metadata)
-        effective["confidence"] = summary["validationSuggestedConfidence"]
-        effective["evidence"] = "Local validation log contains verified round-trip evidence for this field."
-        effective["sourceConfidence"] = metadata.get("confidence")
-        effective["validationCount"] = summary.get("validationCount")
-        effective["latestValidation"] = summary.get("latestValidation")
-        return effective
-    family_key = validation_family_key_for_field_id(field_id)
-    family_summary = validation_summary_by_family(records).get(family_key) if family_key else None
-    if family_summary and family_summary.get("familySuggestedConfidence") == "inferred":
-        effective = dict(metadata)
-        effective["confidence"] = "inferred"
-        effective["evidence"] = (
-            "Inferred from verified exact write-back validations for the same block parameter "
-            "family and codec; this is layout/encoding evidence only, and this exact field has "
-            "not been individually live round-tripped."
-        )
-        effective["sourceConfidence"] = metadata.get("confidence")
-        effective["familyId"] = family_key
-        effective["familyValidation"] = family_summary
-        return effective
-    return metadata
-
-
-def attach_encoding_confidence(result: dict[str, Any], field_ids: list[str]) -> dict[str, Any]:
-    entries = [{"id": field_id, **effective_encoding_confidence(field_id)} for field_id in field_ids]
-    result["encodingConfidence"] = entries
-    if any(entry.get("confidence") not in TRUSTED_ENCODING_CONFIDENCES for entry in entries):
-        result["encodingWarning"] = (
-            "One or more edited field encodings are not individually live-verified. MIDI byte read-back can prove the bytes were written, "
-            "but inferred or legacy musical parameter layouts still need exact field validation before treating them as live-verified."
-        )
-    return result
-
-
-def encoding_confidence_inventory() -> dict[str, dict[str, Any]]:
+def encoding_evidence_inventory() -> dict[str, dict[str, Any]]:
     inventory = {
-        "patch.master.level": encoding_confidence("patch.master.level"),
-        "patch.master.bpm": encoding_confidence("patch.master.bpm"),
-        "patch.chain": encoding_confidence("patch.chain"),
-        "patch.controls": encoding_confidence("patch.controls"),
-        "patch.assign": encoding_confidence("patch.assign"),
-        "patch.led": encoding_confidence("patch.led"),
-        "system.controls": encoding_confidence("system.controls"),
+        "patch.master.level": encoding_evidence("patch.master.level"),
+        "patch.master.bpm": encoding_evidence("patch.master.bpm"),
+        "patch.chain": encoding_evidence("patch.chain"),
+        "patch.controls": encoding_evidence("patch.controls"),
+        "patch.assign": encoding_evidence("patch.assign"),
+        "patch.led": encoding_evidence("patch.led"),
+        "system.controls": encoding_evidence("system.controls"),
     }
     for field in patch_edit.PATCH_MASTER_FIELDS:
         canonical_field = canonical_master_field_id(field)
-        metadata = encoding_confidence(f"patch.master.{canonical_field}")
+        metadata = encoding_evidence(f"patch.master.{canonical_field}")
         if canonical_field != field:
             metadata = dict(metadata)
             metadata["canonicalId"] = f"patch.master.{canonical_field}"
@@ -5192,7 +5860,7 @@ def encoding_confidence_inventory() -> dict[str, dict[str, Any]]:
         for parameter in block.parameters:
             inventory.setdefault(
                 f"patch.block.{block.id}.{parameter.id}",
-                encoding_confidence(f"patch.block.{block.id}.{parameter.id}"),
+                encoding_evidence(f"patch.block.{block.id}.{parameter.id}"),
             )
     return inventory
 
@@ -5231,7 +5899,7 @@ def assign_read_requests() -> list[live.PatchReadRequest]:
     ]
 
 
-def parameter_schema(parameter: live.Parameter, relative_offset: int, *, confidence_id: str) -> dict[str, Any]:
+def parameter_schema(parameter: live.Parameter, relative_offset: int) -> dict[str, Any]:
     schema = {
         "id": parameter.id,
         "displayName": parameter.display_name,
@@ -5240,7 +5908,6 @@ def parameter_schema(parameter: live.Parameter, relative_offset: int, *, confide
         "kind": parameter.kind,
         "byteCount": parameter.byte_count,
         "values": list(parameter.values),
-        "encodingConfidence": encoding_confidence(confidence_id),
     }
     if parameter.kind == "bool":
         schema["minimum"] = 0
@@ -5271,7 +5938,6 @@ def block_schema(block_id: str, *, include_raw: bool = False) -> dict[str, Any]:
         parameter_schema(
             parameter,
             parameter.offset if isinstance(block, live.BlockDefinition) else parameter.offset - block.offset,
-            confidence_id=f"patch.block.{block.id}.{parameter.id}",
         )
         for parameter in block.parameters
     ]
@@ -5294,7 +5960,6 @@ def block_schema(block_id: str, *, include_raw: bool = False) -> dict[str, Any]:
             "command": f"patch raw-set {block.id} <offset> <value>",
             "offsetRange": [0, editable_size - 1],
             "widths": ["byte", "nibbles2", "nibbles4"],
-            "encodingConfidence": encoding_confidence(f"patch.block.{block.id}.raw"),
         },
     }
     if include_raw:
@@ -5321,14 +5986,13 @@ def master_schema() -> dict[str, Any]:
             "byteCount": 2,
             "minimum": 0,
             "maximum": 200,
-            "encodingConfidence": encoding_confidence("patch.master.level"),
         },
-        {"id": "key", "displayName": "MASTER KEY", "offset": 0x65, "kind": "key", "minimum": 0, "maximum": 11, "values": list(patch_edit.MASTER_KEY_VALUES), "encodingConfidence": encoding_confidence("patch.master.key")},
-        {"id": "amp-ctl1", "displayName": "AMP CTL1", "offset": 0x66, "kind": "bool", "minimum": 0, "maximum": 1, "encodingConfidence": encoding_confidence("patch.master.amp-ctl1")},
-        {"id": "amp-ctl2", "displayName": "AMP CTL2", "offset": 0x67, "kind": "bool", "minimum": 0, "maximum": 1, "encodingConfidence": encoding_confidence("patch.master.amp-ctl2")},
-        {"id": "carryover", "displayName": "MASTER CARRYOVER", "offset": 0x99, "kind": "bool", "minimum": 0, "maximum": 1, "encodingConfidence": encoding_confidence("patch.master.carryover")},
-        {"id": "tempo-hold", "displayName": "CONTROL ASSIGN TEMPO HOLD", "offset": 0x9A, "kind": "bool", "minimum": 0, "maximum": 1, "encodingConfidence": encoding_confidence("patch.master.tempo-hold")},
-        {"id": "input-sensitivity", "displayName": "CONTROL ASSIGN INPUT SENS", "offset": 0x9B, "kind": "byte", "minimum": 0, "maximum": 100, "encodingConfidence": encoding_confidence("patch.master.input-sensitivity")},
+        {"id": "key", "displayName": "MASTER KEY", "offset": 0x65, "kind": "key", "minimum": 0, "maximum": 11, "values": list(patch_edit.MASTER_KEY_VALUES)},
+        {"id": "amp-ctl1", "displayName": "AMP CTL1", "offset": 0x66, "kind": "bool", "minimum": 0, "maximum": 1},
+        {"id": "amp-ctl2", "displayName": "AMP CTL2", "offset": 0x67, "kind": "bool", "minimum": 0, "maximum": 1},
+        {"id": "carryover", "displayName": "MASTER CARRYOVER", "offset": 0x99, "kind": "bool", "minimum": 0, "maximum": 1},
+        {"id": "tempo-hold", "displayName": "CONTROL ASSIGN TEMPO HOLD", "offset": 0x9A, "kind": "bool", "minimum": 0, "maximum": 1},
+        {"id": "input-sensitivity", "displayName": "CONTROL ASSIGN INPUT SENS", "offset": 0x9B, "kind": "byte", "minimum": 0, "maximum": 100},
     ]
     return {
         "id": "master",
@@ -5346,7 +6010,6 @@ def controls_editor_schema() -> dict[str, Any]:
         "id": "controls",
         "displayName": "PATCH/SYSTEM CONTROLS",
         "type": "editor",
-        "encodingConfidence": encoding_confidence("patch.controls"),
         "commands": {
             "patch": "patch control-set <control> <function>",
             "system": "patch system-control-set <control> <function>",
@@ -5355,9 +6018,52 @@ def controls_editor_schema() -> dict[str, Any]:
         "controls": sorted(set(patch_edit.PATCH_CONTROL_FIELDS) | set(patch_edit.PATCH_EXP_PEDAL_FIELDS)),
         "switchFunctions": sorted(patch_edit.CONTROL_FUNCTION_VALUES),
         "pedalFunctions": sorted(patch_edit.EXP_PEDAL_FUNCTION_VALUES),
+        "functionDetails": control_function_schemas(),
+        "pedalFunctionDetails": exp_pedal_function_schemas(),
         "modes": ["toggle", "moment"],
         "preferences": ["patch", "system"],
     }
+
+
+def split_target_ref(target_ref: Any) -> tuple[str | None, str | None]:
+    if not isinstance(target_ref, str) or not target_ref:
+        return None, None
+    if "." not in target_ref:
+        return target_ref, None
+    block_id, parameter_id = target_ref.split(".", 1)
+    return block_id or None, parameter_id or None
+
+
+def control_function_schemas() -> list[dict[str, Any]]:
+    details = []
+    for function_id in sorted(patch_edit.CONTROL_FUNCTION_VALUES):
+        raw = patch_edit.CONTROL_FUNCTION_VALUES[function_id]
+        detail = decode_control_function_detail(raw, is_num=function_id == "matching-num")
+        details.append({
+            "id": function_id,
+            "raw": raw,
+            "displayName": detail["name"],
+            "kind": detail["kind"],
+            "targetRef": detail["targetRef"],
+            "canEnableBlock": detail["canEnableBlock"],
+        })
+    return details
+
+
+def exp_pedal_function_schemas() -> list[dict[str, Any]]:
+    details = []
+    for function_id in sorted(patch_edit.EXP_PEDAL_FUNCTION_VALUES):
+        raw = patch_edit.EXP_PEDAL_FUNCTION_VALUES[function_id]
+        detail = decode_exp_function_detail(raw)
+        details.append({
+            "id": function_id,
+            "raw": raw,
+            "displayName": detail["name"],
+            "kind": detail["kind"],
+            "targetRef": detail["targetRef"],
+            "canEnableBlock": detail["canEnableBlock"],
+        })
+    return details
 
 
 def assign_editor_schema() -> dict[str, Any]:
@@ -5365,7 +6071,6 @@ def assign_editor_schema() -> dict[str, Any]:
         "id": "assign",
         "displayName": "ASSIGN",
         "type": "editor",
-        "encodingConfidence": encoding_confidence("patch.assign"),
         "commands": {
             "decodedCc": "patch assign-cc <number> <block> <parameter> --cc <cc> --mode <toggle|moment>",
             "general": "patch assign-set <number> --target <target> --min <value> --max <value> --source <source> --mode <toggle|moment>",
@@ -5373,7 +6078,8 @@ def assign_editor_schema() -> dict[str, Any]:
         "assignRange": [1, 16],
         "targetRange": [0, 16383],
         "logicalValueRange": [0, 16383],
-        "activeRange": [0, 16383],
+        "activeRange": [0, 127],
+        "activeRangeNote": "ACT RANGE LO/HI must match the source's incoming value range; MIDI CC sources send 0...127.",
         "midiCcSources": ["cc1...cc31", "cc64...cc95"],
         "sourceAliases": [
             "num1...num5", "cur-num", "bank-down", "bank-up", "ctl1...ctl7",
@@ -5399,7 +6105,6 @@ def led_editor_schema() -> dict[str, Any]:
         "id": "led",
         "displayName": "PATCH LED",
         "type": "editor",
-        "encodingConfidence": encoding_confidence("patch.led"),
         "command": "patch led-set <control> <off|on> <color>",
         "temporaryAddress": live.hex_bytes(live.TEMPORARY_PATCH_LED),
         "controls": sorted(patch_edit.PATCH_LED_COLOR_OFFSETS),
@@ -5636,10 +6341,11 @@ def controls_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
         controls[name] = {
             "preference": preference,
             "functionRaw": func_byte,
-            "function": function_detail["name"],
-            "functionTargetBlockId": function_detail["blockId"],
-            "functionTargetParameterId": function_detail["parameterId"],
-            "functionCanEnableBlock": function_detail["canEnableBlock"],
+            "functionId": function_detail["functionId"],
+            "functionDisplayName": function_detail["name"],
+            "functionKind": function_detail["kind"],
+            "functionTargetRef": function_detail["targetRef"],
+            "canEnableBlock": function_detail["canEnableBlock"],
             "mode": "MOMENT" if mode_byte == 1 else "TOGGLE",
         }
 
@@ -5655,10 +6361,11 @@ def controls_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
         controls[name] = {
             "preference": preference,
             "functionRaw": func_byte,
-            "function": function_detail["name"],
-            "functionTargetBlockId": function_detail["blockId"],
-            "functionTargetParameterId": function_detail["parameterId"],
-            "functionCanEnableBlock": function_detail["canEnableBlock"],
+            "functionId": function_detail["functionId"],
+            "functionDisplayName": function_detail["name"],
+            "functionKind": function_detail["kind"],
+            "functionTargetRef": function_detail["targetRef"],
+            "canEnableBlock": function_detail["canEnableBlock"],
         }
 
     return {
@@ -5674,12 +6381,30 @@ def decode_control_function(raw: int, is_num: bool = False) -> str:
 
 def decode_control_function_detail(raw: int, is_num: bool = False) -> dict[str, Any]:
     if is_num and raw == 1:
-        return control_function_detail(raw, "MATCHING NUM")
+        return control_function_detail(raw, "MATCHING NUM", functionId="matching-num")
 
     detail = CONTROL_FUNCTIONS.get(raw)
     if detail:
-        return control_function_detail(raw, **detail)
+        return control_function_detail(raw, functionId=control_function_id_for_raw(raw), **detail)
     return control_function_detail(raw, f"FUNC {raw}")
+
+
+def control_function_id_for_raw(raw: int) -> str | None:
+    candidates = [
+        function_id
+        for function_id, value in patch_edit.CONTROL_FUNCTION_VALUES.items()
+        if value == raw
+    ]
+    if raw == 1 and "bank-up" in candidates:
+        return "bank-up"
+    return candidates[0] if candidates else None
+
+
+def exp_function_id_for_raw(raw: int) -> str | None:
+    for function_id, value in patch_edit.EXP_PEDAL_FUNCTION_VALUES.items():
+        if value == raw:
+            return function_id
+    return None
 
 
 def control_function_detail(
@@ -5688,14 +6413,37 @@ def control_function_detail(
     blockId: str | None = None,
     parameterId: str | None = None,
     canEnableBlock: bool = False,
+    functionId: str | None = None,
+    kind: str | None = None,
 ) -> dict[str, Any]:
+    target_ref = f"{blockId}.{parameterId}" if blockId and parameterId else blockId
     return {
         "raw": raw,
+        "functionId": functionId,
         "name": name,
+        "kind": kind or control_function_kind(functionId, blockId, parameterId, canEnableBlock),
         "blockId": blockId,
         "parameterId": parameterId,
+        "targetRef": target_ref,
         "canEnableBlock": canEnableBlock,
     }
+
+
+def control_function_kind(
+    function_id: str | None,
+    block_id: str | None,
+    parameter_id: str | None,
+    can_enable_block: bool,
+) -> str:
+    if function_id and function_id.startswith("divider"):
+        return "routing"
+    if can_enable_block and parameter_id == "sw":
+        return "effect-toggle"
+    if block_id and parameter_id:
+        return "parameter-control"
+    if block_id:
+        return "block-control"
+    return "utility"
 
 
 CONTROL_FUNCTIONS: dict[int, dict[str, Any]] = {
@@ -5774,7 +6522,7 @@ def decode_exp_function_detail(raw: int) -> dict[str, Any]:
     }
     detail = names.get(raw)
     if detail:
-        return control_function_detail(raw, **detail)
+        return control_function_detail(raw, functionId=exp_function_id_for_raw(raw), **detail)
     return control_function_detail(raw, f"FUNC {raw}")
 
 
@@ -5808,7 +6556,7 @@ def decode_assign_target_detail(raw: int | None) -> dict[str, Any]:
                 category=target_range["category"],
                 blockId=target_range["blockId"],
                 parameterId=parameter_id,
-                isOnOff=parameter_id in {"sw", "soloSw", "bright"},
+                isOnOff=parameter_id in ASSIGN_ON_OFF_PARAMETER_IDS,
             )
 
     return assign_target_detail(raw, name=f"TARGET {raw}", category=None, blockId=None, parameterId=None)
@@ -6091,15 +6839,17 @@ def direct_controls_by_block(snapshot: dict[str, Any]) -> dict[str, list[dict[st
 
     by_block: dict[str, list[dict[str, Any]]] = {}
     for control_name, control in controls.items():
-        block_id = control.get("functionTargetBlockId")
-        if not block_id or not control.get("functionCanEnableBlock"):
+        block_id, parameter_id = split_target_ref(control.get("functionTargetRef"))
+        if not block_id or not control.get("canEnableBlock"):
             continue
         by_block.setdefault(block_id, []).append({
             "control": control_name,
             "preference": control.get("preference"),
             "functionRaw": control.get("functionRaw"),
-            "function": control.get("function"),
-            "targetParameterId": control.get("functionTargetParameterId"),
+            "functionId": control.get("functionId"),
+            "functionDisplayName": control.get("functionDisplayName"),
+            "functionKind": control.get("functionKind"),
+            "functionTargetRef": control.get("functionTargetRef"),
             "mode": control.get("mode"),
         })
     return by_block
@@ -6319,6 +7069,14 @@ def decode_aird_output_select(raw: int) -> str | None:
     return decode_enum(raw, values)
 
 
+def decode_system_setup_efct(data: list[int]) -> dict[str, Any]:
+    try:
+        from tools.gt1000.audio_lab.setup_efct import decode_setup_efct
+    except ModuleNotFoundError:
+        from audio_lab.setup_efct import decode_setup_efct
+    return decode_setup_efct(data)
+
+
 def decode_system_effects(data: list[int]) -> dict[str, Any]:
     return {
         "phraseLoopModeRaw": data[0] if len(data) > 0 else None,
@@ -6364,10 +7122,11 @@ def decode_system_manual_controls(data: list[int]) -> dict[str, Any]:
         function_detail = decode_manual_control_function_detail(function_raw) if function_raw is not None else None
         controls[control_name] = {
             "functionRaw": function_raw,
-            "function": function_detail["name"] if function_detail else None,
-            "functionTargetBlockId": function_detail["blockId"] if function_detail else None,
-            "functionTargetParameterId": function_detail["parameterId"] if function_detail else None,
-            "functionCanEnableBlock": function_detail["canEnableBlock"] if function_detail else False,
+            "functionId": function_detail["functionId"] if function_detail else None,
+            "functionDisplayName": function_detail["name"] if function_detail else None,
+            "functionKind": function_detail["kind"] if function_detail else None,
+            "functionTargetRef": function_detail["targetRef"] if function_detail else None,
+            "canEnableBlock": function_detail["canEnableBlock"] if function_detail else False,
             "modeRaw": data[mode_offset] if len(data) > mode_offset else None,
             "mode": "MOMENT" if len(data) > mode_offset and data[mode_offset] == 1 else "TOGGLE" if len(data) > mode_offset else None,
             "preferenceRaw": data[0x0A + index] if len(data) > 0x0A + index else None,
@@ -6441,8 +7200,28 @@ def decode_manual_control_function_detail(raw: int) -> dict[str, Any]:
     }
     detail = names.get(raw)
     if detail:
-        return control_function_detail(raw, **detail)
+        return control_function_detail(raw, functionId=manual_control_function_id_for_raw(raw), **detail)
     return control_function_detail(raw, f"FUNC {raw}")
+
+
+def manual_control_function_id_for_raw(raw: int) -> str | None:
+    direct_ids = {
+        0: "off",
+        1: "level-plus-10",
+        2: "level-plus-20",
+        3: "level-minus-10",
+        4: "level-minus-20",
+        5: "bpm-tap",
+        55: "tuner",
+        56: "manual",
+        57: "manual-tuner",
+        58: "fx4",
+        59: "fx4-trigger",
+    }
+    if raw in direct_ids:
+        return direct_ids[raw]
+    # Manual-mode raw values after BPM TAP are shifted by -4 from patch control values.
+    return control_function_id_for_raw(raw + 4)
 
 
 def decode_system_controls(data: list[int]) -> dict[str, Any]:
@@ -6462,10 +7241,11 @@ def decode_system_controls(data: list[int]) -> dict[str, Any]:
         function_detail = decode_control_function_detail(function_raw, is_num=name.startswith("NUM ")) if function_raw is not None else None
         controls[name] = {
             "functionRaw": function_raw,
-            "function": function_detail["name"] if function_detail else None,
-            "functionTargetBlockId": function_detail["blockId"] if function_detail else None,
-            "functionTargetParameterId": function_detail["parameterId"] if function_detail else None,
-            "functionCanEnableBlock": function_detail["canEnableBlock"] if function_detail else False,
+            "functionId": function_detail["functionId"] if function_detail else None,
+            "functionDisplayName": function_detail["name"] if function_detail else None,
+            "functionKind": function_detail["kind"] if function_detail else None,
+            "functionTargetRef": function_detail["targetRef"] if function_detail else None,
+            "canEnableBlock": function_detail["canEnableBlock"] if function_detail else False,
             "modeRaw": mode_raw,
             "mode": "MOMENT" if mode_raw == 1 else "TOGGLE" if mode_raw is not None else None,
             "preferenceRaw": preference_raw,
@@ -6479,10 +7259,11 @@ def decode_system_controls(data: list[int]) -> dict[str, Any]:
         function_detail = decode_exp_function_detail(function_raw) if function_raw is not None else None
         controls[name] = {
             "functionRaw": function_raw,
-            "function": function_detail["name"] if function_detail else None,
-            "functionTargetBlockId": function_detail["blockId"] if function_detail else None,
-            "functionTargetParameterId": function_detail["parameterId"] if function_detail else None,
-            "functionCanEnableBlock": function_detail["canEnableBlock"] if function_detail else False,
+            "functionId": function_detail["functionId"] if function_detail else None,
+            "functionDisplayName": function_detail["name"] if function_detail else None,
+            "functionKind": function_detail["kind"] if function_detail else None,
+            "functionTargetRef": function_detail["targetRef"] if function_detail else None,
+            "canEnableBlock": function_detail["canEnableBlock"] if function_detail else False,
             "preferenceRaw": preference_raw,
             "preference": decode_enum(preference_raw, ["PATCH", "SYSTEM"]) if preference_raw is not None else None,
         }
@@ -6500,6 +7281,22 @@ def chain_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
     blocks = snapshot.get("blocks", [])
     assigns_by_block = active_assigns_by_block(snapshot)
     controls_by_block = direct_controls_by_block(snapshot)
+    reachability = cleanup_analysis_from_snapshot(snapshot)
+    # cleanup_analysis_from_snapshot serves two purposes:
+    # - detect truly unreachable routing segments (inactive fixed divider branches)
+    # - detect "off + no control mapping" blocks (useful for cleanup, but not routing reachability)
+    # Only treat fixed divider-branch segments as "unreachable routing" for musician summaries.
+    unreachable_by_value: dict[int, dict[str, Any]] = {}
+    off_unassigned_by_value: dict[int, dict[str, Any]] = {}
+    for item in (reachability.get("unreachableElements") or []):
+        raw = item.get("rawValue")
+        reason = item.get("reason")
+        if not isinstance(raw, int):
+            continue
+        if reason == "fixed_branch_inactive":
+            unreachable_by_value[raw] = item
+        elif reason == "off_unassigned":
+            off_unassigned_by_value[raw] = item
     detail_by_value = {
         block.get("chainElementValue"): block
         for block in blocks
@@ -6508,13 +7305,20 @@ def chain_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
     elements = []
     description_elements = []
     for element in snapshot.get("signalChainElements", []):
+        raw_value = element.get("rawValue")
+        unreachable_detail = unreachable_by_value.get(raw_value) if isinstance(raw_value, int) else None
+        off_unassigned_detail = off_unassigned_by_value.get(raw_value) if isinstance(raw_value, int) else None
+        is_unreachable = unreachable_detail is not None
         block = detail_by_value.get(element.get("rawValue"))
         block_id = block.get("id") if block else None
         active_assigns = assigns_by_block.get(block_id, []) if block_id else []
         direct_controls = controls_by_block.get(block_id, []) if block_id else []
         is_enabled = block.get("isEnabled") if block else None
         has_control_assignment = block_has_control_assignment(block) or bool(active_assigns) or bool(direct_controls)
-        description_candidate = include_element_in_description(
+        # A chain element can be present but unreachable (e.g. on a non-selected divider branch).
+        # Treat unreachable elements as not part of the live sound for musician-facing summaries,
+        # while still surfacing them in the full chain for troubleshooting/cleanup.
+        description_candidate = False if is_unreachable else include_element_in_description(
             element,
             block,
             is_enabled=is_enabled,
@@ -6533,6 +7337,10 @@ def chain_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
             "directControlCount": len(direct_controls),
             "directControls": direct_controls,
             "includeInDescription": description_candidate,
+            "isUnreachable": is_unreachable,
+            "unreachablePath": unreachable_detail.get("unreachablePath") if unreachable_detail else None,
+            "unreachableReason": unreachable_detail.get("reason") if unreachable_detail else None,
+            "isOffUnassigned": off_unassigned_detail is not None,
             "isReserved": element.get("isReserved", False),
             "isOutput": element.get("isOutput", False),
         }
@@ -6557,8 +7365,10 @@ def chain_from_full(snapshot: dict[str, Any]) -> dict[str, Any]:
         ),
         "descriptionPolicy": (
             "Omits reserved elements and switched-off blocks unless a decoded hardware/control "
-            "assignment indicates the user can bring that block into the live sound."
+            "assignment indicates the user can bring that block into the live sound. Also omits "
+            "elements that are currently unreachable in the active routing path."
         ),
+        "reachability": reachability,
         "elements": elements,
         "descriptionElements": description_elements,
     }

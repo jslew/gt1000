@@ -15,7 +15,10 @@ Do not treat this as a complete copy of the manuals. It is a navigable working i
 
 - [Sources](sources.md): official PDFs and local refresh process.
 - [Owner Manual Extraction](owner-manual.md): hardware, play modes, editing workflow, external control, USB/MIDI, looper.
+- [USB Audio and Re-Amp](usb-audio.md): 6×6 channel map, USB AUDIO menu, re-amp flow, DIR MON preflight.
 - [Parameter Guide Extraction](parameter-guide.md): effect blocks, menu sections, control/assign, in/out, MIDI, hardware settings.
+- [Input Level and Gain Staging](input-level-gain-staging.md): global input presets, MASTER INPUT SETTING, symptoms, CLI inspect order.
+- [Input Level Calibration Workflow](input-level-calibration.md): agent steps to calibrate and save a global input preset for one instrument.
 - [Sound List Extraction](sound-list.md): preset patch list shape and physical control columns.
 - [Agent Workflows](agent-workflows.md): how to combine wiki knowledge with CLI reads.
 
@@ -31,4 +34,4 @@ scripts/gt1000-agent --pretty patch block preamp1 --live --timeout 8
 
 The Python agent CLI performs live MIDI reads through its Python CoreMIDI backend and can inspect saved full patch JSON dumps offline. Search this wiki directly with `rg`; wiki search belongs to the skill/docs layer, not to the device CLI.
 
-The next planned CLI view is `patch controls`, which should expose PatchCommon/SystemControl/Assign-derived switch mappings.
+For switch/control questions, use `patch performance` for the stage-facing view and `patch controls` for raw PatchCommon/SystemControl/Assign-derived details. STOMPBOX selection inspection is available with `patch stompbox --live`; shared STOMPBOX data editing remains a maintainer backlog item.

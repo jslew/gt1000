@@ -1,0 +1,15 @@
+{
+  "scenario_id": "describe_current_patch",
+  "expect_fail": true,
+  "notes": "Anti-pattern: grep references before authoritative CLI",
+  "events": [
+    {
+      "type": "reference_read",
+      "command": "grep -i MIXER /proj/.agents/skills/gt1000/references/gt1000-wiki/parameter-guide.md"
+    },
+    {
+      "type": "shell",
+      "command": "/proj/gt1000-agent --pretty patch summary --live --timeout 20"
+    }
+  ]
+}

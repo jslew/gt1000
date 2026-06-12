@@ -24,6 +24,65 @@ class UserPatchReadTests(unittest.TestCase):
         self._validation_log_env.stop()
         self._validation_log_dir.cleanup()
 
+    def test_sysex_assembler_skips_interleaved_realtime_bytes(self):
+        assembler = live.SysExAssembler()
+        message = live.build_request_data([0x10, 0x00, 0x10, 0x61], [0x00, 0x00, 0x00, 0x04])
+        interleaved = message[:5] + [0xF8] + message[5:9] + [0xFE] + message[9:]
+
+        assembled = assembler.assemble([interleaved])
+
+        self.assertEqual(assembled, [message])
+
+    def test_parse_data_set_rejects_foreign_device_id(self):
+        message = live.build_data_set([0x10, 0x00, 0x10, 0x61], [0x00, 0x07, 0x08, 0x00])
+        foreign = list(message)
+        foreign[2] = 0x11
+
+        self.assertIsNotNone(live.parse_data_set(message))
+        self.assertIsNone(live.parse_data_set(foreign))
+
+    def test_nibbles_for_rejects_values_that_do_not_fit(self):
+        self.assertEqual(live.nibbles_for(0xFFFF), [15, 15, 15, 15])
+        with self.assertRaises(ValueError):
+            live.nibbles_for(0x10000)
+        with self.assertRaises(ValueError):
+            live.nibbles_for(256, byte_count=2)
+
+    def test_wait_for_quiet_input_returns_quickly_on_silent_bus(self):
+        state = live.PatchReadState()
+
+        started = live.time.monotonic()
+        live.wait_for_quiet_input(state, quiet_seconds=0.5, max_seconds=5.0, initial_grace=0.05)
+        elapsed = live.time.monotonic() - started
+
+        self.assertLess(elapsed, 0.4)
+
+    def test_wait_for_quiet_input_waits_full_window_after_traffic(self):
+        state = live.PatchReadState()
+        state.last_packet_at = live.time.monotonic()
+
+        started = live.time.monotonic()
+        live.wait_for_quiet_input(state, quiet_seconds=0.2, max_seconds=5.0)
+        elapsed = live.time.monotonic() - started
+
+        self.assertGreaterEqual(elapsed, 0.2)
+
+    def test_resident_block_raw_parameters_mark_named_offsets(self):
+        looper = next(block for block in live.RESIDENT_BLOCKS if block.id == "looper")
+        snapshot = live.empty_snapshot()
+        effect_data = [0] * 0x11C
+        effect_data[looper.offset] = 42
+
+        block = live.block_from_definition(
+            snapshot,
+            looper,
+            effect_data[looper.offset:looper.offset + looper.size],
+            base_data=effect_data,
+        )
+
+        self.assertEqual(block["rawParameters"][0]["rawValue"], 42)
+        self.assertTrue(block["rawParameters"][0]["isNamed"])
+
     def test_user_slot_addresses_use_roland_seven_bit_stride(self):
         self.assertEqual(live.user_patch_base("U01-1"), [0x20, 0x00, 0x00, 0x00])
         self.assertEqual(live.user_patch_base("u01-5"), [0x20, 0x04, 0x00, 0x00])
@@ -37,10 +96,16 @@ class UserPatchReadTests(unittest.TestCase):
     def test_user_bank_slots_are_normalized(self):
         self.assertEqual(live.user_bank_slots("u1"), ["U01-1", "U01-2", "U01-3", "U01-4", "U01-5"])
 
-    def test_master_delay_live_record_size_matches_device_response(self):
+    def test_master_delay_record_size_matches_midi_implementation(self):
+        # Official PatchMstDelay total size is 0x2C; validated on the tested
+        # unit, which answers the full 44-byte read at 10 00 21 00.
         master_delay = next(block for block in live.SUMMARY_BLOCKS if block.id == "masterDelay")
 
-        self.assertEqual(master_delay.size, 28)
+        self.assertEqual(master_delay.size, 44)
+        last_parameter_end = max(
+            parameter.offset + parameter.byte_count for parameter in master_delay.parameters
+        )
+        self.assertLessEqual(last_parameter_end, master_delay.size)
 
     def test_temporary_patch_addresses_remap_to_user_slot(self):
         base = live.user_patch_base("U01-2")
@@ -398,11 +463,9 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertFalse(apply_plan.call_args.kwargs["create_restore"])
         self.assertTrue(apply_plan.call_args.kwargs["exact_verify"])
         self.assertEqual(result["plan"], "master-set:level:U03-2")
-        self.assertEqual(result["encodingConfidence"][0]["id"], "patch.master.level")
-        self.assertEqual(result["encodingConfidence"][0]["confidence"], "live-verified")
         self.assertNotIn("encodingWarning", result)
 
-    def test_master_set_alias_reports_canonical_encoding_confidence(self):
+    def test_master_set_alias_reports_canonical_encoding_evidence(self):
         args = agent_cli.build_parser().parse_args(["patch", "master-set", "patch-level", "95", "--live", "--user-slot", "U03-2", "--verify"])
 
         with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"plan": "master-set:patch-level:U03-2", "writeCount": 1, "verified": True}) as apply_plan:
@@ -411,8 +474,6 @@ class UserPatchReadTests(unittest.TestCase):
         plan = apply_plan.call_args.args[0]
         self.assertEqual(plan.id, "master-set:patch-level:U03-2")
         self.assertEqual(plan.writes[0].address, [0x20, 0x0B, 0x10, 0x5F])
-        self.assertEqual(result["encodingConfidence"][0]["id"], "patch.master.level")
-        self.assertEqual(result["encodingConfidence"][0]["confidence"], "live-verified")
         self.assertNotIn("encodingWarning", result)
 
     def test_control_change_message_is_typed_and_bounded(self):
@@ -448,8 +509,6 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(plan.writes[0].data, [0x00, 0x04, 0x0B, 0x00])
         self.assertEqual(apply.call_args.kwargs, {"timeout": 20.0, "verify": True, "create_restore": False, "exact_verify": True})
         self.assertTrue(result["verified"])
-        self.assertEqual(result["encodingConfidence"][0]["id"], "patch.master.bpm")
-        self.assertEqual(result["encodingConfidence"][0]["confidence"], "official")
         self.assertNotIn("encodingWarning", result)
 
     def test_patch_enable_command_applies_typed_switch_plan(self):
@@ -464,8 +523,6 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(plan.writes[0].data, [0x01])
         self.assertEqual(apply.call_args.kwargs, {"timeout": 20.0, "verify": True, "create_restore": False, "exact_verify": True})
         self.assertTrue(result["verified"])
-        self.assertEqual(result["encodingConfidence"][0]["id"], "patch.block.delay1.sw")
-        self.assertEqual(result["encodingConfidence"][0]["confidence"], "live-verified")
         self.assertNotIn("encodingWarning", result)
 
     def test_patch_disable_command_resolves_alias_and_user_slot(self):
@@ -480,8 +537,7 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(plan.writes[0].data, [0x00])
         self.assertEqual(apply.call_args.kwargs, {"timeout": 20.0, "verify": False, "create_restore": False, "exact_verify": True})
         self.assertIsNone(result["verified"])
-        self.assertEqual(result["encodingConfidence"][0]["id"], "patch.block.dist1.sw")
-        self.assertIn("encodingWarning", result)
+        self.assertNotIn("encodingWarning", result)
 
     def test_patch_set_command_skips_restore_point_for_focused_parameter_write(self):
         args = agent_cli.build_parser().parse_args(["patch", "set", "delay1", "sw", "on", "--live", "--verify"])
@@ -494,7 +550,6 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(plan.writes[0].address, [0x10, 0x00, 0x1D, 0x00])
         self.assertEqual(plan.writes[0].data, [1])
         self.assertEqual(apply.call_args.kwargs, {"timeout": 20.0, "verify": True, "create_restore": False, "exact_verify": True})
-        self.assertEqual(result["encodingConfidence"][0]["id"], "patch.block.delay1.sw")
 
     def test_patch_raw_set_command_skips_restore_point_for_focused_offset_write(self):
         args = agent_cli.build_parser().parse_args(["patch", "raw-set", "delay1", "0", "1", "--live", "--verify"])
@@ -507,7 +562,6 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(plan.writes[0].address, [0x10, 0x00, 0x1D, 0x00])
         self.assertEqual(plan.writes[0].data, [1])
         self.assertEqual(apply.call_args.kwargs, {"timeout": 20.0, "verify": True, "create_restore": False, "exact_verify": True})
-        self.assertEqual(result["encodingConfidence"][0]["id"], "patch.block.delay1.raw")
 
     def test_patch_type_command_applies_typed_type_plan(self):
         args = agent_cli.build_parser().parse_args(["patch", "type", "ds1", "T-SCREAM", "--live", "--verify"])
@@ -521,10 +575,9 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(plan.writes[0].data, [15])
         self.assertEqual(apply.call_args.kwargs, {"timeout": 20.0, "verify": True, "create_restore": False, "exact_verify": True})
         self.assertTrue(result["verified"])
-        self.assertEqual(result["encodingConfidence"][0]["id"], "patch.block.dist1.type")
-        self.assertIn("encodingWarning", result)
+        self.assertNotIn("encodingWarning", result)
 
-    def test_control_led_and_system_control_edits_report_legacy_confidence(self):
+    def test_control_led_and_system_control_edits_do_not_report_encoding_evidence(self):
         cases = [
             (
                 ["patch", "control-set", "ctl1", "dist1", "--mode", "toggle", "--live", "--verify"],
@@ -547,7 +600,7 @@ class UserPatchReadTests(unittest.TestCase):
                 "system.controls",
             ),
         ]
-        for argv, command, confidence_id in cases:
+        for argv, command, _evidence_id in cases:
             with self.subTest(argv=argv):
                 args = agent_cli.build_parser().parse_args(argv)
                 with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"verified": True}) as apply:
@@ -556,28 +609,20 @@ class UserPatchReadTests(unittest.TestCase):
                 self.assertTrue(apply.called)
                 self.assertFalse(apply.call_args.kwargs["create_restore"])
                 self.assertTrue(result["verified"])
-                self.assertEqual(result["encodingConfidence"][0]["id"], confidence_id)
-                self.assertIn("encodingWarning", result)
+                self.assertNotIn("encodingWarning", result)
 
     def test_patch_move_command_reads_chain_and_applies_typed_plan(self):
-        chain_values = list(agent_cli.patch_edit.CANONICAL_FULL_CHAIN)
-        snapshot = {
-            "signalChainElements": [
-                {"position": index + 1, "rawValue": value, "displayName": live.chain_element_name(value)}
-                for index, value in enumerate(chain_values)
-            ],
-        }
+        patch_effect = [0] * 0x11C
+        patch_effect[0x68:0x68 + len(agent_cli.patch_edit.CANONICAL_FULL_CHAIN)] = agent_cli.patch_edit.CANONICAL_FULL_CHAIN
         args = agent_cli.build_parser().parse_args(["patch", "move", "delay1", "--before", "chorus", "--live", "--verify"])
 
-        with mock.patch.object(agent_cli, "read_live_snapshot_with_timeout", return_value=snapshot) as read_live:
+        with mock.patch.object(agent_cli, "read_current_patch_effect_record", return_value=patch_effect) as read_effect:
             with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"verified": True}) as apply:
                 result = agent_cli.cmd_patch_move(args)
 
-        read_live.assert_called_once_with(
-            "patch move chain read --live",
+        read_effect.assert_called_once_with(
             20.0,
-            requests=agent_cli.requests_for_view("chain"),
-            lenient_optional=True,
+            label="patch move Patch Effect",
         )
         plan = apply.call_args.args[0]
         self.assertEqual(plan.id, "move:chain:15:before:14")
@@ -585,31 +630,77 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertLess(plan.writes[0].data.index(15), plan.writes[0].data.index(14))
         self.assertEqual(apply.call_args.kwargs, {"timeout": 20.0, "verify": True})
         self.assertTrue(result["verified"])
-        self.assertEqual(result["encodingConfidence"][0]["id"], "patch.chain")
-        self.assertIn("encodingWarning", result)
+        self.assertNotIn("encodingWarning", result)
 
     def test_patch_move_command_reads_user_slot_chain(self):
+        patch_effect = [0] * 0x11C
+        patch_effect[0x68:0x68 + len(agent_cli.patch_edit.CANONICAL_FULL_CHAIN)] = agent_cli.patch_edit.CANONICAL_FULL_CHAIN
+        args = agent_cli.build_parser().parse_args(["patch", "move", "delay1", "--after", "chorus", "--live", "--user-slot", "U03-2"])
+
+        with mock.patch.object(agent_cli, "read_user_patch_effect_record", return_value=patch_effect) as read_effect:
+            with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"verified": None}) as apply:
+                result = agent_cli.cmd_patch_move(args)
+
+        read_effect.assert_called_once_with("U03-2", 20.0, label="patch move U03-2 Patch Effect")
+        plan = apply.call_args.args[0]
+        self.assertEqual(plan.id, "move:chain:15:after:14:U03-2")
+        self.assertEqual(plan.writes[0].address, [0x20, 0x0B, 0x10, 0x68])
+        self.assertGreater(plan.writes[0].data.index(15), plan.writes[0].data.index(14))
+        self.assertIsNone(result["verified"])
+        self.assertNotIn("encodingWarning", result)
+
+    def test_patch_cleanup_moves_unreachable_elements_to_end(self):
         chain_values = list(agent_cli.patch_edit.CANONICAL_FULL_CHAIN)
         snapshot = {
             "signalChainElements": [
                 {"position": index + 1, "rawValue": value, "displayName": live.chain_element_name(value)}
                 for index, value in enumerate(chain_values)
             ],
+            "blocks": [
+                {
+                    "id": "delay1",
+                    "displayName": "DELAY 1",
+                    "chainElementValue": 15,
+                    "isEnabled": False,
+                    "typeName": None,
+                    "parameters": [{"id": "sw", "rawValue": 0}],
+                },
+                {
+                    "id": "divider1",
+                    "displayName": "DIVIDER 1",
+                    "chainElementValue": 35,
+                    "isEnabled": None,
+                    "typeName": None,
+                    "parameters": [
+                        {"id": "mode", "rawValue": 0},
+                        {"id": "channelSelect", "rawValue": 0},
+                    ],
+                },
+            ],
+            "rawSections": {},
         }
-        args = agent_cli.build_parser().parse_args(["patch", "move", "delay1", "--after", "chorus", "--live", "--user-slot", "U03-2"])
+        args = agent_cli.build_parser().parse_args(["patch", "cleanup", "--live", "--verify"])
 
-        with mock.patch.object(agent_cli, "read_user_slot_snapshot", return_value=snapshot) as read_slot:
-            with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"verified": None}) as apply:
-                result = agent_cli.cmd_patch_move(args)
+        with mock.patch.object(agent_cli, "read_live_snapshot_with_timeout", return_value=snapshot) as read_live:
+            with mock.patch.object(agent_cli, "apply_plan_cli", return_value={"verified": True}) as apply:
+                result = agent_cli.cmd_patch_cleanup(args)
 
-        read_slot.assert_called_once_with("U03-2", 20.0, view="chain")
+        read_live.assert_called_once_with(
+            "patch cleanup chain read --live",
+            20.0,
+            requests=agent_cli.requests_for_view("chain"),
+            lenient_optional=True,
+        )
         plan = apply.call_args.args[0]
-        self.assertEqual(plan.id, "move:chain:15:after:14:U03-2")
-        self.assertEqual(plan.writes[0].address, [0x20, 0x0B, 0x10, 0x68])
-        self.assertGreater(plan.writes[0].data.index(15), plan.writes[0].data.index(14))
-        self.assertIsNone(result["verified"])
-        self.assertEqual(result["encodingConfidence"][0]["id"], "patch.chain")
-        self.assertIn("encodingWarning", result)
+        self.assertEqual(plan.id, "reorder:chain")
+        self.assertEqual(plan.writes[0].address, [0x10, 0x00, 0x10, 0x68])
+        self.assertIn(15, plan.writes[0].data)
+        self.assertGreater(plan.writes[0].data.index(15), chain_values.index(15))
+        self.assertTrue(result["verified"])
+        self.assertTrue(result["changed"])
+        self.assertIn("analysis", result)
+        unreachable = result["analysis"]["unreachableElements"]
+        self.assertTrue(any(item.get("rawValue") == 15 and item.get("reason") == "off_unassigned" for item in unreachable))
 
     def test_patch_assign_cc_command_maps_decoded_on_off_target(self):
         args = agent_cli.build_parser().parse_args([
@@ -628,8 +719,7 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(plan.writes[0].data[13], 69)
         self.assertEqual(apply.call_args.kwargs, {"timeout": 20.0, "verify": True, "create_restore": False, "exact_verify": True})
         self.assertTrue(result["verified"])
-        self.assertEqual([entry["id"] for entry in result["encodingConfidence"]], ["patch.assign", "patch.block.delay1.sw"])
-        self.assertIn("encodingWarning", result)
+        self.assertNotIn("encodingWarning", result)
 
     def test_patch_assign_cc_requires_ranges_for_non_on_off_target(self):
         args = agent_cli.build_parser().parse_args([
@@ -651,8 +741,7 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(plan.writes[0].data, agent_cli.patch_edit.tuner_assign_data())
         self.assertEqual(apply.call_args.kwargs, {"timeout": 20.0, "verify": True, "create_restore": False, "exact_verify": True})
         self.assertTrue(result["verified"])
-        self.assertEqual(result["encodingConfidence"][0]["id"], "patch.assign")
-        self.assertIn("encodingWarning", result)
+        self.assertNotIn("encodingWarning", result)
 
     def test_assign_decode_includes_ranges_and_midi_fields(self):
         data = bytes([
@@ -763,9 +852,12 @@ class UserPatchReadTests(unittest.TestCase):
         chain = agent_cli.chain_from_full(snapshot)
         delay = chain["elements"][0]
 
-        self.assertEqual(controls["CTL 1"]["function"], "DELAY 1")
-        self.assertEqual(controls["CTL 1"]["functionTargetBlockId"], "delay1")
-        self.assertTrue(controls["CTL 1"]["functionCanEnableBlock"])
+        self.assertEqual(controls["CTL 1"]["functionId"], "delay1")
+        self.assertEqual(controls["CTL 1"]["functionDisplayName"], "DELAY 1")
+        self.assertEqual(controls["CTL 1"]["functionId"], "delay1")
+        self.assertEqual(controls["CTL 1"]["functionKind"], "effect-toggle")
+        self.assertEqual(controls["CTL 1"]["functionTargetRef"], "delay1.sw")
+        self.assertTrue(controls["CTL 1"]["canEnableBlock"])
         self.assertTrue(delay["hasControlAssignment"])
         self.assertTrue(delay["includeInDescription"])
         self.assertEqual(delay["directControlCount"], 1)
@@ -806,7 +898,9 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(performance["id"], "patchPerformance")
         self.assertTrue(performance["tunerAvailable"])
         self.assertEqual(performance["activeAssignCount"], 1)
-        self.assertEqual(ctl1["directFunction"], "DELAY 1")
+        self.assertEqual(ctl1["directFunctionId"], "delay1")
+        self.assertEqual(ctl1["directFunctionDisplayName"], "DELAY 1")
+        self.assertEqual(ctl1["directTargetRef"], "delay1.sw")
         self.assertEqual(ctl1["assigns"][0]["target"], "TUNER ON/OFF")
         self.assertEqual(ctl1["action"], "Direct: DELAY 1 (TOGGLE); CTL 1 -> TUNER ON/OFF (MOMENT)")
         self.assertTrue(any("controls use SYSTEM preference" in note for note in performance["notes"]))
@@ -970,6 +1064,32 @@ class UserPatchReadTests(unittest.TestCase):
 
         self.assertEqual(live_calls, [("patch overview --live", 16.0, 8, len(agent_cli.transport_read_requests(requests)))])
 
+    def test_full_live_snapshot_scales_process_timeout_with_read_size(self):
+        requests = agent_cli.live.READ_PLAN
+        live_calls = []
+
+        def fake_live_call(label, process_timeout, func, **kwargs):
+            live_calls.append((label, process_timeout, kwargs["timeout"], len(kwargs["requests"])))
+            return {
+                agent_cli.live.address_key(request.address): [0] * agent_cli.live.seven_bit_address_value(request.size)
+                for request in requests
+            }
+
+        original_live_call = agent_cli.live_call_with_timeout
+        agent_cli.live_call_with_timeout = fake_live_call
+        try:
+            agent_cli.read_live_snapshot_with_timeout("patch dump --live", 20)
+        finally:
+            agent_cli.live_call_with_timeout = original_live_call
+
+        transport_count = len(agent_cli.transport_read_requests(requests))
+        self.assertEqual(live_calls, [(
+            "patch dump --live",
+            agent_cli.patch_record_process_timeout(20, transport_count),
+            20,
+            transport_count,
+        )])
+
     def test_patch_diff_reports_musical_changes(self):
         source = self.performance_snapshot("SOURCE", level=80, delay_enabled=False, ctl1_function=33, assign_target=987)
         target = self.performance_snapshot("TARGET", level=92, delay_enabled=True, ctl1_function=0, assign_target=158)
@@ -981,7 +1101,7 @@ class UserPatchReadTests(unittest.TestCase):
         delay_change = next(change for change in diff["blockChanges"] if change["blockId"] == "delay1")
         self.assertIn({"field": "isEnabled", "label": "on/off", "source": False, "target": True}, delay_change["changes"])
         ctl1_change = next(change for change in diff["controlChanges"] if change["control"] == "CTL 1")
-        self.assertIn({"field": "function", "label": "function", "source": "DELAY 1", "target": "OFF"}, ctl1_change["changes"])
+        self.assertIn({"field": "functionId", "label": "function", "source": "delay1", "target": "off"}, ctl1_change["changes"])
         assign_change = next(change for change in diff["assignChanges"] if change["assign"] == "Assign 1")
         self.assertIn({"field": "targetName", "label": "target", "source": "TUNER ON/OFF", "target": "DELAY 1 SW"}, assign_change["changes"])
 
@@ -1116,7 +1236,7 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(result["before"][0]["readOffset"], 0)
         self.assertEqual(result["before"][0]["dataHex"], "06 04")
         self.assertTrue(result["restored"])
-        self.assertEqual(result["confidenceRecommendation"], "live-verified")
+        self.assertEqual(result["validationResult"], "passed")
 
     def test_validate_encoding_attempts_restore_after_write_failure(self):
         args = agent_cli.build_parser().parse_args(["patch", "validate-encoding", "master", "level", "90", "--user-slot", "U10-1", "--live"])
@@ -1142,7 +1262,7 @@ class UserPatchReadTests(unittest.TestCase):
         ])
         self.assertTrue(all(call.kwargs["exact_verify"] for call in apply_plan.call_args_list))
 
-    def test_validate_encoding_round_trips_block_parameter_and_reports_legacy_start(self):
+    def test_validate_encoding_round_trips_block_parameter_and_reports_existing_evidence(self):
         args = agent_cli.build_parser().parse_args(["patch", "validate-encoding", "block", "delay3.sw", "on", "--user-slot", "U10-1", "--live"])
 
         def fake_read(label, timeout, requests, reader=agent_cli.patch_edit.read_data_sets_batched, attempts=3, process_timeout=None):
@@ -1168,10 +1288,9 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(restore_plan.writes[0].address, [0x20, 0x2D, 0x1F, 0x00])
         self.assertEqual(restore_plan.writes[0].data, [0])
         self.assertEqual(result["field"], "delay3.sw")
-        self.assertEqual(result["confidenceBefore"]["confidence"], "legacy")
         self.assertEqual(result["before"][0]["dataHex"], "00")
         self.assertTrue(result["restored"])
-        self.assertEqual(result["confidenceRecommendation"], "live-verified")
+        self.assertEqual(result["validationResult"], "passed")
         self.assertTrue(apply_plan.call_args_list[0].kwargs["exact_verify"])
         self.assertTrue(apply_plan.call_args_list[1].kwargs["exact_verify"])
 
@@ -1207,7 +1326,7 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertTrue(result["currentValue"])
         self.assertFalse(result["restored"])
         self.assertIsNone(result["restore"])
-        self.assertEqual(result["confidenceRecommendation"], "live-verified")
+        self.assertEqual(result["validationResult"], "passed")
         self.assertEqual(apply_plan.call_count, 1)
 
     def test_validate_encoding_rejects_non_u10_slots(self):
@@ -1252,7 +1371,7 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertEqual(result["id"], "encodingValidationBatch")
         self.assertEqual(result["slot"], "U10-1")
         self.assertEqual(result["caseCount"], 2)
-        self.assertEqual(result["confidenceRecommendations"], {"live-verified": 2})
+        self.assertEqual(result["validationResults"], {"passed": 2})
         self.assertEqual([case["field"] for case in result["results"]], ["level", "delay3.sw"])
         self.assertEqual([call.args[0].id for call in apply_plan.call_args_list], [
             "master-set:level:U10-1",
@@ -1281,8 +1400,7 @@ class UserPatchReadTests(unittest.TestCase):
         self.assertFalse(apply_plan.call_args.kwargs["create_restore"])
         self.assertEqual(result["id"], "patchIntent")
         self.assertEqual(result["intent"], "solo-boost")
-        self.assertEqual(result["encodingConfidence"][0]["id"], "patch.controls")
-        self.assertIn("encodingWarning", result)
+        self.assertNotIn("encodingWarning", result)
 
     def test_intent_expression_volume_uses_exp_pedal_plan(self):
         args = agent_cli.build_parser().parse_args(["patch", "intent", "expression-volume", "--control", "exp2", "--include-pedal-fx", "--live"])
@@ -1404,8 +1522,11 @@ class UserPatchReadTests(unittest.TestCase):
         detail = agent_cli.decode_control_function_detail(47)
 
         self.assertEqual(detail["name"], "DIVIDER 1 CHANNEL SELECT")
+        self.assertEqual(detail["functionId"], "divider1-channel-select")
+        self.assertEqual(detail["kind"], "routing")
         self.assertEqual(detail["blockId"], "divider1")
         self.assertEqual(detail["parameterId"], "channelSelect")
+        self.assertEqual(detail["targetRef"], "divider1.channelSelect")
 
     def test_system_view_decodes_raw_section(self):
         args = agent_cli.build_parser().parse_args(["system", "midi", "--live"])
@@ -1507,13 +1628,101 @@ class UserPatchReadTests(unittest.TestCase):
         args = agent_cli.build_parser().parse_args(["system", "inputs", "--live", "--number", "2"])
         data = list(b"SECOND          ") + [32]
 
-        with mock.patch.object(agent_cli.live, "read_system_section", return_value={"00 01 01 00": data}) as read_section:
+        with mock.patch.object(agent_cli, "read_patch_records_with_timeout", return_value={"00 01 01 00": data}) as read_records:
             result = agent_cli.cmd_system_inputs(args)
 
-        read_section.assert_called_once_with([0x00, 0x01, 0x01, 0x00], [0x00, 0x00, 0x00, 0x11], timeout=8.0)
+        read_records.assert_called_once()
+        requests = read_records.call_args.args[2]
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0].address, [0x00, 0x01, 0x01, 0x00])
+        self.assertEqual(requests[0].size, [0x00, 0x00, 0x00, 0x11])
         self.assertEqual(result["id"], "systemInputSettings")
         self.assertEqual(result["settings"][0]["name"], "SECOND")
         self.assertEqual(result["settings"][0]["inputLevelDb"], 0)
+
+    def test_system_inputs_view_reads_all_inputs_in_one_session(self):
+        args = agent_cli.build_parser().parse_args(["system", "inputs", "--live"])
+        raw = {
+            agent_cli.live.address_key(agent_cli.system_input_setting_address(number)): list(b"NAME            ") + [32]
+            for number in range(1, 11)
+        }
+
+        with mock.patch.object(agent_cli, "read_patch_records_with_timeout", return_value=raw) as read_records:
+            result = agent_cli.cmd_system_inputs(args)
+
+        read_records.assert_called_once()
+        requests = read_records.call_args.args[2]
+        self.assertEqual(len(requests), 10)
+        self.assertEqual(len(result["settings"]), 10)
+        self.assertEqual(result["settings"][9]["number"], 10)
+
+    def test_system_inputs_set_rejects_out_of_range_level(self) -> None:
+        args = agent_cli.build_parser().parse_args(
+            ["system", "inputs-set", "3", "input-level", "21", "--live"],
+        )
+        with self.assertRaises(agent_cli.CLIError):
+            agent_cli.cmd_system_inputs_set(args)
+
+    def test_system_inputs_set_requires_live(self) -> None:
+        args = agent_cli.build_parser().parse_args(["system", "inputs-set", "3", "input-level", "12"])
+        with self.assertRaises(agent_cli.CLIError):
+            agent_cli.cmd_system_inputs_set(args)
+
+    def test_system_midi_set_builds_plan(self) -> None:
+        args = agent_cli.build_parser().parse_args(
+            ["system", "midi-set", "mapSelect", "PROG", "--live", "--verify"],
+        )
+        with mock.patch.object(agent_cli, "apply_focused_plan_cli", return_value={"ok": True}) as apply_plan:
+            result = agent_cli.cmd_system_midi_set(args)
+        apply_plan.assert_called_once()
+        plan = apply_plan.call_args.args[0]
+        self.assertEqual(plan.id, "system-midi-set:mapSelect")
+        self.assertEqual(plan.writes[0].data, [1])
+        self.assertEqual(result["ok"], True)
+
+    def test_system_common_set_builds_plan(self) -> None:
+        args = agent_cli.build_parser().parse_args(
+            ["system", "common-set", "metronomeBpm", "100.0", "--live"],
+        )
+        with mock.patch.object(agent_cli, "apply_focused_plan_cli", return_value={"verified": True}) as apply_plan:
+            agent_cli.cmd_system_common_set(args)
+        plan = apply_plan.call_args.args[0]
+        self.assertEqual(plan.id, "system-common-set:metronomeBpm")
+
+    def test_system_effects_set_builds_plan(self) -> None:
+        args = agent_cli.build_parser().parse_args(
+            ["system", "effects-set", "metronomeLevel", "50", "--live", "--verify"],
+        )
+        with mock.patch.object(agent_cli, "apply_focused_plan_cli", return_value={"ok": True}) as apply_plan:
+            agent_cli.cmd_system_effects_set(args)
+        self.assertEqual(apply_plan.call_args.args[0].id, "system-effects-set:metronomeLevel")
+
+    def test_system_pitch_set_builds_plan(self) -> None:
+        args = agent_cli.build_parser().parse_args(
+            ["system", "pitch-set", "tunerOutput", "BYPASS", "--live"],
+        )
+        with mock.patch.object(agent_cli, "apply_focused_plan_cli", return_value={"ok": True}) as apply_plan:
+            agent_cli.cmd_system_pitch_set(args)
+        self.assertEqual(apply_plan.call_args.args[0].id, "system-pitch-set:tunerOutput")
+
+    def test_system_setup_efct_set_builds_plan(self) -> None:
+        args = agent_cli.build_parser().parse_args(
+            ["system", "setup-efct-set", "mainDirMon", "ON", "--live"],
+        )
+        with mock.patch.object(agent_cli, "apply_focused_plan_cli", return_value={"ok": True}) as apply_plan:
+            agent_cli.cmd_system_setup_efct_set(args)
+        self.assertEqual(apply_plan.call_args.args[0].id, "system-setup-efct-set:mainDirMon")
+
+    def test_system_inputs_set_builds_plan(self) -> None:
+        args = agent_cli.build_parser().parse_args(
+            ["system", "inputs-set", "3", "input-level", "12", "--live", "--verify"],
+        )
+        with mock.patch.object(agent_cli, "apply_focused_plan_cli", return_value={"ok": True}) as apply_plan:
+            result = agent_cli.cmd_system_inputs_set(args)
+        apply_plan.assert_called_once()
+        plan = apply_plan.call_args.args[0]
+        self.assertEqual(plan.id, "system-inputs-set:3:inputLevel")
+        self.assertEqual(result["ok"], True)
 
     def test_system_inout_decodes_validated_common_fields(self):
         data = [0] * 0x43
@@ -1630,16 +1839,19 @@ class UserPatchReadTests(unittest.TestCase):
         controls = result["decoded"]["controls"]
         self.assertEqual(result["id"], "systemControl")
         self.assertEqual(result["address"], ["00", "00", "10", "00"])
-        self.assertEqual(controls["NUM 1"]["function"], "MATCHING NUM")
+        self.assertEqual(controls["NUM 1"]["functionId"], "matching-num")
+        self.assertEqual(controls["NUM 1"]["functionDisplayName"], "MATCHING NUM")
         self.assertEqual(controls["NUM 1"]["mode"], "TOGGLE")
         self.assertEqual(controls["NUM 1"]["preference"], "PATCH")
-        self.assertEqual(controls["CTL 1"]["function"], "DELAY 1")
-        self.assertEqual(controls["CTL 1"]["functionTargetBlockId"], "delay1")
-        self.assertTrue(controls["CTL 1"]["functionCanEnableBlock"])
+        self.assertEqual(controls["CTL 1"]["functionId"], "delay1")
+        self.assertEqual(controls["CTL 1"]["functionDisplayName"], "DELAY 1")
+        self.assertEqual(controls["CTL 1"]["functionTargetRef"], "delay1.sw")
+        self.assertTrue(controls["CTL 1"]["canEnableBlock"])
         self.assertEqual(controls["CTL 1"]["mode"], "MOMENT")
         self.assertEqual(controls["CTL 1"]["preference"], "SYSTEM")
-        self.assertEqual(controls["EXP 1"]["function"], "FV + PEDAL FX")
-        self.assertEqual(controls["EXP 1"]["functionTargetBlockId"], "pedalFx")
+        self.assertEqual(controls["EXP 1"]["functionId"], "foot-volume-pedal-fx")
+        self.assertEqual(controls["EXP 1"]["functionDisplayName"], "FV + PEDAL FX")
+        self.assertEqual(controls["EXP 1"]["functionTargetRef"], "pedalFx.sw")
         self.assertEqual(result["decoded"]["preferences"]["EXP 1"], "SYSTEM")
 
     def test_system_manual_view_decodes_manual_control2_fields(self):
@@ -1652,17 +1864,22 @@ class UserPatchReadTests(unittest.TestCase):
         controls = result["decoded"]["controls"]
         self.assertEqual(result["id"], "systemManualControl")
         self.assertEqual(result["address"], ["00", "00", "70", "00"])
-        self.assertEqual(controls["NUM 1"]["function"], "DELAY 1")
-        self.assertEqual(controls["NUM 1"]["functionTargetBlockId"], "delay1")
-        self.assertTrue(controls["NUM 1"]["functionCanEnableBlock"])
+        self.assertEqual(controls["NUM 1"]["functionId"], "delay1")
+        self.assertEqual(controls["NUM 1"]["functionDisplayName"], "DELAY 1")
+        self.assertEqual(controls["NUM 1"]["functionTargetRef"], "delay1.sw")
+        self.assertTrue(controls["NUM 1"]["canEnableBlock"])
         self.assertEqual(controls["NUM 1"]["mode"], "TOGGLE")
-        self.assertEqual(controls["NUM 2"]["function"], "TUNER")
+        self.assertEqual(controls["NUM 2"]["functionId"], "tuner")
+        self.assertEqual(controls["NUM 2"]["functionDisplayName"], "TUNER")
         self.assertEqual(controls["NUM 2"]["mode"], "MOMENT")
         self.assertEqual(controls["NUM 2"]["preference"], "SYSTEM")
-        self.assertEqual(controls["NUM 3"]["function"], "FX 4")
-        self.assertEqual(controls["NUM 4"]["function"], "DIVIDER 1 CHANNEL SELECT")
-        self.assertEqual(controls["NUM 4"]["functionTargetParameterId"], "channelSelect")
-        self.assertEqual(controls["NUM 5"]["function"], "LEVEL +10")
+        self.assertEqual(controls["NUM 3"]["functionId"], "fx4")
+        self.assertEqual(controls["NUM 3"]["functionDisplayName"], "FX 4")
+        self.assertEqual(controls["NUM 4"]["functionId"], "divider1-channel-select")
+        self.assertEqual(controls["NUM 4"]["functionDisplayName"], "DIVIDER 1 CHANNEL SELECT")
+        self.assertEqual(controls["NUM 4"]["functionTargetRef"], "divider1.channelSelect")
+        self.assertEqual(controls["NUM 5"]["functionId"], "level-plus-10")
+        self.assertEqual(controls["NUM 5"]["functionDisplayName"], "LEVEL +10")
 
     def test_fx_blocks_keep_validated_summary_read_size(self):
         fx1 = next(block for block in live.SUMMARY_BLOCKS if block.id == "fx1")

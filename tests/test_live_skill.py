@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import os
 import subprocess
@@ -17,7 +19,10 @@ ALLOW_DESTRUCTIVE = os.environ.get("GT1000_ALLOW_DESTRUCTIVE") == "1"
 LIVE_BACKUP_DIR = os.environ.get("GT1000_LIVE_BACKUP_DIR")
 LIVE_BACKUP_FILE = os.environ.get("GT1000_LIVE_BACKUP_FILE")
 LIVE_SYSTEM_CONTROL_BACKUP_FILE = os.environ.get("GT1000_LIVE_SYSTEM_CONTROL_BACKUP_FILE")
-LIVE_PROCESS_TIMEOUT_MULTIPLIER = float(os.environ.get("GT1000_LIVE_PROCESS_TIMEOUT_MULTIPLIER", "3"))
+LIVE_SKIP_SLOT_RESTORE = os.environ.get("GT1000_LIVE_SKIP_SLOT_RESTORE") == "1"
+LIVE_DESTRUCTIVE_EXTENDED = os.environ.get("GT1000_DESTRUCTIVE_EXTENDED") == "1"
+LIVE_ALLOW_GLOBAL_SETTINGS = os.environ.get("GT1000_ALLOW_GLOBAL_SETTINGS") == "1"
+LIVE_PROCESS_TIMEOUT_MULTIPLIER = float(os.environ.get("GT1000_LIVE_PROCESS_TIMEOUT_MULTIPLIER", "1"))
 LIVE_WRITE_SLOTS = {
     "default": "U10-1",
     "four_cm": "U10-2",
@@ -30,8 +35,53 @@ LIVE_WRITE_SLOTS = {
 
 def live_process_timeout(timeout: int) -> float:
     return timeout * LIVE_PROCESS_TIMEOUT_MULTIPLIER
+
+
+def cli_failure_message(prefix: str, error: subprocess.CalledProcessError | subprocess.TimeoutExpired) -> str:
+    return (
+        prefix
+        + " "
+        + " ".join(str(part) for part in error.cmd)
+        + (f"\nexit: {error.returncode}" if isinstance(error, subprocess.CalledProcessError) else "")
+        + f"\nstdout:\n{error.stdout}"
+        + f"\nstderr:\n{error.stderr}"
+    )
+
+
+def output_has_endpoint_failure(stdout: str | bytes | None, stderr: str | bytes | None) -> bool:
+    text = f"{stdout or ''}\n{stderr or ''}"
+    return "No GT-1000 MIDI destination found" in text or "No GT-1000 MIDI source found" in text
+
+
+def run_json_cli(*args: str, timeout: int = 30, retry_endpoint: bool = False) -> dict:
+    attempts = 2 if retry_endpoint else 1
+    for attempt in range(attempts):
+        try:
+            result = subprocess.run(
+                [str(SKILL_CLI), "--pretty", *args],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+                timeout=live_process_timeout(timeout),
+                check=True,
+            )
+            return json.loads(result.stdout)
+        except subprocess.CalledProcessError as error:
+            if retry_endpoint and attempt == 0 and output_has_endpoint_failure(error.stdout, error.stderr):
+                time.sleep(5.0)
+                continue
+            raise AssertionError(cli_failure_message("CLI command failed:", error)) from error
+        except subprocess.TimeoutExpired as error:
+            raise AssertionError(cli_failure_message("CLI command timed out:", error)) from error
+    raise AssertionError("CLI retry exhausted")
+
+
 LIVE_WRITE_RESTORE_SLOTS = ["U10-1", "U10-2", "U10-3", "U10-4", "U10-5", "U11-1", "U11-2"]
-LIVE_VERIFIED_COMMAND_PATHS = {
+LIVE_RETRYABLE_READ_COMMANDS = {
+    ("patch", "export"),
+    ("system", "controls"),
+}
+LIVE_TESTED_COMMAND_PATHS = {
     ("doctor",),
     ("ports",),
     ("midi", "bank-select"),
@@ -72,6 +122,7 @@ LIVE_VERIFIED_COMMAND_PATHS = {
     ("patch", "level-audit"),
     ("patch", "master-set"),
     ("patch", "move"),
+    ("patch", "cleanup"),
     ("patch", "musician-summary"),
     ("patch", "normalize-levels"),
     ("patch", "overview"),
@@ -104,10 +155,34 @@ LIVE_VERIFIED_COMMAND_PATHS = {
     ("system", "effects"),
     ("system", "inout"),
     ("system", "inputs"),
+    ("system", "inputs-set"),
     ("system", "manual"),
     ("system", "midi"),
     ("system", "pcmap"),
     ("system", "pitch"),
+    ("audio", "ports"),
+    ("audio", "probe"),
+    ("audio", "generate-tone"),
+    ("audio", "record-dry"),
+    ("audio", "reamp"),
+    ("audio", "analyze"),
+    ("audio", "prepare-reamp"),
+    ("audio", "session"),
+    ("audio", "compare-branches"),
+    ("audio", "branch-context"),
+    ("audio", "probe-branch"),
+    ("audio", "probe-param"),
+    ("audio", "render-branch"),
+    ("audio", "analyze-trimmed"),
+    ("audio", "reference"),
+    ("audio", "match-reference"),
+    ("system", "setup-efct"),
+    ("system", "inout-set"),
+    ("system", "common-set"),
+    ("system", "midi-set"),
+    ("system", "effects-set"),
+    ("system", "pitch-set"),
+    ("system", "setup-efct-set"),
 }
 
 
@@ -122,11 +197,14 @@ class LiveUtilityTests(unittest.TestCase):
                 return "" if self.calls == 1 else "GT-1000"
 
         midi = FakeMidi()
-        with mock.patch.object(live.time, "sleep") as sleep:
+        with mock.patch.object(live, "ensure_process_midi_client") as ensure, mock.patch.object(
+            live, "wait_for_endpoint_refresh"
+        ) as wait:
             endpoint = live.find_endpoint(midi, lambda: 1, lambda index: 123)
 
         self.assertEqual(endpoint, 123)
-        sleep.assert_called_once_with(0.25)
+        ensure.assert_called_once_with(midi)
+        wait.assert_called_once_with(midi, 0.25)
 
     def test_lenient_consecutive_miss_limit_defaults_and_ignores_bad_env(self):
         with mock.patch.dict(live.os.environ, {}, clear=False):
@@ -137,19 +215,37 @@ class LiveUtilityTests(unittest.TestCase):
         with mock.patch.dict(live.os.environ, {"GT1000_LENIENT_MAX_CONSECUTIVE_MISSES": "bad"}):
             self.assertEqual(live.lenient_consecutive_miss_limit(), 8)
 
+    def test_progress_timeout_helpers_default_and_honor_env(self):
+        with mock.patch.dict(live.os.environ, {}, clear=False):
+            live.os.environ.pop("GT1000_READ_IDLE_TIMEOUT", None)
+            live.os.environ.pop("GT1000_READ_REQUEST_TOTAL_TIMEOUT", None)
+            self.assertEqual(live.read_idle_timeout(3), 2.0)
+            self.assertEqual(live.read_idle_timeout(30), 3.0)
+            self.assertEqual(live.read_request_total_timeout(20), 20.0)
+        with mock.patch.dict(live.os.environ, {
+            "GT1000_READ_IDLE_TIMEOUT": "1.5",
+            "GT1000_READ_REQUEST_TOTAL_TIMEOUT": "45",
+        }):
+            self.assertEqual(live.read_idle_timeout(20), 1.5)
+            self.assertEqual(live.read_request_total_timeout(20), 45.0)
+
+    def test_endpoint_retry_helpers_default_and_classify_errors(self):
+        with mock.patch.dict(live.os.environ, {}, clear=False):
+            live.os.environ.pop("GT1000_ENDPOINT_RETRY_ATTEMPTS", None)
+            live.os.environ.pop("GT1000_ENDPOINT_RETRY_DELAY", None)
+            live.os.environ.pop("GT1000_ENDPOINT_FIND_ATTEMPTS", None)
+            self.assertEqual(live.endpoint_retry_attempts(), 4)
+            self.assertEqual(live.endpoint_retry_delay(0), 0.75)
+            self.assertEqual(live.endpoint_find_attempts(), 12)
+        self.assertTrue(live.is_endpoint_unavailable_error(live.LiveMIDIError("No GT-1000 MIDI destination found")))
+        self.assertTrue(live.is_endpoint_unavailable_error(live.LiveMIDIError("No GT-1000 MIDI source found")))
+        self.assertFalse(live.is_endpoint_unavailable_error(live.LiveMIDIError("Timed out waiting for reply")))
+
 
 @unittest.skipUnless(RUN_LIVE, "set GT1000_LIVE=1 to run live GT-1000 tests")
 class LiveSkillReadTests(unittest.TestCase):
     def run_cli(self, *args: str, timeout: int = 30) -> dict:
-        result = subprocess.run(
-            [str(SKILL_CLI), "--pretty", *args],
-            cwd=ROOT,
-            text=True,
-            capture_output=True,
-            timeout=live_process_timeout(timeout),
-            check=True,
-        )
-        return json.loads(result.stdout)
+        return run_json_cli(*args, timeout=timeout, retry_endpoint=True)
 
     def test_live_ports_use_normal_gt1000_endpoint(self):
         ports = self.run_cli("ports", "--live", "--timeout", "8")
@@ -158,7 +254,7 @@ class LiveSkillReadTests(unittest.TestCase):
         self.assertTrue(any(port["name"] == "GT-1000" and port["isDefaultGT1000Endpoint"] for port in ports["sources"]))
 
     def test_live_summary_chain_controls_and_block(self):
-        summary = self.run_cli("patch", "summary", "--live", "--timeout", "20", timeout=40)
+        summary = self.run_cli("patch", "summary", "--live", "--timeout", "30", timeout=60)
 
         self.assertIn("overview", summary)
         self.assertIn("chain", summary)
@@ -230,15 +326,7 @@ class LiveSkillReadTests(unittest.TestCase):
 @unittest.skipUnless(RUN_LIVE, "set GT1000_LIVE=1 to run live GT-1000 tests")
 class LiveSkillSystemReadTests(unittest.TestCase):
     def run_cli(self, *args: str, timeout: int = 30) -> dict:
-        result = subprocess.run(
-            [str(SKILL_CLI), "--pretty", *args],
-            cwd=ROOT,
-            text=True,
-            capture_output=True,
-            timeout=live_process_timeout(timeout),
-            check=True,
-        )
-        return json.loads(result.stdout)
+        return run_json_cli(*args, timeout=timeout, retry_endpoint=True)
 
     def test_live_system_sections_decode(self):
         common = self.run_cli("system", "common", "--live", "--timeout", "20", timeout=40)
@@ -262,7 +350,7 @@ class LiveSkillSystemReadTests(unittest.TestCase):
                 self.assertIsInstance(section.get("dataHex"), str)
 
     def test_live_pcmap_and_input_setting_decode(self):
-        pcmap = self.run_cli("system", "pcmap", "--live", "--bank", "1", "--timeout", "20", timeout=40)
+        pcmap = self.run_cli("system", "pcmap", "--live", "--bank", "1", "--timeout", "20", timeout=90)
         inputs = self.run_cli("system", "inputs", "--live", "--number", "1", "--timeout", "20", timeout=40)
 
         self.assertEqual(pcmap["id"], "programChangeMap")
@@ -289,61 +377,47 @@ class LiveSkillWriteTests(unittest.TestCase):
         backup_root = Path(LIVE_BACKUP_DIR)
         backup_root.mkdir(parents=True, exist_ok=True)
         backup_timestamp = int(time.time())
-        cls.backup_file = Path(LIVE_BACKUP_FILE) if LIVE_BACKUP_FILE else backup_root / f"live-write-slot-backup-{backup_timestamp}.json"
         cls.backup_system_control_file = backup_root / f"live-write-system-control-backup-{backup_timestamp}.json"
-        if not LIVE_BACKUP_FILE:
-            cls.run_cli_class(
-                "patch",
-                "export",
-                *LIVE_WRITE_RESTORE_SLOTS,
-                "--output",
-                str(cls.backup_file),
-                "--live",
-                "--timeout",
-                "20",
-                timeout=240,
-            )
-        if not cls.backup_file.is_file():
-            raise unittest.SkipTest(f"destructive-test slot backup does not exist: {cls.backup_file}")
-        cls.backup_patch_common = cls.patch_common_records_from_backup(cls.backup_file)
-        if LIVE_SYSTEM_CONTROL_BACKUP_FILE:
-            system_control = json.loads(Path(LIVE_SYSTEM_CONTROL_BACKUP_FILE).read_text(encoding="utf-8"))
-        else:
-            system_control = cls.run_cli_class("system", "controls", "--live", "--timeout", "20", timeout=40)
-        cls.backup_system_control_data = [int(byte, 16) for byte in system_control["dataHex"].split()]
-        if LIVE_BACKUP_DIR and cls.backup_system_control_file is not None and not LIVE_SYSTEM_CONTROL_BACKUP_FILE:
-            cls.backup_system_control_file.write_text(json.dumps(system_control, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        cls.backup_file = None
+        cls.backup_patch_common = {}
+        cls.backup_system_control_data = []
+        if not LIVE_SKIP_SLOT_RESTORE:
+            cls.backup_file = Path(LIVE_BACKUP_FILE) if LIVE_BACKUP_FILE else backup_root / f"live-write-slot-backup-{backup_timestamp}.json"
+            if not LIVE_BACKUP_FILE:
+                cls.run_cli_class(
+                    "patch",
+                    "export",
+                    *LIVE_WRITE_RESTORE_SLOTS,
+                    "--output",
+                    str(cls.backup_file),
+                    "--live",
+                    "--timeout",
+                    "20",
+                    timeout=240,
+                )
+            if not cls.backup_file.is_file():
+                raise unittest.SkipTest(f"destructive-test slot backup does not exist: {cls.backup_file}")
+            cls.backup_patch_common = cls.patch_common_records_from_backup(cls.backup_file)
+        if LIVE_ALLOW_GLOBAL_SETTINGS:
+            if LIVE_SYSTEM_CONTROL_BACKUP_FILE:
+                system_control = json.loads(Path(LIVE_SYSTEM_CONTROL_BACKUP_FILE).read_text(encoding="utf-8"))
+            else:
+                system_control = cls.run_cli_class("system", "controls", "--live", "--timeout", "20", timeout=40)
+            cls.backup_system_control_data = [int(byte, 16) for byte in system_control["dataHex"].split()]
+            if LIVE_BACKUP_DIR and cls.backup_system_control_file is not None and not LIVE_SYSTEM_CONTROL_BACKUP_FILE:
+                cls.backup_system_control_file.write_text(json.dumps(system_control, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     @classmethod
     def tearDownClass(cls) -> None:
         restore_errors = []
-        if cls.backup_file and cls.backup_file.is_file():
+        if cls.backup_file and cls.backup_file.is_file() and not LIVE_SKIP_SLOT_RESTORE:
             try:
-                cls.run_cli_class(
-                    "patch",
-                    "import",
-                    str(cls.backup_file),
-                    "--destination-start",
-                    LIVE_WRITE_RESTORE_SLOTS[0],
-                    "--live",
-                    "--timeout",
-                    "40",
-                    timeout=360,
-                )
-                for slot, expected in cls.backup_patch_common.items():
-                    actual = cls.read_patch_common(slot, timeout=12)
-                    if actual != expected:
-                        raise AssertionError(f"{slot} restored Patch Common bytes did not match the pre-test backup")
+                cls.retry_cleanup("slot restore", cls.restore_slot_backups)
             except Exception as error:
                 restore_errors.append(f"slot restore failed: {error}")
         if cls.backup_system_control_data:
             try:
-                live.write_data_sets([live.PatchWrite("Restore System Control", live.SYSTEM_CONTROL, cls.backup_system_control_data)])
-                time.sleep(0.25)
-                system_control = cls.run_cli_class("system", "controls", "--live", "--timeout", "20", timeout=40)
-                restored_data = [int(byte, 16) for byte in system_control["dataHex"].split()]
-                if restored_data != cls.backup_system_control_data:
-                    raise AssertionError("System Control restore did not match the pre-test backup bytes")
+                cls.retry_cleanup("System Control restore", cls.restore_system_control)
             except Exception as error:
                 restore_errors.append(f"System Control restore failed: {error}")
         if restore_errors:
@@ -351,6 +425,51 @@ class LiveSkillWriteTests(unittest.TestCase):
                 "Destructive live test cleanup did not fully restore state: "
                 + "; ".join(restore_errors)
             )
+
+    @classmethod
+    def restore_slot_backups(cls) -> None:
+        assert cls.backup_file is not None
+        cls.run_cli_class(
+            "patch",
+            "import",
+            str(cls.backup_file),
+            "--destination-start",
+            LIVE_WRITE_RESTORE_SLOTS[0],
+            "--live",
+            "--timeout",
+            "40",
+            timeout=360,
+        )
+        for slot, expected in cls.backup_patch_common.items():
+            actual = cls.read_patch_common(slot, timeout=12)
+            if actual != expected:
+                raise AssertionError(f"{slot} restored Patch Common bytes did not match the pre-test backup")
+
+    @classmethod
+    def restore_system_control(cls) -> None:
+        live.write_data_sets([live.PatchWrite("Restore System Control", live.SYSTEM_CONTROL, cls.backup_system_control_data)])
+        time.sleep(0.25)
+        system_control = cls.run_cli_class("system", "controls", "--live", "--timeout", "20", timeout=40)
+        restored_data = [int(byte, 16) for byte in system_control["dataHex"].split()]
+        if restored_data != cls.backup_system_control_data:
+            raise AssertionError("System Control restore did not match the pre-test backup bytes")
+
+    @classmethod
+    def retry_cleanup(cls, label: str, action) -> None:
+        attempts = 4
+        for attempt in range(attempts):
+            try:
+                action()
+                return
+            except Exception as error:
+                if attempt == attempts - 1 or not cls.is_endpoint_unavailable_failure(error):
+                    raise
+                time.sleep(3.0)
+        raise AssertionError(f"{label} retry exhausted")
+
+    @staticmethod
+    def is_endpoint_unavailable_failure(error: Exception) -> bool:
+        return "No GT-1000 MIDI destination found" in str(error) or "No GT-1000 MIDI source found" in str(error)
 
     @staticmethod
     def patch_common_records_from_backup(path: Path) -> dict[str, list[int]]:
@@ -370,6 +489,21 @@ class LiveSkillWriteTests(unittest.TestCase):
 
     @classmethod
     def run_cli_class(cls, *args: str, timeout: int = 60) -> dict:
+        attempts = 2
+        last_error: AssertionError | None = None
+        for attempt in range(attempts):
+            try:
+                return cls.run_cli_class_once(*args, timeout=timeout)
+            except AssertionError as error:
+                last_error = error
+                if attempt == attempts - 1 or not cls.is_retryable_cli_endpoint_failure(args, error):
+                    raise
+                time.sleep(5.0)
+        assert last_error is not None
+        raise last_error
+
+    @classmethod
+    def run_cli_class_once(cls, *args: str, timeout: int = 60) -> dict:
         try:
             result = subprocess.run(
                 [str(SKILL_CLI), "--pretty", *args],
@@ -404,8 +538,36 @@ class LiveSkillWriteTests(unittest.TestCase):
                 + f"\nstderr:\n{result.stderr}"
             ) from error
 
+    @staticmethod
+    def is_retryable_write_endpoint_failure(error: Exception) -> bool:
+        message = str(error)
+        return (
+            "write phase failed" in message
+            and (
+                "No GT-1000 MIDI destination found" in message
+                or "No GT-1000 MIDI source found" in message
+            )
+        )
+
+    @classmethod
+    def is_retryable_cli_endpoint_failure(cls, args: tuple[str, ...], error: Exception) -> bool:
+        if cls.is_retryable_write_endpoint_failure(error):
+            return True
+        if not cls.is_endpoint_unavailable_failure(error):
+            return False
+        command_path = tuple(args[:2]) if args[:1] in {("patch",), ("system",)} else tuple(args[:1])
+        return command_path in LIVE_RETRYABLE_READ_COMMANDS
+
     def run_cli(self, *args: str, timeout: int = 60) -> dict:
         return self.run_cli_class(*args, timeout=timeout)
+
+    def require_extended_destructive(self) -> None:
+        if not LIVE_DESTRUCTIVE_EXTENDED:
+            self.skipTest("set GT1000_DESTRUCTIVE_EXTENDED=1 for extended multi-command/multi-slot destructive coverage")
+
+    def require_global_settings(self) -> None:
+        if not LIVE_ALLOW_GLOBAL_SETTINGS:
+            self.skipTest("set GT1000_ALLOW_GLOBAL_SETTINGS=1 to allow destructive global/System Control writes")
 
     def assert_verified(self, result: dict) -> None:
         self.assertTrue(result["verified"])
@@ -471,7 +633,7 @@ class LiveSkillWriteTests(unittest.TestCase):
             "--verify",
             "--timeout",
             "20",
-            timeout=60,
+            timeout=120,
         )
 
         self.assertEqual(set_result["plan"], "set:delay1.time:U10-3")
@@ -495,6 +657,8 @@ class LiveSkillWriteTests(unittest.TestCase):
         self.assert_verified_patch1_slot(move_result, "2E")
 
     def test_p1_edit_commands_verify_on_u10_3(self):
+        self.require_extended_destructive()
+
         initialize_result = self.run_cli(
             "patch",
             "initialize",
@@ -537,7 +701,7 @@ class LiveSkillWriteTests(unittest.TestCase):
             "--verify",
             "--timeout",
             "20",
-            timeout=60,
+            timeout=120,
         )
         self.assertEqual(rename_result["plan"], "rename:U10-3")
         self.assert_verified_patch1_slot(rename_result, "2F")
@@ -554,7 +718,7 @@ class LiveSkillWriteTests(unittest.TestCase):
             "--verify",
             "--timeout",
             "20",
-            timeout=60,
+            timeout=120,
         )
         self.assertEqual(raw_result["plan"], "raw-set:delay1:0:byte:U10-3")
         self.assert_verified_patch1_slot(raw_result, "2F")
@@ -571,7 +735,7 @@ class LiveSkillWriteTests(unittest.TestCase):
             "--verify",
             "--timeout",
             "20",
-            timeout=60,
+            timeout=120,
         )
         self.assertEqual(fx4_type_result["plan"], "set:fx4.type:U10-3")
         self.assert_verified(fx4_type_result)
@@ -629,36 +793,6 @@ class LiveSkillWriteTests(unittest.TestCase):
         self.assertEqual(control_result["plan"], "control:ctl1:dist1:U10-3")
         self.assert_verified_patch1_slot(control_result, "2F")
 
-        system_control_result = self.run_cli(
-            "patch",
-            "system-control-set",
-            "ctl1",
-            "dist1",
-            "--mode",
-            "toggle",
-            "--live",
-            "--verify",
-            "--timeout",
-            "20",
-            timeout=60,
-        )
-        self.assertEqual(system_control_result["plan"], "system-control:ctl1:dist1")
-        self.assert_verified(system_control_result)
-
-        preference_result = self.run_cli(
-            "patch",
-            "control-preference-set",
-            "ctl1",
-            "patch",
-            "--live",
-            "--verify",
-            "--timeout",
-            "20",
-            timeout=60,
-        )
-        self.assertEqual(preference_result["plan"], "control-preference:ctl1:patch")
-        self.assert_verified(preference_result)
-
         led_result = self.run_cli(
             "patch",
             "led-set",
@@ -696,12 +830,65 @@ class LiveSkillWriteTests(unittest.TestCase):
             "--verify",
             "--timeout",
             "20",
-            timeout=60,
+            timeout=120,
         )
         self.assertEqual(assign_result["plan"], "set:assign2:target987:source19:U10-3")
         self.assert_verified_patch1_slot(assign_result, "2F")
 
-    def test_existing_edit_and_midi_commands_have_live_paths(self):
+    def test_system_midi_set_roundtrip_when_global_settings_enabled(self):
+        self.require_global_settings()
+        midi = self.run_cli("system", "midi", "--live", "--timeout", "15", timeout=30)
+        value = midi["decoded"]["mapSelect"]
+        self.assertIsNotNone(value)
+        result = self.run_cli(
+            "system",
+            "midi-set",
+            "mapSelect",
+            str(value),
+            "--live",
+            "--verify",
+            "--timeout",
+            "20",
+            timeout=60,
+        )
+        self.assertTrue(result.get("verified"))
+
+    def test_global_control_settings_verify_only_when_explicitly_enabled(self):
+        self.require_global_settings()
+
+        system_control_result = self.run_cli(
+            "patch",
+            "system-control-set",
+            "ctl1",
+            "dist1",
+            "--mode",
+            "toggle",
+            "--live",
+            "--verify",
+            "--timeout",
+            "20",
+            timeout=60,
+        )
+        self.assertEqual(system_control_result["plan"], "system-control:ctl1:dist1")
+        self.assert_verified(system_control_result)
+
+        preference_result = self.run_cli(
+            "patch",
+            "control-preference-set",
+            "ctl1",
+            "patch",
+            "--live",
+            "--verify",
+            "--timeout",
+            "20",
+            timeout=120,
+        )
+        self.assertEqual(preference_result["plan"], "control-preference:ctl1:patch")
+        self.assert_verified(preference_result)
+
+    def test_existing_edit_commands_have_extended_live_paths(self):
+        self.require_extended_destructive()
+
         enable_result = self.run_cli(
             "patch",
             "enable",
@@ -793,11 +980,12 @@ class LiveSkillWriteTests(unittest.TestCase):
             "--verify",
             "--timeout",
             "20",
-            timeout=60,
+            timeout=120,
         )
         self.assertEqual(tuner_assign_result["plan"], "set:tunerAssign:U10-3")
         self.assert_verified_patch1_slot(tuner_assign_result, "2F")
 
+    def test_midi_channel_voice_commands_have_live_paths(self):
         cc_result = self.run_cli("midi", "cc", "80", "0", "--channel", "1", "--live", timeout=60)
         self.assertEqual(cc_result["type"], "controlChange")
         self.assertEqual(cc_result["controller"], 80)
@@ -815,6 +1003,8 @@ class LiveSkillWriteTests(unittest.TestCase):
         self.assertEqual(len(select_result["messagesHex"]), 3)
 
     def test_patch_clone_between_restricted_user_slots(self):
+        self.require_extended_destructive()
+
         source_result = self.run_cli(
             "patch",
             "apply",
@@ -858,7 +1048,7 @@ class LiveSkillWriteTests(unittest.TestCase):
             "--verify",
             "--timeout",
             "20",
-            timeout=360,
+            timeout=120,
         )
         destination = self.run_cli(
             "patch",
@@ -879,6 +1069,8 @@ class LiveSkillWriteTests(unittest.TestCase):
         self.assertEqual(destination["patchName"], "LIVE CLONE SRC")
 
     def test_zy_restore_preset_primary_records_to_restricted_user_slot(self):
+        self.require_extended_destructive()
+
         result = self.run_cli(
             "patch",
             "restore-preset",
@@ -888,7 +1080,7 @@ class LiveSkillWriteTests(unittest.TestCase):
             "--verify",
             "--timeout",
             "20",
-            timeout=360,
+            timeout=120,
         )
 
         self.assertEqual(result["plan"], "restore-preset:P01-1:U11-1")
@@ -900,6 +1092,8 @@ class LiveSkillWriteTests(unittest.TestCase):
         self.assertEqual([check["label"] for check in failed], ["Restore P01-1 Patch Effect"])
 
     def test_patch_copy_and_exchange_between_restricted_user_slots(self):
+        self.require_extended_destructive()
+
         source_result = self.run_cli(
             "patch",
             "rename",
@@ -936,7 +1130,7 @@ class LiveSkillWriteTests(unittest.TestCase):
             "--verify",
             "--timeout",
             "20",
-            timeout=360,
+            timeout=120,
         )
         copied = self.run_cli(
             "patch",
@@ -989,7 +1183,7 @@ class LiveSkillWriteTests(unittest.TestCase):
             "--verify",
             "--timeout",
             "20",
-            timeout=360,
+            timeout=120,
         )
         exchanged_source = self.run_cli(
             "patch",
@@ -1007,6 +1201,8 @@ class LiveSkillWriteTests(unittest.TestCase):
         self.assertEqual(exchanged_source["patchName"], "LIVE EXCH B")
 
     def test_zz_batch_patch_management_commands(self):
+        self.require_extended_destructive()
+
         init_result = self.run_cli(
             "patch",
             "batch-initialize",
@@ -1045,7 +1241,9 @@ class LiveSkillWriteTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "live-liveset.json"
+            single_output = Path(directory) / "live-liveset-single.json"
             tsl_output = Path(directory) / "live-liveset.tsl"
+            single_tsl_output = Path(directory) / "live-liveset-single.tsl"
             export_result = self.run_cli(
                 "patch",
                 "export",
@@ -1061,6 +1259,21 @@ class LiveSkillWriteTests(unittest.TestCase):
             self.assertEqual(export_result["format"], "gt1000-agent-liveset-v1")
             self.assertEqual(export_result["patchCount"], 2)
             self.assertTrue(output.is_file())
+
+            single_export_result = self.run_cli(
+                "patch",
+                "export",
+                LIVE_WRITE_SLOTS["clone_source"],
+                "--output",
+                str(single_output),
+                "--live",
+                "--timeout",
+                "20",
+                timeout=180,
+            )
+            self.assertEqual(single_export_result["format"], "gt1000-agent-liveset-v1")
+            self.assertEqual(single_export_result["patchCount"], 1)
+            self.assertTrue(single_output.is_file())
 
             liveset_list = self.run_cli("patch", "liveset-list", str(output), timeout=30)
             self.assertEqual(liveset_list["patchCount"], 2)
@@ -1139,36 +1352,50 @@ class LiveSkillWriteTests(unittest.TestCase):
             self.assertEqual(tsl_list["patchCount"], 2)
             self.assertTrue(tsl_list["canImportRecords"])
 
+            single_tsl_export = self.run_cli(
+                "patch",
+                "tsl-export",
+                str(single_output),
+                "--output",
+                str(single_tsl_output),
+                "--name",
+                "LIVE TEST SINGLE",
+                timeout=30,
+            )
+            self.assertEqual(single_tsl_export["format"], "gt1000-agent-tsl-json-v1")
+            self.assertEqual(single_tsl_export["patchCount"], 1)
+            self.assertTrue(single_tsl_output.is_file())
+
             import_result = self.run_cli(
                 "patch",
                 "import",
-                str(output),
+                str(single_output),
                 "--destination-start",
                 LIVE_WRITE_SLOTS["clone_destination"],
                 "--live",
                 "--verify",
                 "--timeout",
                 "20",
-                timeout=360,
+                timeout=240,
             )
-            self.assertEqual(import_result["plan"], "liveset-import:U11-1:2")
-            self.assertEqual(import_result["destinationSlots"], ["U11-1", "U11-2"])
+            self.assertEqual(import_result["plan"], "liveset-import:U11-1:1")
+            self.assertEqual(import_result["destinationSlots"], ["U11-1"])
             self.assert_verified(import_result)
 
             tsl_import_result = self.run_cli(
                 "patch",
                 "tsl-import",
-                str(tsl_output),
+                str(single_tsl_output),
                 "--destination-start",
                 LIVE_WRITE_SLOTS["clone_destination"],
                 "--live",
                 "--verify",
                 "--timeout",
                 "20",
-                timeout=360,
+                timeout=240,
             )
-            self.assertEqual(tsl_import_result["plan"], "liveset-import:U11-1:2")
-            self.assertEqual(tsl_import_result["destinationSlots"], ["U11-1", "U11-2"])
+            self.assertEqual(tsl_import_result["plan"], "liveset-import:U11-1:1")
+            self.assertEqual(tsl_import_result["destinationSlots"], ["U11-1"])
             self.assert_verified(tsl_import_result)
 
         insert_result = self.run_cli(

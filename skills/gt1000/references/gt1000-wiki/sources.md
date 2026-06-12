@@ -30,3 +30,9 @@ rg -n "CONTROL ASSIGN|ASSIGN SETTING|AIRD PREAMP|MIDI SETTING|PatchCommon" /tmp/
 ```
 
 When extracting into this wiki, paraphrase and summarize. Do not paste large manual sections.
+
+## Community (non-official)
+
+| Topic | Reference |
+|---|---|
+| Input level / gain staging | [input-level-gain-staging.md](input-level-gain-staging.md) — distilled from [r/guitarpedals, Oct 2020](https://www.reddit.com/r/guitarpedals/comments/jeo4rh/input_level_make_the_gt1000_sound_1000_times/) |

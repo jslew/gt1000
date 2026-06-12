@@ -1,5 +1,11 @@
 # GT-1000 Agent Notes
 
+## Git and Remotes
+
+- Never run `git push` (or equivalent remote-update commands) unless the user explicitly asks you to push in this conversation.
+- Treat push permission as time-bounded: an earlier "go ahead and push" does not carry forward after a later push or after a new session. Only honor a push request made since the more recent of (a) the last successful push in this repo during the current session, or (b) the start of the current agent session.
+- Commits are fine when requested; pushing is a separate, explicit step.
+
 ## Project Shape
 
 - This is a Python-based GT-1000 inspection/editing repo.
@@ -8,10 +14,39 @@
 - Main command surface is `scripts/gt1000-agent`.
 - The runtime skill at `skills/gt1000/SKILL.md` is a musician-facing interface. Keep CLI development, maintenance, and testing guidance in this `AGENTS.md` file or deeper implementation references, not in the skill, unless the detail directly guides a musician-facing device interaction.
 - Every CLI command should have unit test coverage and an explicit live test verification path. For commands that write, the live verification must use the command's validated/read-back verification flow where practical.
+- **Agents: after adding or changing MIDI/audio CLI behavior, run the relevant live tests before finishing** (do not treat unit tests alone as sufficient when hardware is available). Audio lab: `GT1000_AUDIO_LIVE=1` + `tests/test_live_audio_lab.py`. Broader MIDI: `GT1000_LIVE=1` + `tests/test_live_skill.py`.
+
+## Python Environment
+
+MIDI/SysEx commands need **no extra pip packages** (stdlib + macOS CoreMIDI only). USB **audio lab** and `tests/test_live_audio_lab.py` need **sounddevice** + **numpy** from `skills/gt1000/requirements-audio.txt`.
+
+**Agents: do this before the first audio command or audio live test in a session** — do not wait for a skip or `ModuleNotFoundError`:
+
+```sh
+# Pick one interpreter for the whole session (prefer project .venv when present)
+PY="${GT1000_AUDIO_PYTHON:-.venv/bin/python}"
+command -v "$PY" >/dev/null || PY=python3
+
+# Install if missing (idempotent)
+"$PY" -c "import numpy, sounddevice" 2>/dev/null || \
+  "$PY" -m pip install -r skills/gt1000/requirements-audio.txt
+
+# Run audio live tests with the same interpreter
+GT1000_AUDIO_PYTHON="$PY" GT1000_AUDIO_LIVE=1 PYTHONDONTWRITEBYTECODE=1 \
+  "$PY" -m unittest tests.test_live_audio_lab -q
+```
+
+- **Do not** run audio live tests with bare `python3` if deps were installed into `.venv` — that produces `OK (skipped=…)` and looks like success when nothing ran.
+- A skip mentioning `sounddevice` / `numpy` means **install deps and re-run**, not "done."
+- Prefer `python3 -m venv .venv` + `.venv/bin/pip install -r skills/gt1000/requirements-audio.txt` over system Python. Do not use `pip install --break-system-packages`.
+- Musician-facing setup detail: `skills/gt1000/references/skill-audio-setup.md`.
+- Skill routing: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_skill_routing tests.test_skill_routing_eval -q` (registry coverage + LLM trace rubric). Score a transcript: `scripts/gt1000-routing-eval score-jsonl --jsonl <path> --scenario <id>`. Live agy suite: `scripts/gt1000-routing-eval-run suite` from `gt1000-scratch` (chat JSONL under `~/.gemini/tmp/gt1000-scratch/chats/`; needs agy auth + full-access for `--live` MIDI — see `skills/gt1000/references/skill-routing-eval.md`).
 - Useful checks:
   - `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -q`
   - `GT1000_LIVE=1 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_live_skill -q`
-  - `GT1000_LIVE=1 GT1000_ALLOW_DESTRUCTIVE=1 GT1000_LIVE_BACKUP_DIR=/tmp/gt1000-live-backups PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_live_skill -q`
+  - `GT1000_LIVE=1 GT1000_ALLOW_DESTRUCTIVE=1 GT1000_LIVE_BACKUP_DIR=/tmp/gt1000-live-backups GT1000_LIVE_SKIP_SLOT_RESTORE=1 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.test_live_skill -q`
+  - Slow extended destructive coverage: add `GT1000_DESTRUCTIVE_EXTENDED=1`
+  - Global/System Control destructive coverage: add `GT1000_ALLOW_GLOBAL_SETTINGS=1` only when intentionally testing global setting writes
   - `scripts/gt1000-agent --pretty ports --live --timeout 8`
   - `scripts/gt1000-agent --pretty patch overview --live --timeout 8`
   - `scripts/gt1000-agent --pretty patch chain --live --timeout 15`
@@ -19,6 +54,34 @@
   - `scripts/gt1000-agent --pretty patch slot U01-1 --live --view musician-summary --timeout 30`
   - `scripts/gt1000-agent --pretty patch plan default`
   - `scripts/gt1000-agent --pretty patch plan 4cm-template`
+  - `scripts/gt1000-agent --pretty audio ports`
+  - `scripts/gt1000-agent --pretty audio generate-tone --session <name>`
+  - `scripts/gt1000-agent --pretty audio record-dry --session <name> --duration 5`
+  - `scripts/gt1000-agent --pretty audio reamp --session <name>`
+  - `scripts/gt1000-agent --pretty audio analyze <a.wav> <b.wav>`
+  - `scripts/gt1000-agent --pretty audio reference analyze <reference.wav> --output <reference-profile.json>`
+  - `scripts/gt1000-agent --pretty audio reference plan <reference-profile.json> --session <name>`
+  - `scripts/gt1000-agent --pretty audio reference run <reference-profile.json> --session <name> --max-candidates 3`
+  - `scripts/gt1000-agent --pretty audio match-reference <reference-profile.json> <wet-a.wav> <wet-b.wav> --emphasis mids`
+  - Audio live tests: see **Python Environment** above (install deps first; set `GT1000_AUDIO_PYTHON` to the interpreter that has them). **Run after every audio-lab change** when the GT-1000 is connected.
+  - Divider A/B live test is opt-in (slow): `GT1000_AUDIO_LIVE=1 GT1000_COMPARE_LIVE=1 python3 -m unittest tests.test_live_audio_lab.LiveAudioLabTests.test_compare_branches_on_current_patch -v`
+
+## Audio Lab (USB record / re-amp)
+
+- Phase 1 lives under `skills/gt1000/tools/gt1000/audio_lab/` with CLI group `audio`. Roadmaps: [docs/audio-lab-roadmap.md](docs/audio-lab-roadmap.md), [docs/midi-cli-roadmap.md](docs/midi-cli-roadmap.md) (MIDI/SysEx verification and protocol gaps).
+- **USB audio (macOS):** `pip install -r skills/gt1000/requirements-audio.txt` (`sounddevice` + `numpy`). Capture and playback both use PortAudio/Core Audio (no ffmpeg). Sessions: `~/gt1000-sessions/` or `GT1000_SESSION_DIR`.
+- USB channel map: 1–2 main, 3–4 dry, 5–6 sub. `record-dry` (default `--bus dry`) captures six channels and extracts 3–4; `--bus main` or `--bus both` for 1–2. `audio probe` reports per-channel peaks.
+- Live audio needs full-access environment + Microphone privacy for the host app (Cursor/Terminal).
+- If `reamp` wet levels stay silent, verify USB DIR MON / routing on the unit (see `audio prepare-reamp`, wiki `usb-audio.md`).
+- Phase 2: `audio session init`, `audio session render --label <name>`, `system inout-set <field> <value> --live --verify`. Protocol: [docs/audio-lab-reamp-protocol.md](docs/audio-lab-reamp-protocol.md).
+- Example session flow:
+  - `scripts/gt1000-agent --pretty audio session init --session div1-test --live --midi-timeout 20`
+  - `scripts/gt1000-agent --pretty audio generate-tone --session div1-test --duration 3`
+  - `scripts/gt1000-agent --pretty audio session render --session div1-test --label baseline`
+  - Chained renders from separate CLI processes: add `--no-prepare-usb` after the first `prepare-reamp`, and `--no-patch-snapshot` on follow-up renders to avoid CoreMIDI churn.
+- Phase 3 (agent-guided quantitative experiments): primitives `audio branch-context`, `compare-branches`, `probe-branch`, `probe-param`, `render-branch`, `analyze-trimmed`. **Agent** runs inspect → hypothesize → test loops (see [docs/audio-lab-investigation.md](docs/audio-lab-investigation.md)); default ~5 min budget unless user specifies. Divider LEVEL A/B often do not affect single-mode USB re-amp—use probe/render to verify. **Close-out:** present findings (baseline, what worked, final metric); if successful, **offer** temp-patch apply or `--user-slot` save only when the user agrees—probes restore bytes, so re-apply winning `patch set` before they hear or save. **Verification:** [docs/audio-lab-investigation-verification.md](docs/audio-lab-investigation-verification.md) (IMPRESSION oracle + fresh-agent test prompt).
+  - `scripts/gt1000-agent --pretty system inout-set usb-main-mix-level 100 --live --verify --timeout 20`
+  - `scripts/gt1000-agent --pretty system inputs-set 3 input-level 12 --live --verify --timeout 20`
 
 ## Skill Maintenance
 
@@ -52,9 +115,11 @@
 ## Python Live MIDI Notes
 
 - `skills/gt1000/tools/gt1000/live.py` uses Python `ctypes` against CoreMIDI.
+- `gt1000-agent` takes a global process lock for the whole CLI, including `--help`, offline plans, and audio/session commands. Do not run multiple `gt1000-agent` invocations in parallel with `multi_tool_use.parallel`; even non-live probes can fail with exit `75` and create review/test friction. Parallel shell reads such as `rg`, `sed`, `git diff`, and `nl` are fine.
 - Codex CLI live MIDI verification must run outside the normal workspace/read-only sandbox, for example with yolo/`--dangerously-bypass-approvals-and-sandbox` or `-s danger-full-access`. The normal sandbox can deny CoreMIDI Mach service access and look like a GT-1000 timeout; the CLI includes a fast-fail sandbox/CoreMIDI preflight for live commands.
 - CoreMIDI callbacks run on CoreMIDI-owned threads. Copy packet bytes in the callback, then update guarded Python state.
-- Run live patch reads sequentially. Separate CLI processes can interleave GT-1000 replies on the same MIDI source.
+- macOS serves `MIDIGetNumberOfDestinations`/`MIDIGetNumberOfSources` from a per-process cached MIDISetup. If a process first contacts midiserver at a bad moment (for example a subprocess spawned right after PortAudio tears down the GT-1000 USB stream), the snapshot can be empty and a plain `time.sleep` retry loop never recovers because the cache only refreshes when a real `MIDIClient` exists and the thread's CFRunLoop is serviced. `live.py` creates one process-wide client before enumeration (`ensure_process_midi_client`) and pumps the run loop between endpoint-find attempts (`wait_for_endpoint_refresh`); never reintroduce sleep-only endpoint retries. `branch_lab` additionally retries post-audio fresh-MIDI writes at process granularity (`GT1000_FRESH_PROCESS_ATTEMPTS`, default 3) because a new process gets a fresh snapshot.
+- Run live patch reads sequentially. Separate CLI processes can interleave GT-1000 replies on the same MIDI source. `gt1000-agent` enforces one process at a time via `~/.gt1000-agent/cli.lock` (exit `75` if another instance is running).
 - If `ports --live` itself hangs or times out, stop live testing and recover CoreMIDI/the USB connection before continuing. Quit BOSS Tone Studio if it is open, then power-cycle or reconnect the GT-1000. If USB still shows `GT-1000` but CoreMIDI `MIDIGetNumberOfDestinations()` hangs, restart macOS before more live verification.
 - If `ports --live` still lists the normal `GT-1000` endpoints but known-good SysEx reads such as `system controls --live` time out, stop live write testing and power-cycle or reconnect the GT-1000 before continuing. Repeated large reads can leave the tested unit visible to CoreMIDI but not replying to SysEx.
 - A quick endpoint inventory should usually show:
@@ -68,7 +133,7 @@
 - Temporary patch writes are allowed through validated CLI plans and should be read-back verified.
 - While developing the skill, agent-run user-slot writes are restricted to `U10-1` through `U11-5`; do not touch the lower banks unless explicitly instructed. The skill/CLI itself should support any valid user slot.
 - Use `--verify` for live write commands so every written range is re-read and compared.
-- The destructive live test suite requires `GT1000_LIVE_BACKUP_DIR`, backs up `U10-1` through `U11-2` plus the System Control section, and restores them afterward. It also exercises MIDI CC, Bank Select, Program Change, and `patch select`, ending that command group by selecting `U10-1`. Keep the backup directory so the slot liveset backup and System Control JSON backup remain available for manual recovery if the run is interrupted.
+- The default destructive live test suite writes only the allowed user-slot range and MIDI channel voice messages; it does not write System Control/global settings. Set `GT1000_LIVE_SKIP_SLOT_RESTORE=1` when U10/U11 restoration is not needed. Set `GT1000_DESTRUCTIVE_EXTENDED=1` for slow multi-command/multi-slot patch-management coverage. Set `GT1000_ALLOW_GLOBAL_SETTINGS=1` only when intentionally testing System Control/global setting writes, in which case the suite backs up and restores System Control.
 - Current proven commands:
   - `scripts/gt1000-agent --pretty patch apply default --live --verify --timeout 20`
   - `scripts/gt1000-agent --pretty patch apply 4cm-template --live --verify --timeout 20`

@@ -1,5 +1,6 @@
 import sys
 import unittest
+import unittest.mock
 
 sys.dont_write_bytecode = True
 
@@ -7,6 +8,17 @@ from tools.gt1000 import live, patch_edit
 
 
 class PatchEditTests(unittest.TestCase):
+    def test_write_retry_attempts_defaults_and_honors_env(self):
+        with unittest.mock.patch.dict(patch_edit.os.environ, {}, clear=False):
+            patch_edit.os.environ.pop("GT1000_WRITE_RETRY_ATTEMPTS", None)
+            self.assertEqual(patch_edit.write_retry_attempts(), 4)
+        with unittest.mock.patch.dict(patch_edit.os.environ, {"GT1000_WRITE_RETRY_ATTEMPTS": "4"}):
+            self.assertEqual(patch_edit.write_retry_attempts(), 4)
+        with unittest.mock.patch.dict(patch_edit.os.environ, {"GT1000_WRITE_RETRY_ATTEMPTS": "bad"}):
+            self.assertEqual(patch_edit.write_retry_attempts(), 4)
+        with unittest.mock.patch.dict(patch_edit.os.environ, {"GT1000_WRITE_RETRY_ATTEMPTS": "0"}):
+            self.assertEqual(patch_edit.write_retry_attempts(), 1)
+
     def test_default_plan_builds_minimal_no_branch_chain_and_off_writes(self):
         plan = patch_edit.build_default_patch_plan("PY DEFAULT")
         chain = next(write for write in plan.writes if write.label == "Minimal no-branch chain")
@@ -22,6 +34,19 @@ class PatchEditTests(unittest.TestCase):
         )
         self.assertIn(live.PatchWrite("dist1 switch off", [0x10, 0x00, 0x13, 0x00], [0]), plan.writes)
         self.assertIn(live.PatchWrite("Assign 16 disabled", [0x10, 0x00, 0x0A, 0x40], patch_edit.DISABLED_ASSIGN_DATA), plan.writes)
+
+    def test_usb_direct_plan_chain_and_enabled_blocks(self):
+        plan = patch_edit.build_usb_direct_plan("USB DIRECT")
+        chain = next(write for write in plan.writes if write.label == "USB direct chain")
+
+        self.assertEqual(chain.data[:10], [22, 0, 3, 29, 30, 34, 33, 47, 48, 1])
+        self.assertEqual(len(set(chain.data)), 49)
+        self.assertIn(
+            live.PatchWrite("Compressor on", [0x10, 0x00, 0x12, 0x00], [1, 3, 42, 36, 45, 64, 8, 0]),
+            plan.writes,
+        )
+        self.assertNotIn(live.PatchWrite("comp switch off", [0x10, 0x00, 0x12, 0x00], [0]), plan.writes)
+        self.assertNotIn(live.PatchWrite("preamp1 switch off", [0x10, 0x00, 0x15, 0x00], [0]), plan.writes)
 
     def test_4cm_template_chain_and_ctl1_direct_mapping(self):
         plan = patch_edit.build_4cm_template_plan("PY 4CM CTL1")
@@ -83,6 +108,21 @@ class PatchEditTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             patch_edit.plan_for_user_slot(plan, "U51-1")
+
+    def test_chain_reorder_plan_validates_and_writes_full_chain(self):
+        chain_values = list(patch_edit.CANONICAL_FULL_CHAIN)
+        reordered = list(chain_values)
+        reordered.remove(15)
+        reordered.insert(reordered.index(14), 15)
+
+        plan = patch_edit.build_chain_reorder_plan(chain_values, reordered, label="Reorder test")
+
+        self.assertEqual(plan.id, "reorder:chain")
+        self.assertEqual(plan.writes[0].address, [0x10, 0x00, 0x10, 0x68])
+        self.assertEqual(plan.writes[0].data, reordered)
+
+        with self.assertRaises(ValueError):
+            patch_edit.build_chain_reorder_plan(chain_values, chain_values, label="No-op reorder")
 
     def test_clone_read_requests_and_plan_copy_known_patch_records(self):
         requests = patch_edit.clone_core_read_requests("U03-2")
@@ -199,7 +239,7 @@ class PatchEditTests(unittest.TestCase):
             nonlocal calls
             calls += 1
             if calls == 1:
-                raise live.LiveMIDIError("No GT-1000 MIDI destination found")
+                raise live.LiveMIDIError("Timed out waiting for GT-1000 patch replies")
             return {live.address_key(requests[0].address): [1]}
 
         try:
@@ -212,6 +252,25 @@ class PatchEditTests(unittest.TestCase):
 
         self.assertEqual(calls, 2)
         self.assertEqual(result, {"20 00 00 00": [1]})
+
+    def test_batched_read_does_not_split_when_endpoint_is_unavailable(self):
+        request = live.PatchReadRequest("Read", [0x20, 0x00, 0x00, 0x00], [0, 0, 0, 1])
+        calls = 0
+        original_read_data_sets = patch_edit.live.read_data_sets
+
+        def fake_read_data_sets(*, timeout, requests):
+            nonlocal calls
+            calls += 1
+            raise live.LiveMIDIError("No GT-1000 MIDI destination found")
+
+        try:
+            patch_edit.live.read_data_sets = fake_read_data_sets
+            with self.assertRaises(live.LiveMIDIError):
+                patch_edit.read_data_set_batch_resilient(timeout=20, requests=[request])
+        finally:
+            patch_edit.live.read_data_sets = original_read_data_sets
+
+        self.assertEqual(calls, 1)
 
     def test_apply_plan_retries_transient_write_failure(self):
         plan = patch_edit.PatchPlan("retry", "Retry write", [live.PatchWrite("Write", [0x10, 0, 0, 0], [1])])
@@ -805,7 +864,7 @@ class PatchEditTests(unittest.TestCase):
         self.assertEqual(preference.writes[0].address, [0x00, 0x00, 0x10, 0x2A])
         self.assertEqual(preference.writes[0].data, [0])
 
-        rename = patch_edit.build_rename_plan("ABCDEFGHIJKLMNOPQ", slot="U03-2")
+        rename = patch_edit.build_rename_plan("ABCDEFGHIJKLMNOP", slot="U03-2")
         self.assertEqual(rename.writes[0].address, [0x20, 0x0B, 0x00, 0x00])
         self.assertEqual(rename.writes[0].data, list(b"ABCDEFGHIJKLMNOP"))
 
@@ -816,6 +875,65 @@ class PatchEditTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             patch_edit.build_led_set_plan("ctl1", "off", "auto-cyan")
+
+    def test_rename_plan_rejects_silently_mangled_names(self):
+        with self.assertRaises(ValueError):
+            patch_edit.build_rename_plan("")
+        with self.assertRaises(ValueError):
+            patch_edit.build_rename_plan("   ")
+        with self.assertRaises(ValueError):
+            patch_edit.build_rename_plan("ABCDEFGHIJKLMNOPQ")
+        with self.assertRaises(ValueError):
+            patch_edit.build_rename_plan("CAFÉ LEAD")
+
+        trailing = patch_edit.build_rename_plan("LEAD TONE       ")
+        self.assertEqual(trailing.writes[0].data, list(b"LEAD TONE       "))
+
+    def test_assign_set_plan_limits_active_range_for_midi_cc_sources(self):
+        with self.assertRaises(ValueError):
+            patch_edit.build_assign_set_plan(
+                1,
+                enabled=True,
+                target=987,
+                target_min=0,
+                target_max=1,
+                source=patch_edit.assign_source_for_cc(80),
+                mode="moment",
+                active_min=0,
+                active_max=16383,
+            )
+
+        non_cc = patch_edit.build_assign_set_plan(
+            1,
+            enabled=True,
+            target=987,
+            target_min=0,
+            target_max=1,
+            source=19,
+            mode="moment",
+            active_min=0,
+            active_max=1023,
+        )
+        self.assertEqual(non_cc.writes[0].data[24:28], live.nibbles_for(1023))
+
+    def test_assign_plans_allow_documented_inverted_target_ranges(self):
+        plan = patch_edit.build_assign_cc_plan(1, target=158, target_min=100, target_max=0, source_cc=80, mode="moment")
+        data = plan.writes[0].data
+        self.assertEqual(data[5:9], live.nibbles_for(32768 + 100))
+        self.assertEqual(data[9:13], live.nibbles_for(32768))
+
+    def test_tsl_led_import_writes_are_clamped_to_device_record_size(self):
+        led = [byte % 11 for byte in range(32)]
+        patch = {
+            "tslDevice": "GT-1000",
+            "paramSet": {"User_patch%led": [f"{byte:02X}" for byte in led]},
+        }
+
+        writes = patch_edit.tsl_paramset_writes(patch, "U10-1", 1)
+
+        led_write = next(write for write in writes if "Patch Led" in write.label)
+        self.assertEqual(len(led_write.data), 0x1E)
+        self.assertEqual(led_write.data, led[:0x1E])
 
     def test_exchange_plan_swaps_known_patch_records(self):
         requests_a = patch_edit.clone_core_read_requests("U03-2")

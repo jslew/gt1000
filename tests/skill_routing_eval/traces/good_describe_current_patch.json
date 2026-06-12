@@ -1,0 +1,10 @@
+{
+  "scenario_id": "describe_current_patch",
+  "events": [
+    {"type": "shell", "command": "test -f ~/.config/gt1000/gt1000-profile.md"},
+    {
+      "type": "shell",
+      "command": "/proj/.agents/skills/gt1000/scripts/gt1000-agent --pretty patch musician-summary --live --timeout 15"
+    }
+  ]
+}

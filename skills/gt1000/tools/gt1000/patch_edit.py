@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -26,8 +27,8 @@ BYPASS_MAIN_R = 34
 
 CANONICAL_FULL_CHAIN = [
     0, 34, 33, 47, 48, 1, 2, 3, 4, 5, 6, 7, 8, 9, 20, 10, 11, 12, 13, 14, 15,
-    16, 17, 18, 19, 21, 22, 23, 24, 25, 26, 32, 27, 28, 29, 30, 35, 36, 37, 38,
-    39, 40, 41, 42, 43, 31, 45, 46, 44,
+    16, 17, 18, 19, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 35, 36, 37, 38,
+    39, 40, 41, 42, 43, 32, 31, 45, 46, 44,
 ]
 
 CTL1_SOURCE = 0x08
@@ -264,6 +265,37 @@ def build_default_patch_plan(name: str = "PY DEFAULT") -> PatchPlan:
     )
 
 
+def build_usb_direct_plan(name: str = "USB DIRECT") -> PatchPlan:
+    """Straight guitar-to-USB patch: volume, comp, preamp, cab sim, main outs; no branches."""
+    writes = [
+        live.PatchWrite("Patch name", live.TEMPORARY_PATCH_NAME, patch_name_data(name)),
+        chain_write(
+            [22, 0, 3, 29, 30, BYPASS_MAIN_R, BYPASS_MAIN_L, MAIN_OUT_L, MAIN_OUT_R],
+            "USB direct chain",
+        ),
+        live.PatchWrite("CTL1 direct function off", PATCH_CTL1_FUNCTION, [0x00, 0x00]),
+        live.PatchWrite("Foot volume", block_address("footVolume"), [0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x0E, 0x08, 0x00, 0x03, 0x0E, 0x08, 0x02]),
+        live.PatchWrite("Compressor on", block_address("comp"), [0x01, 0x03, 0x2A, 0x24, 0x2D, 0x40, 0x08, 0x00]),
+        live.PatchWrite("Preamp 1 on", block_address("preamp1"), [0x01, 0x0B, 0x41, 0x0D, 0x08, 0x2E, 0x3C, 0x3F, 0x32, 0x46, 0x00, 0x01, 0x00, 0x32]),
+        live.PatchWrite("Main speaker sim L on", block_address("mainSpeakerSimulatorL"), [0x01, 0x01, 0x02, 0x00, 0x01, 0x64, 0x00]),
+        live.PatchWrite("Main speaker sim R on", block_address("mainSpeakerSimulatorR"), [0x01, 0x02, 0x00, 0x01, 0x64, 0x00]),
+    ]
+    writes.extend(assign_switch_writes(enabled=False))
+    writes.extend(all_switchable_blocks_off())
+    writes = [
+        write for write in writes
+        if write.label not in {"comp switch off", "preamp1 switch off"}
+    ]
+    return PatchPlan(
+        id="usb-direct",
+        description=(
+            "USB recording patch: FOOT VOLUME -> COMP -> PREAMP 1 -> MAIN cab sim -> MAIN OUT "
+            "(processed on USB 1-2, dry on 3-4). No divider, send/return, or time-based FX."
+        ),
+        writes=writes,
+    )
+
+
 def build_4cm_template_plan(name: str = "PY 4CM CTL1") -> PatchPlan:
     writes = [
         live.PatchWrite("Patch name", live.TEMPORARY_PATCH_NAME, patch_name_data(name)),
@@ -293,6 +325,8 @@ def plan_by_id(plan_id: str, name: str | None = None) -> PatchPlan:
         return build_default_patch_plan(name or "PY DEFAULT")
     if plan_id in {"4cm", "4cm-template"}:
         return build_4cm_template_plan(name or "PY 4CM CTL1")
+    if plan_id in {"usb", "usb-direct"}:
+        return build_usb_direct_plan(name or "USB DIRECT")
     raise ValueError(f"unknown patch plan {plan_id}")
 
 
@@ -651,6 +685,9 @@ def tsl_paramset_writes(patch: dict[str, Any], destination: str, patch_index: in
         data = data_from_tsl_hex_list(key, value)
         if len(data) > max_size:
             raise ValueError(f"TSL {key} has {len(data)} bytes, exceeding supported size {max_size}")
+        write_size = TSL_DEVICE_WRITE_SIZES.get(key)
+        if write_size is not None and len(data) > write_size:
+            data = data[:write_size]
         writes.append(live.PatchWrite(f"Import {destination} TSL {label}", remap_clone_address(address, destination), data))
     if not writes:
         raise ValueError(f"TSL patch {patch_index} does not contain supported GT-1000 paramSet records")
@@ -676,6 +713,14 @@ def unsupported_tsl_paramset_keys(patch: dict[str, Any]) -> list[str]:
         return []
     specs = tsl_paramset_specs()
     return sorted(key for key in param_set if key not in specs and not is_ignorable_tsl_paramset_key(key))
+
+
+# Tone Studio .tsl files can carry more bytes than the device record allocates.
+# The official MIDI implementation defines PatchLed as 0x1E bytes; clamp the DT1
+# write so a 0x20-byte TSL led array cannot spill past the record boundary.
+TSL_DEVICE_WRITE_SIZES = {
+    "User_patch%led": 0x1E,
+}
 
 
 def tsl_paramset_specs() -> dict[str, tuple[str, list[int], int]]:
@@ -980,15 +1025,23 @@ def apply_plan(plan: PatchPlan, *, timeout: float, verify: bool) -> dict[str, An
 
 
 def write_data_sets_resilient(writes: list[live.PatchWrite]) -> None:
-    attempts = 3
+    attempts = write_retry_attempts()
     for attempt in range(attempts):
         try:
             live.write_data_sets(writes)
             return
-        except live.LiveMIDIError:
+        except live.LiveMIDIError as error:
             if attempt == attempts - 1:
                 raise
-            time.sleep(0.5)
+            time.sleep(3.0 if live.is_endpoint_unavailable_error(error) else 0.5)
+
+
+def write_retry_attempts() -> int:
+    try:
+        value = int(os.environ.get("GT1000_WRITE_RETRY_ATTEMPTS", "4"))
+    except ValueError:
+        return 4
+    return max(1, value)
 
 
 def build_parameter_set_plan(block_id: str, parameter_id: str, raw_value: str, *, slot: str | None = None) -> PatchPlan:
@@ -1093,6 +1146,32 @@ def build_chain_move_plan(
     return plan_for_user_slot(plan, slot) if slot else plan
 
 
+def build_chain_reorder_plan(
+    chain_values: list[int],
+    reordered: list[int],
+    *,
+    label: str = "Reorder signal chain",
+    slot: str | None = None,
+) -> PatchPlan:
+    if len(chain_values) != len(CANONICAL_FULL_CHAIN):
+        raise ValueError(f"chain data must contain {len(CANONICAL_FULL_CHAIN)} elements")
+    if len(reordered) != len(CANONICAL_FULL_CHAIN):
+        raise ValueError(f"reordered chain data must contain {len(CANONICAL_FULL_CHAIN)} elements")
+    if set(chain_values) != set(CANONICAL_FULL_CHAIN):
+        raise ValueError("chain data does not match the known GT-1000 chain element set")
+    if set(reordered) != set(CANONICAL_FULL_CHAIN):
+        raise ValueError("reordered chain data does not match the known GT-1000 chain element set")
+    if chain_values == reordered:
+        raise ValueError("reordered chain is identical to current chain")
+    write = chain_write(reordered, label)
+    plan = PatchPlan(
+        id="reorder:chain",
+        description=label,
+        writes=[write],
+    )
+    return plan_for_user_slot(plan, slot) if slot else plan
+
+
 def build_tuner_assign_plan(*, slot: str | None = None) -> PatchPlan:
     write = live.PatchWrite("Assign 16 tuner on CC80", assign_address(16), tuner_assign_data())
     plan = PatchPlan(
@@ -1161,6 +1240,8 @@ def build_assign_cc_plan(
     source = assign_source_for_cc(source_cc)
     if mode not in {"toggle", "moment"}:
         raise ValueError("assign mode must be toggle or moment")
+    # target_min > target_max is deliberately allowed: the parameter guide
+    # documents that an inverted range reverses the parameter response.
     for label, value in {"target": target, "target_min": target_min, "target_max": target_max}.items():
         if not 0 <= value <= 16383:
             raise ValueError(f"{label} must be 0...16383")
@@ -1210,12 +1291,20 @@ def build_assign_set_plan(
 ) -> PatchPlan:
     if mode not in {"toggle", "moment"}:
         raise ValueError("assign mode must be toggle or moment")
+    # target_min > target_max is deliberately allowed: the parameter guide
+    # documents that an inverted range reverses the parameter response.
     validate_assign_int("target", target, 0, 16383)
     validate_assign_int("target_min", target_min, 0, 16383)
     validate_assign_int("target_max", target_max, 0, 16383)
     validate_assign_int("source", source, 0, 127)
-    validate_assign_int("active_min", active_min, 0, 16383)
-    validate_assign_int("active_max", active_max, 0, 16383)
+    if is_midi_cc_assign_source(source):
+        # MIDI CC sources send 0...127; a wider ACT RANGE maps CC 127 near the
+        # bottom of the range and can leave the target effectively off.
+        validate_assign_int("active_min", active_min, 0, 127)
+        validate_assign_int("active_max", active_max, 0, 127)
+    else:
+        validate_assign_int("active_min", active_min, 0, 16383)
+        validate_assign_int("active_max", active_max, 0, 16383)
     validate_assign_int("midi_channel", midi_channel, 0, 16)
     validate_assign_int("midi_cc", midi_cc, 0, 127)
     validate_assign_int("midi_cc_min", midi_cc_min, 0, 16383)
@@ -1386,6 +1475,7 @@ def build_control_preference_plan(control: str, preference: str) -> PatchPlan:
 
 
 def build_rename_plan(name: str, *, slot: str | None = None) -> PatchPlan:
+    validate_patch_name(name)
     write = live.PatchWrite("Patch name", live.TEMPORARY_PATCH_NAME, patch_name_data(name))
     plan = PatchPlan(
         id="rename",
@@ -1552,7 +1642,9 @@ def read_data_set_batch_resilient(*, timeout: float, requests: list[live.PatchRe
     for attempt in range(attempts):
         try:
             return live.read_data_sets(timeout=timeout, requests=requests)
-        except live.LiveMIDIError:
+        except live.LiveMIDIError as error:
+            if live.is_endpoint_unavailable_error(error):
+                raise
             if attempt == attempts - 1:
                 if len(requests) == 1:
                     raise
@@ -1655,7 +1747,7 @@ def primary_patch_record_definitions(*, include_fx_algorithms: bool = True) -> l
             )
             for number in range(1, 17)
         ],
-        live.PatchReadRequest("Patch Effect", live.TEMPORARY_PATCH_EFFECT, [0x00, 0x00, 0x01, 0x1C]),
+        live.PatchReadRequest("Patch Effect", live.TEMPORARY_PATCH_EFFECT, live.TEMPORARY_PATCH_EFFECT_SIZE),
         *[
             live.PatchReadRequest(block.display_name, block.address, live.seven_bit_address(block.size))
             for block in list(live.SUMMARY_BLOCKS) + (list(live.FX_ALGORITHM_BLOCKS) if include_fx_algorithms else [])
@@ -1680,6 +1772,16 @@ def remap_clone_address(address: list[int], slot: str) -> list[int]:
     if patch3_base_value <= address_value < patch3_base_value + 0x2300:
         return live.address_adding(live.user_patch3_base(slot), address_value - patch3_base_value)
     return live.remap_temporary_patch_address(address, live.user_patch_base(slot))
+
+
+def validate_patch_name(name: str) -> None:
+    if not name.strip():
+        raise ValueError("patch name must not be empty")
+    significant = name.rstrip()
+    if len(significant) > 16:
+        raise ValueError("patch name must be at most 16 characters")
+    if any(not 0x20 <= ord(character) <= 0x7E for character in significant):
+        raise ValueError("patch name must contain printable ASCII characters only")
 
 
 def patch_name_data(name: str) -> list[int]:
@@ -1707,6 +1809,12 @@ def assign_address(number: int) -> list[int]:
 
 
 def assign_switch_writes(enabled: bool) -> list[live.PatchWrite]:
+    """Toggle all 16 assign switches.
+
+    Enabling intentionally writes only the 1-byte SW field so each assign's
+    existing target/source/range configuration is preserved; disabling writes
+    the full canonical disabled payload to leave slots in a known-clean state.
+    """
     if enabled:
         return [live.PatchWrite(f"Assign {number} switch on", assign_address(number), [0x01]) for number in range(1, 17)]
     return [live.PatchWrite(f"Assign {number} disabled", assign_address(number), DISABLED_ASSIGN_DATA) for number in range(1, 17)]
@@ -1776,6 +1884,11 @@ def assign_source_for_cc(cc: int) -> int:
     raise ValueError("MIDI CC Assign sources support CC#1...31 and CC#64...95")
 
 
+def is_midi_cc_assign_source(source: int) -> bool:
+    # Source bytes 22...52 are CC#1...31 and 53...84 are CC#64...95.
+    return 22 <= source <= 84
+
+
 def all_switchable_blocks_off() -> list[live.PatchWrite]:
     writes = []
     for block_id in [
@@ -1790,7 +1903,10 @@ def all_switchable_blocks_off() -> list[live.PatchWrite]:
 
 
 def block_address(block_id: str) -> list[int]:
-    return parameter_address(find_patch_block(block_id), 0)
+    block = find_patch_block(block_id)
+    if isinstance(block, live.ResidentBlockDefinition):
+        return live.address_adding(live.TEMPORARY_PATCH_EFFECT, block.offset)
+    return parameter_address(block, 0)
 
 
 def find_patch_block(block_id: str) -> live.BlockDefinition | live.ResidentBlockDefinition:

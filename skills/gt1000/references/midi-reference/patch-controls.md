@@ -19,6 +19,18 @@ To answer "what do the switches do in this patch?", read:
 
 When a preference is `PATCH`, decode the corresponding PatchCommon function/mode. When it is `SYSTEM`, decode the corresponding SystemControl function/mode.
 
+## Canonical decoded fields
+
+Decoded CLI control views use one skill-facing vocabulary:
+
+- `functionId`: canonical control-function ID accepted by `patch control-set`, such as `dist1`, `foot-volume`, or `divider1-channel-select`
+- `functionDisplayName`: human label, not an edit ID
+- `functionKind`: semantic class (`effect-toggle`, `routing`, `utility`, `parameter-control`, `block-control`)
+- `functionTargetRef`: canonical `<blockId>.<parameterId>` target when a control acts on a block parameter
+- `canEnableBlock`: whether the function can bring a switched-off block into the playable sound
+
+Do not treat display labels as IDs. For example, `dist1` / `effect-toggle` and `divider1-channel-select` / `routing` are different concepts even though both can be assigned to CTL1.
+
 ## PatchCommon Control Offsets
 
 Offsets below are relative to `PatchCommon` address `10 00 00 00`.
