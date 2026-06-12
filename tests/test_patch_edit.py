@@ -1,5 +1,6 @@
 import sys
 import unittest
+import unittest.mock
 
 sys.dont_write_bytecode = True
 

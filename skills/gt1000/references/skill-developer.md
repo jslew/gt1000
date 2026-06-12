@@ -62,7 +62,7 @@ GT1000_LIVE=1 GT1000_ALLOW_DESTRUCTIVE=1 GT1000_LIVE_BACKUP_DIR=/tmp/gt1000-live
 
 ## Encoding validation commands
 
-These are for maintaining confidence in low-level encodings, not for normal musician workflows:
+These are for maintaining low-level encoding validation coverage, not for normal musician workflows:
 
 - `patch encoding-status`
 - `patch validate-encoding`
@@ -73,4 +73,3 @@ These are for maintaining confidence in low-level encodings, not for normal musi
 
 - If `ports --live` hangs or times out, stop live testing and recover CoreMIDI/the USB connection before continuing. Quit BOSS Tone Studio if it is open, then power-cycle or reconnect the GT-1000.
 - Run live commands one at a time; avoid `&&` chaining of multiple `--live` reads. `gt1000-agent` holds an exclusive process lock (`~/.gt1000-agent/cli.lock`, exit code `75` on conflict). Test harnesses may set `GT1000_ALLOW_CONCURRENT=1` to bypass.
-

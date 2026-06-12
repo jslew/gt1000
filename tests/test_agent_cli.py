@@ -17,13 +17,13 @@ from tools.gt1000 import agent_cli
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "full_patch.json"
 
 
-def live_verified_command_paths():
+def live_tested_command_paths():
     path = Path(__file__).resolve().parent / "test_live_skill.py"
     spec = importlib.util.spec_from_file_location("test_live_skill_manifest", path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
-    return module.LIVE_VERIFIED_COMMAND_PATHS
+    return module.LIVE_TESTED_COMMAND_PATHS
 
 
 class AgentCLITests(unittest.TestCase):
@@ -310,8 +310,7 @@ class AgentCLITests(unittest.TestCase):
             "field": "level",
             "slot": "U10-1",
             "targetValue": "90",
-            "confidenceBefore": {"confidence": "legacy"},
-            "confidenceRecommendation": "live-verified",
+            "validationResult": "passed",
             "write": {"verified": True},
             "restored": True,
             "restore": {"verified": True},
@@ -342,17 +341,17 @@ class AgentCLITests(unittest.TestCase):
             self.assertEqual(path, str(log_path))
             record = json.loads(log_path.read_text(encoding="utf-8").splitlines()[0])
             self.assertEqual(record["fieldId"], "patch.master.level")
-            self.assertEqual(record["confidenceRecommendation"], "live-verified")
+            self.assertEqual(record["validationResult"], "passed")
             self.assertEqual(record["before"][0]["dataHex"], "05 0A")
             self.assertNotIn("data", record["before"][0])
 
     def test_encoding_status_includes_validation_log_summary(self):
         records = [
-            {"fieldId": "patch.block.delay3.sw", "confidenceRecommendation": "not-verified", "slot": "U10-1"},
+            {"fieldId": "patch.block.delay3.sw", agent_cli.LEGACY_VALIDATION_RESULT_KEY: agent_cli.LEGACY_VALIDATION_FAILED, "slot": "U10-1"},
             {
                 "fieldId": "patch.block.delay3.sw",
                 "createdAt": "2026-05-25T20:30:00-0400",
-                "confidenceRecommendation": "live-verified",
+                agent_cli.LEGACY_VALIDATION_RESULT_KEY: agent_cli.LEGACY_VALIDATION_PASSED,
                 "slot": "U10-1",
                 "targetValue": "on",
                 "diagnosticLog": "/tmp/diag.jsonl",
@@ -375,24 +374,20 @@ class AgentCLITests(unittest.TestCase):
                 )
 
         self.assertEqual(status["validationLog"], str(log_path))
-        self.assertEqual(status["trustedCount"], 1)
-        self.assertEqual(status["untrustedCount"], 0)
         entry = status["entries"][0]
         self.assertEqual(entry["id"], "patch.block.delay3.sw")
-        self.assertEqual(entry["confidence"], "legacy")
-        self.assertEqual(entry["effectiveConfidence"], "live-verified")
-        self.assertTrue(entry["trustedEncoding"])
+        self.assertTrue(entry["exactReadSafe"])
         self.assertEqual(entry["validationCount"], 2)
-        self.assertEqual(entry["validationRecommendations"]["live-verified"], 1)
-        self.assertEqual(entry["validationSuggestedConfidence"], "live-verified")
+        self.assertEqual(entry["validationResults"]["passed"], 1)
         self.assertEqual(entry["latestValidation"]["targetValue"], "on")
+        self.assertEqual(entry["latestValidation"]["validationResult"], "passed")
         self.assertNotIn("before", entry["latestValidation"])
 
-    def test_encoding_status_infers_block_family_from_representative_validations(self):
+    def test_encoding_status_preserves_family_validation_summary_without_inference_label(self):
         records = [
             {
                 "fieldId": field_id,
-                "confidenceRecommendation": "live-verified",
+                agent_cli.LEGACY_VALIDATION_RESULT_KEY: agent_cli.LEGACY_VALIDATION_PASSED,
                 "writeVerified": True,
                 "restored": False,
                 "restoreVerified": None,
@@ -412,14 +407,10 @@ class AgentCLITests(unittest.TestCase):
         )
 
         entry = status["entries"][0]
-        self.assertEqual(entry["confidence"], "legacy")
-        self.assertEqual(entry["effectiveConfidence"], "inferred")
-        self.assertFalse(entry["trustedEncoding"])
-        self.assertEqual(entry["familyValidation"]["successfulBlockCount"], 3)
-        effective = agent_cli.effective_encoding_confidence("patch.block.delay2.effectLevel")
-        self.assertEqual(effective["confidence"], "inferred")
-        self.assertEqual(effective["semanticConfidence"], "legacy")
-        self.assertIn("layout/encoding evidence only", effective["evidence"])
+        self.assertTrue(entry["exactReadSafe"])
+        family = agent_cli.validation_summary_by_family(records)[agent_cli.validation_family_key_for_field_id("patch.block.delay2.effectLevel")]
+        self.assertEqual(family["successfulBlockCount"], 3)
+        self.assertNotIn("familySuggestedConfidence", family)
 
     def test_parser_defaults_use_live_timeout_strategy(self):
         parser = agent_cli.build_parser()
@@ -601,7 +592,7 @@ class AgentCLITests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertIs(live_call.call_args_list[0].args[2], agent_cli.patch_edit.read_data_sets_sequential_session)
 
-    def test_verify_plan_reads_exact_bytes_for_live_verified_level_write(self):
+    def test_verify_plan_reads_exact_bytes_for_evidence_backed_level_write(self):
         address = agent_cli.patch_master_level_address("U10-1")
         plan = agent_cli.patch_edit.PatchPlan(
             "verify-level",
@@ -626,6 +617,48 @@ class AgentCLITests(unittest.TestCase):
         self.assertEqual(result["checks"][0]["readOffset"], 0)
         self.assertEqual(result["checks"][0]["actualHex"], "05 0A")
 
+    def test_verify_plan_reads_exact_bytes_for_evidence_backed_master_field(self):
+        plan = agent_cli.patch_edit.build_master_set_plan("key", "Db(Bbm)", slot="U10-1")
+        address = plan.writes[0].address
+
+        def fake_live_call(label, process_timeout, func, *, timeout, requests):
+            self.assertEqual(requests[0].address, address)
+            self.assertEqual(requests[0].size, [0x00, 0x00, 0x00, 0x01])
+            return {agent_cli.live.address_key(requests[0].address): [1]}
+
+        live_call = MagicMock(side_effect=fake_live_call)
+        original = agent_cli.live_call_with_timeout
+        agent_cli.live_call_with_timeout = live_call
+        try:
+            result = agent_cli.verify_plan_with_timeout(plan, timeout=9)
+        finally:
+            agent_cli.live_call_with_timeout = original
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["checks"][0]["readOffset"], 0)
+        self.assertEqual(result["checks"][0]["actualHex"], "01")
+
+    def test_verify_plan_reads_exact_bytes_for_bpm_field(self):
+        plan = agent_cli.patch_edit.build_bpm_set_plan("120.0", slot="U10-1")
+        address = plan.writes[0].address
+
+        def fake_live_call(label, process_timeout, func, *, timeout, requests):
+            self.assertEqual(requests[0].address, address)
+            self.assertEqual(requests[0].size, [0x00, 0x00, 0x00, 0x04])
+            return {agent_cli.live.address_key(requests[0].address): plan.writes[0].data}
+
+        live_call = MagicMock(side_effect=fake_live_call)
+        original = agent_cli.live_call_with_timeout
+        agent_cli.live_call_with_timeout = live_call
+        try:
+            result = agent_cli.verify_plan_with_timeout(plan, timeout=9)
+        finally:
+            agent_cli.live_call_with_timeout = original
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["checks"][0]["address"], agent_cli.live.hex_bytes(address))
+        self.assertEqual(result["checks"][0]["readOffset"], 0)
+
     def test_verify_plan_uses_short_timeout_for_tiny_exact_reads(self):
         address = agent_cli.patch_master_level_address("U10-1")
         plan = agent_cli.patch_edit.PatchPlan(
@@ -649,7 +682,7 @@ class AgentCLITests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
 
-    def test_verify_plan_exact_mode_reads_write_range_without_confidence_gate(self):
+    def test_verify_plan_exact_mode_reads_write_range_without_evidence_gate(self):
         address = agent_cli.patch_edit.remap_clone_address(
             agent_cli.patch_edit.parameter_address(
                 agent_cli.patch_edit.find_patch_block("delay3"),
@@ -679,7 +712,7 @@ class AgentCLITests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["checks"][0]["readOffset"], 0)
 
-    def test_verify_plan_reads_exact_bytes_for_live_verified_block_parameter(self):
+    def test_verify_plan_reads_exact_bytes_for_evidence_backed_block_parameter(self):
         address = agent_cli.patch_edit.remap_clone_address(
             agent_cli.patch_edit.parameter_address(
                 agent_cli.patch_edit.find_patch_block("delay1"),
@@ -710,7 +743,7 @@ class AgentCLITests(unittest.TestCase):
         self.assertEqual(result["checks"][0]["readOffset"], 0)
         self.assertEqual(result["checks"][0]["actualHex"], "01")
 
-    def test_verify_plan_reads_exact_bytes_for_live_verified_nibble_block_parameter(self):
+    def test_verify_plan_reads_exact_bytes_for_evidence_backed_nibble_block_parameter(self):
         address = agent_cli.patch_edit.remap_clone_address(
             agent_cli.patch_edit.parameter_address(
                 agent_cli.patch_edit.find_patch_block("delay1"),
@@ -766,7 +799,7 @@ class AgentCLITests(unittest.TestCase):
             log_path = Path(directory) / "encoding-validations.jsonl"
             log_path.write_text(json.dumps({
                 "fieldId": "patch.block.delay3.time",
-                "confidenceRecommendation": "live-verified",
+                agent_cli.LEGACY_VALIDATION_RESULT_KEY: agent_cli.LEGACY_VALIDATION_PASSED,
                 "writeVerified": True,
                 "restored": True,
                 "restoreVerified": True,
@@ -785,27 +818,27 @@ class AgentCLITests(unittest.TestCase):
         self.assertEqual(result["checks"][0]["readOffset"], 0)
         self.assertEqual(result["checks"][0]["actualHex"], "00 01 0A 04")
 
-    def test_validation_record_requires_verified_write_and_restore_for_effective_confidence(self):
-        self.assertTrue(agent_cli.validation_record_supports_effective_confidence({
-            "confidenceRecommendation": "live-verified",
+    def test_validation_record_requires_verified_write_and_restore_to_pass(self):
+        self.assertTrue(agent_cli.validation_record_passed({
+            agent_cli.LEGACY_VALIDATION_RESULT_KEY: agent_cli.LEGACY_VALIDATION_PASSED,
             "writeVerified": True,
             "restored": True,
             "restoreVerified": True,
         }))
-        self.assertTrue(agent_cli.validation_record_supports_effective_confidence({
-            "confidenceRecommendation": "live-verified",
+        self.assertTrue(agent_cli.validation_record_passed({
+            "validationResult": "passed",
             "writeVerified": True,
             "restored": False,
             "restoreVerified": None,
         }))
-        self.assertFalse(agent_cli.validation_record_supports_effective_confidence({
-            "confidenceRecommendation": "live-verified",
+        self.assertFalse(agent_cli.validation_record_passed({
+            "validationResult": "passed",
             "writeVerified": True,
             "restored": True,
             "restoreVerified": False,
         }))
-        self.assertFalse(agent_cli.validation_record_supports_effective_confidence({
-            "confidenceRecommendation": "live-verified",
+        self.assertFalse(agent_cli.validation_record_passed({
+            "validationResult": "passed",
             "writeVerified": False,
             "restored": True,
             "restoreVerified": True,
@@ -1313,12 +1346,10 @@ class AgentCLITests(unittest.TestCase):
         self.assertEqual(master_parameters["level"]["offset"], 0x5F)
         self.assertEqual(master_parameters["level"]["kind"], "nibbles2")
         self.assertEqual(master_parameters["level"]["byteCount"], 2)
-        self.assertEqual(master_parameters["level"]["encodingConfidence"]["confidence"], "live-verified")
         self.assertIn("input-sensitivity", master_parameters)
 
         controls = agent_cli.cmd_patch_schema(agent_cli.build_parser().parse_args(["patch", "schema", "controls"]))
         self.assertEqual(controls["id"], "controls")
-        self.assertEqual(controls["encodingConfidence"]["confidence"], "legacy")
         self.assertIn("ctl1", controls["controls"])
         self.assertIn("dist1", controls["switchFunctions"])
         function_details = {function["id"]: function for function in controls["functionDetails"]}
@@ -1330,17 +1361,15 @@ class AgentCLITests(unittest.TestCase):
 
         assign = agent_cli.cmd_patch_schema(agent_cli.build_parser().parse_args(["patch", "schema", "assign"]))
         self.assertEqual(assign["id"], "assign")
-        self.assertEqual(assign["encodingConfidence"]["confidence"], "legacy")
         self.assertIn("general", assign["commands"])
         self.assertIn("tuner", assign["targetAliases"])
 
         led = agent_cli.cmd_patch_schema(agent_cli.build_parser().parse_args(["patch", "schema", "led"]))
         self.assertEqual(led["id"], "led")
-        self.assertEqual(led["encodingConfidence"]["confidence"], "legacy")
         self.assertIn("ctl1", led["controls"])
         self.assertIn("auto-cyan", led["onColors"])
 
-    def test_encoding_status_reports_confidence_inventory(self):
+    def test_encoding_status_reports_evidence_inventory(self):
         args = agent_cli.build_parser().parse_args(["patch", "encoding-status", "master"])
 
         with tempfile.TemporaryDirectory() as directory:
@@ -1348,59 +1377,29 @@ class AgentCLITests(unittest.TestCase):
                 status = agent_cli.cmd_patch_encoding_status(args)
 
         self.assertEqual(status["id"], "encodingStatus")
-        self.assertEqual(status["filter"], "all")
-        self.assertIn("live-verified", status["confidenceLevels"])
-        self.assertIn("official", status["semanticConfidenceLevels"])
-        self.assertGreater(status["trustedCount"], 0)
-        self.assertEqual(status["untrustedCount"], 0)
-        self.assertEqual(status["entryCount"], status["trustedCount"] + status["untrustedCount"])
-        self.assertGreater(status["effectiveConfidenceCounts"]["live-verified"], 0)
-        self.assertGreater(status["semanticConfidenceCounts"]["official"], 0)
+        self.assertGreater(status["entryCount"], 0)
+        self.assertGreater(status["exactReadSafeCount"], 0)
         entries = {entry["id"]: entry for entry in status["entries"]}
-        self.assertEqual(entries["patch.master.level"]["confidence"], "live-verified")
-        self.assertEqual(entries["patch.master.level"]["effectiveConfidence"], "live-verified")
-        self.assertEqual(entries["patch.master.level"]["semanticConfidence"], "official")
-        self.assertTrue(entries["patch.master.level"]["trustedEncoding"])
-        self.assertEqual(entries["patch.master.patch-level"]["confidence"], "live-verified")
+        self.assertTrue(entries["patch.master.level"]["exactReadSafe"])
         self.assertEqual(entries["patch.master.patch-level"]["canonicalId"], "patch.master.level")
-        self.assertTrue(entries["patch.master.patch-level"]["trustedEncoding"])
-        self.assertEqual(entries["patch.master.key"]["confidence"], "live-verified")
-        self.assertEqual(entries["patch.master.key"]["effectiveConfidence"], "live-verified")
-        self.assertTrue(entries["patch.master.key"]["trustedEncoding"])
+        self.assertTrue(entries["patch.master.bpm"]["exactReadSafe"])
         self.assertNotIn("patch.block.masterDelay.time", entries)
 
         with tempfile.TemporaryDirectory() as directory:
             with unittest.mock.patch.dict(agent_cli.os.environ, {agent_cli.ENCODING_VALIDATION_LOG_ENV: str(Path(directory) / "empty.jsonl")}, clear=False):
                 control_status = agent_cli.cmd_patch_encoding_status(agent_cli.build_parser().parse_args(["patch", "encoding-status", "patch.controls"]))
         self.assertEqual(control_status["entries"][0]["id"], "patch.controls")
-        self.assertEqual(control_status["entries"][0]["confidence"], "legacy")
-        self.assertEqual(control_status["trustedCount"], 0)
-        self.assertEqual(control_status["untrustedCount"], 1)
 
-    def test_encoding_status_filters_trusted_and_untrusted_entries(self):
+    def test_encoding_status_reports_inventory_without_trust_filtering(self):
         with tempfile.TemporaryDirectory() as directory:
             with unittest.mock.patch.dict(agent_cli.os.environ, {agent_cli.ENCODING_VALIDATION_LOG_ENV: str(Path(directory) / "empty.jsonl")}, clear=False):
-                untrusted = agent_cli.cmd_patch_encoding_status(
-                    agent_cli.build_parser().parse_args(["patch", "encoding-status", "patch.block.delay3", "--untrusted"])
-                )
-                trusted = agent_cli.cmd_patch_encoding_status(
-                    agent_cli.build_parser().parse_args(["patch", "encoding-status", "master", "--trusted"])
+                status = agent_cli.cmd_patch_encoding_status(
+                    agent_cli.build_parser().parse_args(["patch", "encoding-status", "patch.block.delay3"])
                 )
 
-        self.assertEqual(untrusted["filter"], "untrusted")
-        self.assertEqual(untrusted["trustedCount"], 0)
-        self.assertEqual(untrusted["entryCount"], untrusted["untrustedCount"])
-        self.assertTrue(all(not entry["trustedEncoding"] for entry in untrusted["entries"]))
-        self.assertIn("validationTemplate", {key for entry in untrusted["entries"] for key in entry})
-        self.assertIn("block.delay3.sw=on", untrusted["validationCases"])
-        self.assertIn("block.delay3.time=1", untrusted["validationCases"])
-        self.assertIn("patch validate-encoding-batch", untrusted["batchValidationCommand"])
-        self.assertIn("block.delay3.sw=on", untrusted["batchValidationCommand"])
-        self.assertEqual(trusted["filter"], "trusted")
-        self.assertEqual(trusted["untrustedCount"], 0)
-        self.assertEqual(trusted["entryCount"], trusted["trustedCount"])
-        self.assertTrue(all(entry["trustedEncoding"] for entry in trusted["entries"]))
-        self.assertNotIn("validationCases", trusted)
+        self.assertGreater(status["entryCount"], 0)
+        self.assertNotIn("filter", status)
+        self.assertNotIn("validationCases", status)
 
     def test_encoding_validation_case_generation_for_block_parameters(self):
         self.assertEqual(
@@ -1420,17 +1419,17 @@ class AgentCLITests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with unittest.mock.patch.dict(agent_cli.os.environ, {agent_cli.ENCODING_VALIDATION_LOG_ENV: str(Path(directory) / "empty.jsonl")}, clear=False):
                 cases = agent_cli.encoding_validation_cases_for_scope("master")
-                trusted_cases = agent_cli.encoding_validation_cases_for_scope("master", include_trusted=True)
+                existing_cases = agent_cli.encoding_validation_cases_for_scope("master", include_existing=True)
 
         self.assertEqual(cases, [])
-        self.assertIn("master.key=1", trusted_cases)
-        self.assertIn("master.amp-ctl1=on", trusted_cases)
-        self.assertNotIn("master.amp-control1=on", trusted_cases)
+        self.assertIn("master.key=1", existing_cases)
+        self.assertIn("master.amp-ctl1=on", existing_cases)
+        self.assertNotIn("master.amp-control1=on", existing_cases)
         self.assertNotIn("master.level=1", cases)
-        self.assertNotIn("master.patch-level=1", trusted_cases)
+        self.assertNotIn("master.patch-level=1", existing_cases)
 
     def test_validate_encoding_scope_dry_run_lists_generated_cases(self):
-        args = agent_cli.build_parser().parse_args(["patch", "validate-encoding-scope", "patch.block.delay3", "--limit", "2", "--dry-run"])
+        args = agent_cli.build_parser().parse_args(["patch", "validate-encoding-scope", "patch.block.delay3", "--include-existing", "--limit", "2", "--dry-run"])
 
         with tempfile.TemporaryDirectory() as directory:
             with unittest.mock.patch.dict(agent_cli.os.environ, {agent_cli.ENCODING_VALIDATION_LOG_ENV: str(Path(directory) / "empty.jsonl")}, clear=False):
@@ -1447,6 +1446,7 @@ class AgentCLITests(unittest.TestCase):
             "patch",
             "validate-encoding-scope",
             "patch.block",
+            "--include-existing",
             "--parameter",
             "sw",
             "--kind",
@@ -1572,7 +1572,7 @@ class AgentCLITests(unittest.TestCase):
             "validate-encoding-batch",
             "validate-encoding-scope",
         }
-        live_paths = live_verified_command_paths()
+        live_paths = live_tested_command_paths()
 
         for command in p1_write_commands:
             with self.subTest(command=command):
@@ -1585,7 +1585,7 @@ class AgentCLITests(unittest.TestCase):
             for action in parser._actions
             if getattr(action, "dest", None) == "command"
         )
-        live_paths = live_verified_command_paths()
+        live_paths = live_tested_command_paths()
         parser_paths = {("doctor",), ("ports",)}
 
         self.assertIn(("ports",), live_paths)
@@ -1639,10 +1639,6 @@ class AgentCLITests(unittest.TestCase):
         encoding_status = parser.parse_args(["patch", "encoding-status", "master"])
         self.assertEqual(encoding_status.patch_command, "encoding-status")
         self.assertEqual(encoding_status.scope, "master")
-
-        encoding_status_untrusted = parser.parse_args(["patch", "encoding-status", "master", "--untrusted"])
-        self.assertEqual(encoding_status_untrusted.patch_command, "encoding-status")
-        self.assertTrue(encoding_status_untrusted.untrusted)
 
         validate_encoding = parser.parse_args(["patch", "validate-encoding", "master", "level", "90", "--live"])
         self.assertEqual(validate_encoding.patch_command, "validate-encoding")

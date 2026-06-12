@@ -15,14 +15,14 @@ This is an agent-facilitated workflow. Do not hand the musician a CLI recipe unl
 
 ## Candidate Verification Rule
 
-Every candidate parameter that is not already live-verified must pass live write/read-back verification before its render can count.
+Every candidate write must pass live write/read-back verification before its render can count.
 
 - Verify the exact candidate write before rendering it.
 - Skip the candidate if read-back verification fails.
 - Report skipped candidates with the failed area/parameter and plain-language reason.
-- Do not score or recommend a render from an unverified candidate.
+- Do not score or recommend a render from a candidate whose write/read-back check failed.
 
-Already live-verified candidate surfaces may be used directly, but default live runs should still verify writes when practical.
+Default live runs should verify candidate writes when practical.
 
 ## Candidate Strategy
 

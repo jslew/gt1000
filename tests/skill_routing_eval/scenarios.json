@@ -80,7 +80,7 @@
         "Match this reference guitar tone against my dry take; do the audio lab work for me"
       ],
       "first_cli": {"match": "audio reference analyze"},
-      "notes": "Agent should locate/confirm reference and dry take, then run plan/render/rank internally; unverified candidate parameters must be read-back verified before render."
+      "notes": "Agent should locate/confirm reference and dry take, then run plan/render/rank internally; candidate writes must be read-back verified before render."
     },
     {
       "id": "solo_boost_delay_toggle_tuner_etc",

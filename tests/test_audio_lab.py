@@ -755,7 +755,7 @@ class AudioLabTests(unittest.TestCase):
                 self.assertIn("--verify", command)
                 if candidate["command"] == "master-set":
                     self.assertFalse(candidate["requiresLiveVerification"])
-                    self.assertEqual(candidate["verificationPolicy"], "live-verified-surface")
+                    self.assertEqual(candidate["verificationPolicy"], "existing-evidence")
                 else:
                     self.assertTrue(candidate["requiresLiveVerification"])
                     self.assertEqual(candidate["verificationPolicy"], "verify-before-render")
@@ -1095,13 +1095,13 @@ class AudioLabTests(unittest.TestCase):
             self.assertEqual(result["recommendation"]["action"], "audition-baseline")
             self.assertIn("Baseline remained the best render", result["improvement"]["plainSummary"])
 
-    def test_reference_run_skips_unverified_candidate_before_render(self) -> None:
+    def test_reference_run_skips_failed_candidate_before_render(self) -> None:
         from tools.gt1000 import live, patch_edit
         from tools.gt1000.audio_lab import reference_runner
 
         candidate = {
-            "label": "untrusted",
-            "renderLabel": "candidate-01-untrusted",
+            "label": "failed-write",
+            "renderLabel": "candidate-01-failed-write",
             "area": "eq1",
             "block": "eq1",
             "parameter": "highGain",
@@ -1169,7 +1169,7 @@ class AudioLabTests(unittest.TestCase):
 
             self.assertEqual(result["id"], "audioReferenceRun")
             self.assertEqual(len(result["renders"]), 1)
-            self.assertEqual(result["skippedCandidates"][0]["label"], "untrusted")
+            self.assertEqual(result["skippedCandidates"][0]["label"], "failed-write")
             self.assertIn("restoreResult", result["skippedCandidates"][0])
             render_mock.assert_called_once()
 

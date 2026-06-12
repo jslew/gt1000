@@ -81,7 +81,7 @@ LIVE_RETRYABLE_READ_COMMANDS = {
     ("patch", "export"),
     ("system", "controls"),
 }
-LIVE_VERIFIED_COMMAND_PATHS = {
+LIVE_TESTED_COMMAND_PATHS = {
     ("doctor",),
     ("ports",),
     ("midi", "bank-select"),
@@ -178,6 +178,11 @@ LIVE_VERIFIED_COMMAND_PATHS = {
     ("audio", "match-reference"),
     ("system", "setup-efct"),
     ("system", "inout-set"),
+    ("system", "common-set"),
+    ("system", "midi-set"),
+    ("system", "effects-set"),
+    ("system", "pitch-set"),
+    ("system", "setup-efct-set"),
 }
 
 
@@ -829,6 +834,24 @@ class LiveSkillWriteTests(unittest.TestCase):
         )
         self.assertEqual(assign_result["plan"], "set:assign2:target987:source19:U10-3")
         self.assert_verified_patch1_slot(assign_result, "2F")
+
+    def test_system_midi_set_roundtrip_when_global_settings_enabled(self):
+        self.require_global_settings()
+        midi = self.run_cli("system", "midi", "--live", "--timeout", "15", timeout=30)
+        value = midi["decoded"]["mapSelect"]
+        self.assertIsNotNone(value)
+        result = self.run_cli(
+            "system",
+            "midi-set",
+            "mapSelect",
+            str(value),
+            "--live",
+            "--verify",
+            "--timeout",
+            "20",
+            timeout=60,
+        )
+        self.assertTrue(result.get("verified"))
 
     def test_global_control_settings_verify_only_when_explicitly_enabled(self):
         self.require_global_settings()

@@ -47,7 +47,7 @@ Prioritized findings from a full CLI/MIDI review. All items below shipped in `ad
 | Patch rename | Non-ASCII silently stripped | `validate_patch_name()` before `build_rename_plan()` |
 | `inputs-set` level | Missing -20…+20 check in CLI coercion | `_coerce_inputs_set_value` range validation |
 | PatchLed TSL import | Tone Studio may send 0x20 bytes; device record is 0x1E | `TSL_DEVICE_WRITE_SIZES` clamp on import |
-| Master Delay size | `live.py` block size 28 vs parameters through offset 43 | Size **44** (0x2C per MIDI implementation; live-verified read) |
+| Master Delay size | `live.py` block size 28 vs parameters through offset 43 | Size **44** (0x2C per MIDI implementation; hardware-validated read) |
 | Patch Effect size | Literal `[0x00,0x00,0x01,0x1C]` duplicated | `TEMPORARY_PATCH_EFFECT_SIZE` constant |
 | EQ `geqLevel` | Same offset as `level` (0x0D) | Documented intentional alias per official PatchEq record |
 
@@ -78,15 +78,15 @@ Prioritized findings from a full CLI/MIDI review. All items below shipped in `ad
 | Doctor | `scripts/gt1000-agent --pretty doctor --live --write-check --timeout 10` | After write/verify path changes |
 | Audio live | See AGENTS.md **Python Environment**; `GT1000_AUDIO_LIVE=1` + `tests.test_live_audio_lab` | After audio-lab *or* shared `live.py` changes |
 
-## Open / follow-up (not in `ad23dd0`)
+## Open / follow-up
 
 | Priority | Item | Notes |
 |----------|------|-------|
-| P2 | Broader system/global typed write validators | See agent-control-plan P3 row |
+| P2 | More system/global typed writes | `common-set`, `midi-set`, `effects-set`, `pitch-set`, `setup-efct-set`, expanded `inout-set` shipped after `ad23dd0`; still open: manual-control-set, pcmap-set, MIDI CC assignment bytes, output EQ channel fields |
 | P2 | STOMPBOX / `.stx` shared data | Musician-cli backlog |
 | P3 | Further read batching (e.g. multi-slot export) | Profile before changing; large RQ1 pages still risky |
 | P3 | Assign PDF alternate target table (991 vs 987) | Document and live-test per firmware; do not assume PDF-only table |
-| Maint | Encoding-confidence validation log | `exact_read_verified_for_write` gate; expand live-validated field inventory |
+| Maint | Encoding evidence validation log | exact-read gate; expand hardware-validated field inventory |
 
 ## Implementation order (sprints)
 

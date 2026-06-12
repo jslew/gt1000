@@ -358,7 +358,7 @@ def _candidate_payload(index: int, spec: CandidateSpec, *, session: str) -> dict
             for area, parameter, value in (spec.paired_settings or ((spec.area, spec.parameter, spec.value),))
         ],
         "requiresLiveVerification": spec.command != "master-set",
-        "verificationPolicy": "live-verified-surface" if spec.command == "master-set" else "verify-before-render",
+        "verificationPolicy": "existing-evidence" if spec.command == "master-set" else "verify-before-render",
         "value": spec.value,
         "writeCount": len(plan.writes),
     }
